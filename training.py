@@ -1299,8 +1299,12 @@ def main():
 
         stats = compute_outcome_stats(trajectories, current_is_black)
 
-        win_boost = WIN_MIN_BOOST + win_miss_ema * (WIN_MAX_BOOST - WIN_MIN_BOOST)
-        block_boost = BLOCK_MIN_BOOST + block_miss_ema * (BLOCK_MAX_BOOST - BLOCK_MIN_BOOST)
+        # Nonlinear boost decay: 1 - hit_rate^2 (slower decay than linear)
+        win_hit_rate_ema = 1.0 - win_miss_ema
+        win_boost = WIN_MIN_BOOST + (1.0 - win_hit_rate_ema ** 2) * (WIN_MAX_BOOST - WIN_MIN_BOOST)
+
+        block_hit_rate_ema = 1.0 - block_miss_ema
+        block_boost = BLOCK_MIN_BOOST + (1.0 - block_hit_rate_ema ** 2) * (BLOCK_MAX_BOOST - BLOCK_MIN_BOOST)
 
         t0 = time.time()
         loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss = train_on_batch(
