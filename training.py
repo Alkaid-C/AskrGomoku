@@ -23,7 +23,8 @@ import re
 from gomoku_selfplay import (
     Player, GameState, Trajectory,
     play_episodes_batched, play_eval_games, augment_batch_gpu,
-    find_all_win_in_1, find_blocking_moves
+    find_all_win_in_1, find_blocking_moves,
+    RENJU_OPENING_SEQUENCES
 )
 
 from model import (
@@ -41,6 +42,7 @@ from model import (
     MISS_RATE_EMA_WINDOW, WIN_MIN_BOOST, WIN_MAX_BOOST, BLOCK_MIN_BOOST, BLOCK_MAX_BOOST,
     SYNTHETIC_WIN_BOOST, SYNTHETIC_BLOCKING_BOOST, MAX_SYNTHETIC_WINS, MAX_SYNTHETIC_BLOCKS,
     EPISODE_WEIGHT_ALPHA, IMITATION_WEIGHT, IMITATION_START_UPDATE,
+    SEED_PROBABILITY,
     OPPONENT_POOL_SIZE, EVAL_ROUNDS, EVAL_TEMP,
     EVAL_INTERVAL_EARLY, EVAL_INTERVAL_MID, EVAL_INTERVAL_LATE, WIN_RATE_THRESHOLD,
     SCAN_START_UPDATE, SCAN_PERIOD, NUM_SCAN_BUCKETS,
@@ -1182,6 +1184,7 @@ def main():
     print(f"    - Phase 2 ({VALUE_BASELINE_START}+): Value baseline + tactical bonuses (always)")
     print(f"    - Tactical bonuses prevent terminal state learning collapse")
     print(f"  Imitation learning: {IMITATION_WEIGHT} (learn from opponent's winning moves, starts at update {IMITATION_START_UPDATE})")
+    print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")
     print(f"  Eval interval: {EVAL_INTERVAL_EARLY} (0-512) -> {EVAL_INTERVAL_MID} (512-8192) -> {EVAL_INTERVAL_LATE} (8192+)")
     print(f"  Pool eviction: evict-easiest (by current win rate)")
@@ -1279,6 +1282,8 @@ def main():
 
         pairs = []
         current_is_black = []
+        opening_ids = []
+        num_openings = len(RENJU_OPENING_SEQUENCES)
         for _ in range(EPISODES_PER_UPDATE):
             # Use difficulty-weighted sampling instead of uniform
             opponent = sample_opponent_weighted(opponent_pool, opponent_pool_updates, per_opponent_win_rates)
@@ -1289,11 +1294,18 @@ def main():
                 pairs.append((opponent, current_policy))
                 current_is_black.append(False)
 
+            # Opening seeding: with probability SEED_PROBABILITY, start from a Renju opening
+            if random.random() < SEED_PROBABILITY:
+                opening_ids.append(random.randint(0, num_openings - 1))
+            else:
+                opening_ids.append(-1)
+
         t0 = time.time()
         trajectories = play_episodes_batched(
             pairs, current_is_black, TEMPERATURE_TRAIN, DEVICE,
             batch_size=BATCH_INFERENCE_SIZE,
-            select_action_batch_fn=select_action_batch
+            select_action_batch_fn=select_action_batch,
+            opening_ids=opening_ids
         )
         t_selfplay = time.time() - t0
 

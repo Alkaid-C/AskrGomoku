@@ -51,7 +51,7 @@ VALUE_HEAD_CHANNELS = 16    # Channels after value head 1x1 conv (d)
 VALUE_HEAD_HIDDEN = 96      # Hidden layer size for value head MLP
 
 # --- Optimizer & Learning Rate ---
-LEARNING_RATE = 8e-4
+LEARNING_RATE = 1e-4
 MIN_LR = 1e-4
 LR_DECAY = (MIN_LR / LEARNING_RATE) ** (1.0 / TOTAL_UPDATES)  # Derived
 WEIGHT_DECAY = 1e-8
@@ -61,7 +61,7 @@ GRAD_CLIP_NORM = 16.0
 EPISODES_PER_UPDATE = 64    # Episodes to collect before each training update
 EPISODES_CHUNK_SIZE = 32    # Chunk size for gradient accumulation (saves VRAM)
 BATCH_INFERENCE_SIZE = 64   # Positions processed simultaneously during self-play
-TRAIN_BATCH_SIZE = 1024     # Micro-batch size for training
+TRAIN_BATCH_SIZE = 2048     # Micro-batch size for training
 
 # --- Exploration & Entropy ---
 TEMPERATURE_TRAIN = 1.25    # Flattens sampling distribution
@@ -73,7 +73,7 @@ ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training du
 # --- Value Head & Advantage Estimation ---
 VALUE_LOSS_COEFF = 0.5      # Weight for value head loss
 GAE_LAMBDA = 0.95           # GAE lambda (0=TD(0), 1=MC)
-VALUE_BASELINE_START = 1024 # Update at which to start using value baseline
+VALUE_BASELINE_START = 512 # Update at which to start using value baseline
 
 # --- Tactical Enhancements ---
 MISS_RATE_EMA_WINDOW = 128  # Effective window for miss rate EMA
@@ -83,14 +83,17 @@ BLOCK_MIN_BOOST = 0.0       # Minimum boost for blocking (when miss rate is 0)
 BLOCK_MAX_BOOST = 0.75      # Maximum boost for blocking (when miss rate is 1)
 
 SYNTHETIC_WIN_BOOST = 2.0   # Signal for missed win-in-1 (synthetic examples)
-SYNTHETIC_BLOCKING_BOOST = 1.0  # Signal for missed blocks (synthetic examples)
+SYNTHETIC_BLOCKING_BOOST = 1.5  # Signal for missed blocks (synthetic examples)
 MAX_SYNTHETIC_WINS = 256    # Max synthetic win-in-1 examples per batch
 MAX_SYNTHETIC_BLOCKS = 256  # Max synthetic blocking examples per batch
 EPISODE_WEIGHT_ALPHA = 0.5  # 0 => per-step weighting, 1 => per-episode equal mass
 
 # --- Imitation Learning ---
 IMITATION_WEIGHT = 0.6      # Weight for learning from opponent's winning moves
-IMITATION_START_UPDATE = 2048  # Update at which to enable imitation learning
+IMITATION_START_UPDATE = 1024  # Update at which to enable imitation learning
+
+# --- Opening Seeding ---
+SEED_PROBABILITY = 0.25         # Probability of starting from a Renju opening
 
 # --- Self-Play & Evaluation ---
 OPPONENT_POOL_SIZE = 16

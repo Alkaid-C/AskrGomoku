@@ -12,8 +12,42 @@ This module rarely needs changes unless game rules are modified.
 
 import torch
 import numpy as np
+import random
 from typing import List, Tuple, Optional
 from enum import Enum
+
+
+# ============================================================================
+# Renju Opening Sequences (for Opening Seeding)
+# ============================================================================
+
+def _generate_renju_openings() -> List[Tuple[Tuple[int, int], ...]]:
+    """
+    Generate all 184 Renju opening sequences.
+
+    Renju opening rules (relative to first move at origin):
+    - Move 1: (0, 0) - center
+    - Move 2: Any of 8 positions in [-1,1] x [-1,1] excluding (0,0)
+    - Move 3: Any of 23 positions in [-2,2] x [-2,2] excluding moves 1 and 2
+
+    Total: 8 * 23 = 184 unique openings
+    """
+    openings = []
+    # Second move: [-1,1] x [-1,1] excluding (0,0)
+    for r2 in range(-1, 2):
+        for c2 in range(-1, 2):
+            if (r2, c2) == (0, 0):
+                continue
+            # Third move: [-2,2] x [-2,2] excluding first and second moves
+            for r3 in range(-2, 3):
+                for c3 in range(-2, 3):
+                    if (r3, c3) == (0, 0) or (r3, c3) == (r2, c2):
+                        continue
+                    openings.append(((0, 0), (r2, c2), (r3, c3)))
+    return openings
+
+
+RENJU_OPENING_SEQUENCES = _generate_renju_openings()
 
 
 # ============================================================================
@@ -42,12 +76,29 @@ class GomokuBoard:
     Public API exposes board in canonical form (current player, opponent).
     """
 
-    def __init__(self):
-        """Initialize a 15x15 Gomoku board with BLACK to play first."""
+    def __init__(self, opening_id: int = -1):
+        """
+        Initialize a 15x15 Gomoku board.
+
+        Args:
+            opening_id: If -1, start with empty board. If >= 0, start with the
+                        specified Renju opening (index into RENJU_OPENING_SEQUENCES)
+                        with a random offset applied.
+        """
         self.black_pieces = np.zeros((15, 15), dtype=np.uint8)
         self.white_pieces = np.zeros((15, 15), dtype=np.uint8)
         self.who_to_play = Player.BLACK
         self.occupied_count = 0  # Track number of stones on board
+
+        if opening_id >= 0:
+            # Apply Renju opening with random offset
+            # Offset: first move can be anywhere in center ±3 (rows/cols 4-10)
+            offset_r = random.randint(-3, 3)
+            offset_c = random.randint(-3, 3)
+            base_r, base_c = 7 + offset_r, 7 + offset_c
+
+            for rel_r, rel_c in RENJU_OPENING_SEQUENCES[opening_id]:
+                self.Move((base_r + rel_r, base_c + rel_c))
 
     def GetLegalMoves(self) -> Tuple[np.ndarray, Player]:
         """
@@ -253,9 +304,9 @@ class GameState_InProgress:
     """Tracks state of a game in progress."""
 
     def __init__(self, game_id: int, black_model, white_model,
-                 current_is_black: bool):
+                 current_is_black: bool, opening_id: int = -1):
         self.game_id = game_id
-        self.board = GomokuBoard()
+        self.board = GomokuBoard(opening_id=opening_id)
         self.black_model = black_model
         self.white_model = white_model
         self.current_is_black = current_is_black  # True if black_model is current_policy
@@ -268,7 +319,8 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
                           temperature: float, device: torch.device,
                           batch_size: int,
                           select_action_batch_fn,
-                          deterministic: bool = False) -> List[Trajectory]:
+                          deterministic: bool = False,
+                          opening_ids: List[int] = None) -> List[Trajectory]:
     """
     Play multiple episodes with batched inference.
 
@@ -280,13 +332,19 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
         batch_size: Maximum batch size for inference
         select_action_batch_fn: Function to select actions for a batch
         deterministic: If True, use argmax
+        opening_ids: List of opening IDs for each game (-1 for empty board,
+                     >= 0 for Renju opening). If None, all games start empty.
 
     Returns:
         List of trajectories
     """
     # Initialize all games
-    games = [GameState_InProgress(i, black, white, is_black)
-             for i, ((black, white), is_black) in enumerate(zip(black_white_pairs, current_is_black))]
+    if opening_ids is None:
+        opening_ids = [-1] * len(black_white_pairs)
+
+    games = [GameState_InProgress(i, black, white, is_black, opening_id)
+             for i, ((black, white), is_black, opening_id) in enumerate(
+                 zip(black_white_pairs, current_is_black, opening_ids))]
 
     while True:
         # Get active games
