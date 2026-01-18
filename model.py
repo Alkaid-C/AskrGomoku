@@ -58,56 +58,56 @@ WEIGHT_DECAY = 1e-8
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 64   # Episodes to collect before each training update
+EPISODES_PER_UPDATE = 64    # Episodes to collect before each training update
 EPISODES_CHUNK_SIZE = 32    # Chunk size for gradient accumulation (saves VRAM)
-BATCH_INFERENCE_SIZE = 64  # Positions processed simultaneously during self-play
+BATCH_INFERENCE_SIZE = 64   # Positions processed simultaneously during self-play
 TRAIN_BATCH_SIZE = 1024     # Micro-batch size for training
 
 # --- Exploration & Entropy ---
 TEMPERATURE_TRAIN = 1.25    # Flattens sampling distribution
-ENTROPY_COEFF_START = 5e-4  # Compensated for 1/T gradient scaling
+ENTROPY_COEFF_START = 1e-3  # Compensated for 1/T gradient scaling
 ENTROPY_COEFF_END = 1e-5    # Final entropy coefficient
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Transition occurs at 75% of training
 ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training duration
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF = 0.5     # Weight for value head loss
-GAE_LAMBDA = 0.95          # GAE lambda (0=TD(0), 1=MC)
-VALUE_BASELINE_START = 1024  # Update at which to start using value baseline
+VALUE_LOSS_COEFF = 0.5      # Weight for value head loss
+GAE_LAMBDA = 0.95           # GAE lambda (0=TD(0), 1=MC)
+VALUE_BASELINE_START = 1024 # Update at which to start using value baseline
 
 # --- Tactical Enhancements ---
 MISS_RATE_EMA_WINDOW = 128  # Effective window for miss rate EMA
-WIN_MIN_BOOST = 0.0       # Minimum boost for win-in-1 (when miss rate is 0)
-WIN_MAX_BOOST = 1.0        # Maximum boost for win-in-1 (when miss rate is 1)
-BLOCK_MIN_BOOST = 0.0    # Minimum boost for blocking (when miss rate is 0)
-BLOCK_MAX_BOOST = 0.75     # Maximum boost for blocking (when miss rate is 1)
+WIN_MIN_BOOST = 0.0         # Minimum boost for win-in-1 (when miss rate is 0)
+WIN_MAX_BOOST = 1.0         # Maximum boost for win-in-1 (when miss rate is 1)
+BLOCK_MIN_BOOST = 0.0       # Minimum boost for blocking (when miss rate is 0)
+BLOCK_MAX_BOOST = 0.75      # Maximum boost for blocking (when miss rate is 1)
 
-SYNTHETIC_WIN_BOOST = 2.0  # Signal for missed win-in-1 (synthetic examples)
+SYNTHETIC_WIN_BOOST = 2.0   # Signal for missed win-in-1 (synthetic examples)
 SYNTHETIC_BLOCKING_BOOST = 1.0  # Signal for missed blocks (synthetic examples)
-MAX_SYNTHETIC_WINS = 256   # Max synthetic win-in-1 examples per batch
-MAX_SYNTHETIC_BLOCKS = 256 # Max synthetic blocking examples per batch
+MAX_SYNTHETIC_WINS = 256    # Max synthetic win-in-1 examples per batch
+MAX_SYNTHETIC_BLOCKS = 256  # Max synthetic blocking examples per batch
 EPISODE_WEIGHT_ALPHA = 0.5  # 0 => per-step weighting, 1 => per-episode equal mass
 
 # --- Imitation Learning ---
-IMITATION_WEIGHT = 0.6     # Weight for learning from opponent's winning moves
+IMITATION_WEIGHT = 0.6      # Weight for learning from opponent's winning moves
 IMITATION_START_UPDATE = 2048  # Update at which to enable imitation learning
 
 # --- Self-Play & Evaluation ---
 OPPONENT_POOL_SIZE = 16
 EVAL_ROUNDS = 32           # Rounds per eval
-EVAL_TEMP = 1.0           # Temperature for evaluation
-EVAL_INTERVAL_EARLY = 8   # Eval interval for early training phase
+EVAL_TEMP = 1.0            # Temperature for evaluation
+EVAL_INTERVAL_EARLY = 8    # Eval interval for early training phase
 EVAL_INTERVAL_MID = 32     # Eval interval for mid training phase
 EVAL_INTERVAL_LATE = 128   # Eval interval for late training phase
 WIN_RATE_THRESHOLD = 0.625 # Win rate needed to update opponent pool
 
 # --- Historical Exploiter Scanning ---
-SCAN_START_UPDATE = 8192        # Start scanning after this update (late phase)
-SCAN_PERIOD = 16                # Scan every N evaluations (after SCAN_START_UPDATE)
-NUM_SCAN_BUCKETS = 4            # Number of buckets for round-robin checkpoint coverage
+SCAN_START_UPDATE = 8192         # Start scanning after this update (late phase)
+SCAN_PERIOD = 16                 # Scan every N evaluations (after SCAN_START_UPDATE)
+NUM_SCAN_BUCKETS = 4             # Number of buckets for round-robin checkpoint coverage
 QUICK_SCREEN_ROUNDS = 16         # Games per candidate in quick screening phase
 TOP_K_QUICK_SCREEN = 16          # Number of hardest candidates to advance to final screen
-FINAL_SCREEN_ROUNDS = 64        # Games per candidate in final screening phase
+FINAL_SCREEN_ROUNDS = 64         # Games per candidate in final screening phase
 MAX_MINED_OPPONENTS_PER_EVENT = 2  # Max historical exploiters added per scan event
 
 # --- Dynamic Opponent Sampling ---
@@ -122,16 +122,14 @@ LOGIT_MASK_VALUE = -1e9
 PRINT_INTERVAL = 8         # Print stats every N updates
 TRAINING_STATE_FILE = "training_state.json"
 
-# --- Device ---
-DEVICE = torch.device("cuda")
-
-
 # ============================================================================
 # PyTorch Performance Settings
 # ============================================================================
 
-torch.backends.cudnn.conv.fp32_precision = 'tf32'
-torch.backends.cuda.matmul.fp32_precision = 'tf32'
+# --- Device ---
+DEVICE = torch.device("cuda")
+torch.backends.cudnn.conv.fp32_precision = 'tf32'  # New API in PyTorch2.9
+torch.backends.cuda.matmul.fp32_precision = 'tf32' # New API in PyTorch2.9
 
 
 # ============================================================================
