@@ -22,12 +22,13 @@ TOTAL_UPDATES = 65536
 
 # --- Model Architecture ---
 N_BLOCKS = 16              # Number of residual blocks
-WIDTH = 64                 # Residual block width (must equal sum of all stem channels)
-STEM_3X3_CHANNELS = 32      # 3x3 convolution channels in stem
-STEM_SPARSE_5X5_CHANNELS = 12  # Sparse 5x5 (dilated 3x3 sum) channels in stem
-STEM_DENSE_5X5_CHANNELS = 8   # Dense 5x5 convolution channels in stem
-STEM_SPARSE_7X7_CHANNELS = 8  # Sparse 7x7 (dilated 3x3 sum) channels in stem
-STEM_DENSE_7X7_CHANNELS = 4   # Dense 7x7 convolution channels in stem
+WIDTH = 96                 # Residual block width (must equal sum of all stem channels)
+STEM_3X3_CHANNELS = 6 * 6      # 3x3 convolution channels in stem
+STEM_SPARSE_5X5_CHANNELS = 3 * 6  # Sparse 5x5 (dilated 3x3 sum) channels in stem
+STEM_DENSE_5X5_CHANNELS = 2 * 6   # Dense 5x5 convolution channels in stem
+STEM_SPARSE_7X7_CHANNELS = 3 * 6  # Sparse 7x7 (dilated 3x3 sum) channels in stem
+STEM_DENSE_7X7_CHANNELS = 1 * 6   # Dense 7x7 convolution channels in stem
+STEM_1x1_CHANNELS = 1 * 6
 GROUPNORM_GROUPS = 16       # Groups for GroupNorm layers (must divide WIDTH evenly)
 
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
@@ -44,10 +45,10 @@ SE_SCHEDULE = [
     True, True, False, False,
     True, True, False, False,
 ]
-POLICY_HEAD_D = 64         # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 64  # Policy head global MLP hidden size (h)
-VALUE_HEAD_CHANNELS = 8   # Channels after value head 1x1 conv (d)
-VALUE_HEAD_HIDDEN = 96    # Hidden layer size for value head MLP
+POLICY_HEAD_D = 64          # Policy head intermediate channels (d_p)
+POLICY_HEAD_MLP_HIDDEN = 64 # Policy head global MLP hidden size (h)
+VALUE_HEAD_CHANNELS = 16    # Channels after value head 1x1 conv (d)
+VALUE_HEAD_HIDDEN = 96      # Hidden layer size for value head MLP
 
 # --- Optimizer & Learning Rate ---
 LEARNING_RATE = 8e-4
@@ -170,13 +171,13 @@ class GomokuPolicyNet(nn.Module):
         self.conv_sparse7_d3 = nn.Conv2d(3, STEM_SPARSE_7X7_CHANNELS, kernel_size=3, stride=1, padding=3, dilation=3)
 
         self.conv_dense_7x7 = nn.Conv2d(3, STEM_DENSE_7X7_CHANNELS, kernel_size=7, stride=1, padding=3, dilation=1)
+        self.conv_1x1 = nn.Conv2d(3, STEM_1x1_CHANNELS, kernel_size=1, bias=False)
 
         # Register hooks to zero center tap gradients (prevents optimizer from updating them)
         self.conv_sparse5_d2.weight.register_hook(_zero_center_tap_hook)
         self.conv_sparse7_d2.weight.register_hook(_zero_center_tap_hook)
         self.conv_sparse7_d3.weight.register_hook(_zero_center_tap_hook)
 
-        self.stem_fuse = nn.Conv2d(WIDTH, WIDTH, kernel_size=1, bias=False)
         self.stem_norm = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 
         self.blocks = nn.ModuleList([
@@ -246,9 +247,9 @@ class GomokuPolicyNet(nn.Module):
         branch_dense_5x5 = self.conv_dense_5x5(x)
         branch_sparse_7x7 = self.conv_sparse7_d1(x) + self.conv_sparse7_d2(x) + self.conv_sparse7_d3(x)
         branch_dense_7x7 = self.conv_dense_7x7(x)
+        branch_1x1 = self.conv_1x1(x)
 
-        x = torch.cat([branch_3x3, branch_dense_5x5, branch_sparse_5x5, branch_dense_7x7, branch_sparse_7x7], dim=1)
-        x = self.stem_norm(x)
+        x = torch.cat([branch_3x3, branch_dense_5x5, branch_sparse_5x5, branch_dense_7x7, branch_sparse_7x7, branch_1x1], dim=1)
         x = F.silu(x)
         x = self.stem_norm(x)
 

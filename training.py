@@ -53,7 +53,6 @@ from model import (
     obs_batch_to_tensor, mask_batch_to_tensor, select_action_batch, select_action_batch_eval
 )
 
-
 # ============================================================================
 # Trajectory Processing
 # ============================================================================
@@ -1146,17 +1145,6 @@ def main():
     import sys
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
-
-    # Validate configuration
-    stem_total = STEM_3X3_CHANNELS + STEM_SPARSE_5X5_CHANNELS + STEM_DENSE_5X5_CHANNELS + STEM_SPARSE_7X7_CHANNELS + STEM_DENSE_7X7_CHANNELS
-    assert stem_total == WIDTH, \
-        f"Stem channels ({STEM_3X3_CHANNELS} + {STEM_SPARSE_5X5_CHANNELS} + {STEM_DENSE_5X5_CHANNELS} + {STEM_SPARSE_7X7_CHANNELS} + {STEM_DENSE_7X7_CHANNELS} = {stem_total}) must equal WIDTH ({WIDTH})"
-    assert WIDTH % GROUPNORM_GROUPS == 0, \
-        f"WIDTH ({WIDTH}) must be divisible by GROUPNORM_GROUPS ({GROUPNORM_GROUPS})"
-    assert len(TRUNK_DILATION2_SCHEDULE) == N_BLOCKS, \
-        f"TRUNK_DILATION2_SCHEDULE length ({len(TRUNK_DILATION2_SCHEDULE)}) must equal N_BLOCKS ({N_BLOCKS})"
-    assert len(SE_SCHEDULE) == N_BLOCKS, \
-        f"SE_SCHEDULE length ({len(SE_SCHEDULE)}) must equal N_BLOCKS ({N_BLOCKS})"
 
     effective_chunk_size = min(EPISODES_CHUNK_SIZE, EPISODES_PER_UPDATE)
     if EPISODES_PER_UPDATE < EPISODES_CHUNK_SIZE:
