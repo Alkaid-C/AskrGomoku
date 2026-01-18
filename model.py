@@ -51,7 +51,7 @@ VALUE_HEAD_CHANNELS = 16    # Channels after value head 1x1 conv (d)
 VALUE_HEAD_HIDDEN = 96      # Hidden layer size for value head MLP
 
 # --- Optimizer & Learning Rate ---
-LEARNING_RATE = 1e-4
+LEARNING_RATE = 4e-4
 MIN_LR = 1e-4
 LR_DECAY = (MIN_LR / LEARNING_RATE) ** (1.0 / TOTAL_UPDATES)  # Derived
 WEIGHT_DECAY = 1e-8
@@ -61,7 +61,7 @@ GRAD_CLIP_NORM = 16.0
 EPISODES_PER_UPDATE = 64    # Episodes to collect before each training update
 EPISODES_CHUNK_SIZE = 32    # Chunk size for gradient accumulation (saves VRAM)
 BATCH_INFERENCE_SIZE = 64   # Positions processed simultaneously during self-play
-TRAIN_BATCH_SIZE = 2048     # Micro-batch size for training
+TRAIN_BATCH_SIZE = 1024     # Micro-batch size for training
 
 # --- Exploration & Entropy ---
 TEMPERATURE_TRAIN = 1.25    # Flattens sampling distribution
