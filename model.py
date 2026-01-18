@@ -45,7 +45,6 @@ SE_SCHEDULE = [
     True, True, False, False,
 ]
 POLICY_HEAD_D = 64         # Policy head intermediate channels (d_p)
-POLICY_HEAD_R = 32         # Policy head low-rank global modulation dimension (r)
 POLICY_HEAD_MLP_HIDDEN = 64  # Policy head global MLP hidden size (h)
 VALUE_HEAD_CHANNELS = 8   # Channels after value head 1x1 conv (d)
 VALUE_HEAD_HIDDEN = 96    # Hidden layer size for value head MLP
@@ -214,7 +213,7 @@ class GomokuPolicyNet(nn.Module):
         # Initialize alpha_raw to -2.0, so sigmoid(-2.0) ≈ 0.12 (small but non-zero)
         self.policy_bypass_alpha = nn.Parameter(torch.tensor(-2.0))
 
-        # Value head: two 5x5 valid convs (15->13->11), then 1x1 reduction
+        # Value head: two 3x3 valid convs (15->13->11), then 1x1 reduction
         self.value_conv1 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=0)
         self.value_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
         self.value_conv2 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=0)
