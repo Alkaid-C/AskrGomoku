@@ -663,6 +663,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     accumulated_weighted_entropy_sum = 0.0
     accumulated_weight_sum = 0.0
 
+    probe_metrics = None
+
     # Process in micro-batches
     for batch_start in range(0, len(aug_obs), TRAIN_BATCH_SIZE):
         batch_end = min(batch_start + TRAIN_BATCH_SIZE, len(aug_obs))
@@ -715,8 +717,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         # Gradient conflict probing (only on first micro-batch)
-        probe_metrics = None
-        if PROBE_INTERVAL > 0 and update % PROBE_INTERVAL == 0 and batch_start == 0:
+        if probe_metrics is None and PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0 and batch_start == 0:
             probe_metrics = probe_gradient_conflict(model, policy_loss_mb, value_loss_mb, update)
 
         loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + current_entropy_coeff * entropy_loss_mb) / num_accumulation_steps
