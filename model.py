@@ -45,10 +45,13 @@ SE_SCHEDULE = [
     True, True, False, False,
     True, True, False, False,
 ]
-POLICY_HEAD_D = 64          # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 128 # Policy head global MLP hidden size (h)
-VALUE_HEAD_CHANNELS = 32    # Channels after value head 1x1 conv (d)
-VALUE_HEAD_HIDDEN = 128      # Hidden layer size for value head MLP
+
+# Head
+POLICY_HEAD_D = 128           # Policy head intermediate channels (d_p)
+POLICY_HEAD_MLP_HIDDEN = 256  # Policy head global MLP hidden size (h)
+VALUE_HEAD_C1 = 128           # Layer 1: 96 -> 128
+VALUE_HEAD_C2_SPLIT = 128     # Layer 2: 128 -> 128(d1) + 128(d2) = 256
+VALUE_HEAD_HIDDEN = 256       # FC: 256 -> 256 -> 1
 
 # --- Optimizer & Learning Rate ---
 LEARNING_RATE = 4e-4
@@ -94,16 +97,16 @@ IMITATION_START_UPDATE = 128 * 6 # Update at which to enable imitation learning
 
 # --- Counterfactual Low-Entropy Rescue (CLER) ---
 CF_START_UPDATE = 128 * 6       # Update at which to enable CLER
-CF_TRIGGER_PROB = 0.15          # Probability of triggering CLER on a lost game
-CF_ADVANTAGE = 0.75             # Strength multiplier for CLER samples
+CF_TRIGGER_PROB = 0.25          # Probability of triggering CLER on a lost game
+CF_ADVANTAGE = 1.0              # Strength multiplier for CLER samples
 CF_MIN_STEPS_TO_END = 5         # Minimum steps from terminal to consider
 CF_ENTROPY_TH = 0.5             # Entropy threshold (nats) - below this is "overconfident"
 CF_RADIUS = 2                   # Manhattan distance for local candidate moves
 CF_NUM_ACTIONS = 8              # Number of alternative actions to evaluate
 CF_NUM_ROLLOUTS = 8             # Rollouts per alternative action
-CF_MIN_ADD_WINRATE = 0.625       # Minimum winrate to add synthetic sample (5/8)
-CF_MAX_SAMPLES_PER_UPDATE = 128 # Max CLER samples per training update
-CF_ROLLOUT_TEMP = 1.0     # Temperature for CLER rollouts
+CF_WIN_MARGIN = 0.375           # Minimum margin over original action's winrate
+CF_MAX_SAMPLES_PER_UPDATE = 999 # Max CLER samples per training update
+CF_ROLLOUT_TEMP = 1.0           # Temperature for CLER rollouts
 
 # --- Opening Seeding ---
 SEED_PROBABILITY = 0.25         # Probability of starting from a Renju opening
@@ -233,14 +236,19 @@ class GomokuPolicyNet(nn.Module):
         # Initialize alpha_raw to -2.0, so sigmoid(-2.0) ≈ 0.12 (small but non-zero)
         self.policy_bypass_alpha = nn.Parameter(torch.tensor(-2.0))
 
-        # Value head: two 3x3 valid convs (15->13->11), then 1x1 reduction
-        self.value_conv1 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=0)
-        self.value_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
-        self.value_conv2 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=0)
-        self.value_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
-        self.value_reduce = nn.Conv2d(WIDTH, VALUE_HEAD_CHANNELS, kernel_size=1, stride=1, padding=0)
-        self.value_norm3 = nn.GroupNorm(num_groups=VALUE_HEAD_CHANNELS, num_channels=VALUE_HEAD_CHANNELS)
-        self.value_fc1 = nn.Linear(VALUE_HEAD_CHANNELS * 11 * 11, VALUE_HEAD_HIDDEN)
+        # Value head: conv & channel expansion + GAP + FC
+        #Conv Layer 1
+        self.value_conv1 = nn.Conv2d(WIDTH, VALUE_HEAD_C1, kernel_size=3, stride=1, padding=1, bias=False)
+        self.value_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=VALUE_HEAD_C1)
+        # Conv Layer 2
+        # Branch A: Dilation 1 (Dense)
+        self.value_conv2a = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=1, dilation=1, bias=False)
+        # Branch B: Dilation 2 (Sparse/Wide) - Padding=2 for Dilation=2
+        self.value_conv2b = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=2, dilation=2, bias=False)
+        # Norm after concat
+        self.value_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=VALUE_HEAD_C2_SPLIT * 2)
+        # FC Layers (Input -> Hidden -> Out 1)
+        self.value_fc1 = nn.Linear(VALUE_HEAD_C2_SPLIT * 2, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -302,12 +310,19 @@ class GomokuPolicyNet(nn.Module):
         alpha = torch.sigmoid(self.policy_bypass_alpha)
         logits_grid = logits_film + alpha * logits_bypass  # Combined output
 
-        value_x = F.silu(self.value_norm1(self.value_conv1(trunk_features)))
-        value_x = F.silu(self.value_norm2(self.value_conv2(value_x)))
-        value_x = F.silu(self.value_norm3(self.value_reduce(value_x)))
-        value_x = value_x.view(batch_size, -1)
-        value_x = F.silu(self.value_fc1(value_x))
-        value = torch.tanh(self.value_fc2(value_x))
+        # Value Head
+        # 1. Layer 1 (WIDTH -> VALUE_HEAD_C1)
+        vx = F.silu(self.value_norm1(self.value_conv1(trunk_features)))
+        # 2. Layer 2 Split (VALUE_HEAD_C1 -> VALUE_HEAD_C2_SPLIT + VALUE_HEAD_C2_SPLIT)
+        v_d1 = self.value_conv2a(vx)
+        v_d2 = self.value_conv2b(vx)
+        vx = torch.cat([v_d1, v_d2], dim=1) # Concat
+        vx = F.silu(self.value_norm2(vx))
+        # 3. GAP
+        vx = vx.mean(dim=(2, 3))
+        # 4. Dense
+        vx = F.silu(self.value_fc1(vx))
+        value = torch.tanh(self.value_fc2(vx))
 
         return logits_grid, value
 

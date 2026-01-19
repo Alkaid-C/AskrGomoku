@@ -894,3 +894,126 @@ def compute_outcome_stats(trajectories: List[Trajectory], current_is_black: List
         'avg_length': np.mean(total_steps) if total_steps else 0,
         'draw_rate': draws / total_games if total_games else 0
     }
+
+
+# ============================================================================
+# CLER Batched Rollouts
+# ============================================================================
+
+class CLERRolloutState:
+    """Minimal state for CLER rollout games."""
+    __slots__ = ['board', 'black_model', 'white_model', 'first_player', 'done', 'won']
+
+    def __init__(self, obs: np.ndarray, next_player: Player, first_action: int,
+                 black_model, white_model):
+        """
+        Initialize a CLER rollout game with a forced first move.
+
+        Args:
+            obs: Observation [3, 15, 15] at the decision point
+            next_player: Player to move at decision point (who plays first_action)
+            first_action: Forced first action (flat index)
+            black_model: Model playing as black
+            white_model: Model playing as white
+        """
+        self.board = board_from_observation(obs, next_player)
+        self.black_model = black_model
+        self.white_model = white_model
+        self.first_player = next_player
+        self.done = False
+        self.won = False
+
+        # Apply first move
+        row, col = idx_to_pos(first_action)
+        outcome = self.board.Move((row, col))
+
+        if outcome != GameState.CONTINUE:
+            self.done = True
+            if outcome == GameState.DRAW:
+                self.won = False
+            else:
+                self.won = (outcome == GameState.BLACK_WIN and self.first_player == Player.BLACK) or \
+                           (outcome == GameState.WHITE_WIN and self.first_player == Player.WHITE)
+
+
+def play_cler_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, int, object, object]],
+                                temperature: float, device, batch_size: int,
+                                select_action_fn) -> List[bool]:
+    """
+    Play CLER rollout games in batches.
+
+    Each rollout starts from a given position with a forced first move,
+    then plays out using the specified models until game end.
+
+    Args:
+        rollout_configs: List of (obs, next_player, first_action, black_model, white_model) tuples
+        temperature: Rollout temperature
+        device: torch device
+        batch_size: Batch size for inference
+        select_action_fn: Function to select actions (should return List[int])
+
+    Returns:
+        List of bool indicating if first_player won for each rollout
+    """
+    if not rollout_configs:
+        return []
+
+    # Initialize all rollout games
+    games = [CLERRolloutState(obs, player, action, black_model, white_model)
+             for obs, player, action, black_model, white_model in rollout_configs]
+
+    while True:
+        active_games = [g for g in games if not g.done]
+        if not active_games:
+            break
+
+        for batch_start in range(0, len(active_games), batch_size):
+            batch_games = active_games[batch_start:batch_start + batch_size]
+
+            obs_list = []
+            mask_list = []
+            models_list = []
+
+            for game in batch_games:
+                legal_mask, next_player = game.board.GetLegalMoves()
+                c0, c1, _ = game.board.GetBoardState()
+                obs = encode_observation(c0, c1)
+
+                obs_list.append(obs)
+                mask_list.append(legal_mask)
+                model = game.black_model if next_player == Player.BLACK else game.white_model
+                models_list.append(model)
+
+            # Group by model for batching
+            model_groups = {}
+            for i, model in enumerate(models_list):
+                model_id = id(model)
+                if model_id not in model_groups:
+                    model_groups[model_id] = {'model': model, 'indices': [], 'obs': [], 'masks': []}
+                model_groups[model_id]['indices'].append(i)
+                model_groups[model_id]['obs'].append(obs_list[i])
+                model_groups[model_id]['masks'].append(mask_list[i])
+
+            # Batched inference
+            all_actions = [None] * len(batch_games)
+            for group in model_groups.values():
+                actions = select_action_fn(
+                    group['model'], group['obs'], group['masks'],
+                    temperature, device
+                )
+                for idx, action in zip(group['indices'], actions):
+                    all_actions[idx] = action
+
+            # Execute moves
+            for game, action in zip(batch_games, all_actions):
+                row, col = idx_to_pos(action)
+                outcome = game.board.Move((row, col))
+                if outcome != GameState.CONTINUE:
+                    game.done = True
+                    if outcome == GameState.DRAW:
+                        game.won = False
+                    else:
+                        game.won = (outcome == GameState.BLACK_WIN and game.first_player == Player.BLACK) or \
+                                   (outcome == GameState.WHITE_WIN and game.first_player == Player.WHITE)
+
+    return [g.won for g in games]

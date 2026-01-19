@@ -29,6 +29,7 @@ from gomoku_selfplay import (
     find_all_win_in_1, find_blocking_moves,
     compute_returns, compute_gae_for_trajectories, compute_outcome_stats,
     board_from_observation, get_local_candidate_moves, idx_to_pos, encode_observation,
+    play_cler_rollouts_batched,
     RENJU_OPENING_SEQUENCES
 )
 
@@ -38,7 +39,7 @@ from model import (
     STEM_3X3_CHANNELS, STEM_SPARSE_5X5_CHANNELS, STEM_DENSE_5X5_CHANNELS,
     STEM_SPARSE_7X7_CHANNELS, STEM_DENSE_7X7_CHANNELS, GROUPNORM_GROUPS,
     TRUNK_DILATION2_SCHEDULE, SE_SCHEDULE,
-    POLICY_HEAD_D, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN,
+    POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN,
     LEARNING_RATE, MIN_LR, LR_DECAY, WEIGHT_DECAY, GRAD_CLIP_NORM,
     EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE, BATCH_INFERENCE_SIZE, TRAIN_BATCH_SIZE,
     TEMPERATURE_TRAIN, ENTROPY_COEFF_START, ENTROPY_COEFF_END,
@@ -48,7 +49,7 @@ from model import (
     SYNTHETIC_WIN_BOOST, SYNTHETIC_BLOCKING_BOOST, MAX_SYNTHETIC_WINS, MAX_SYNTHETIC_BLOCKS,
     EPISODE_WEIGHT_ALPHA, IMITATION_WEIGHT, IMITATION_START_UPDATE,
     CF_START_UPDATE, CF_TRIGGER_PROB, CF_ADVANTAGE, CF_MIN_STEPS_TO_END, CF_ENTROPY_TH,
-    CF_RADIUS, CF_NUM_ACTIONS, CF_NUM_ROLLOUTS, CF_MIN_ADD_WINRATE,
+    CF_RADIUS, CF_NUM_ACTIONS, CF_NUM_ROLLOUTS, CF_WIN_MARGIN,
     CF_MAX_SAMPLES_PER_UPDATE, CF_ROLLOUT_TEMP,
     SEED_PROBABILITY,
     OPPONENT_POOL_SIZE, EVAL_ROUNDS, EVAL_TEMP,
@@ -67,69 +68,24 @@ from model import (
 # Counterfactual Low-Entropy Rescue (CLER)
 # ============================================================================
 
-def run_cler_rollout(model: nn.Module, obs: np.ndarray, next_player: Player,
-                     first_action: int, temperature: float, device: torch.device) -> bool:
-    """
-    Run a single rollout from a position with a forced first move.
-
-    Args:
-        model: Policy network
-        obs: Observation at the decision point [3, 15, 15]
-        next_player: Player to move at decision point
-        first_action: Forced first action (flat index)
-        temperature: Rollout temperature
-        device: Torch device
-
-    Returns:
-        True if the player who made first_action wins, False otherwise
-    """
-    # Reconstruct board and apply first move
-    board = board_from_observation(obs, next_player)
-    row, col = idx_to_pos(first_action)
-    outcome = board.Move((row, col))
-
-    if outcome != GameState.CONTINUE:
-        # Game ended immediately
-        if outcome == GameState.DRAW:
-            return False  # Draw counts as loss for CLER purposes
-        return (outcome == GameState.BLACK_WIN and next_player == Player.BLACK) or \
-               (outcome == GameState.WHITE_WIN and next_player == Player.WHITE)
-
-    # Play out the rest of the game
-    while True:
-        legal_mask, current_player = board.GetLegalMoves()
-        c0, c1, _ = board.GetBoardState()
-        current_obs = encode_observation(c0, c1)
-
-        # Get action from model
-        actions = select_action_batch_eval(model, [current_obs], [legal_mask], temperature, device)
-        action = actions[0]
-
-        row, col = idx_to_pos(action)
-        outcome = board.Move((row, col))
-
-        if outcome != GameState.CONTINUE:
-            if outcome == GameState.DRAW:
-                return False
-            return (outcome == GameState.BLACK_WIN and next_player == Player.BLACK) or \
-                   (outcome == GameState.WHITE_WIN and next_player == Player.WHITE)
-
-
 def generate_cler_samples(trajectories: List[Trajectory],
                           current_is_black: List[bool],
-                          model: nn.Module,
+                          opponents: List[nn.Module],
+                          current_policy: nn.Module,
                           device: torch.device,
                           update: int = 0) -> Tuple[List[dict], dict]:
     """
     Generate Counterfactual Low-Entropy Rescue samples from lost games.
 
     For lost games, identifies steps where the policy was overconfident (low entropy)
-    but far from terminal. Tries alternative moves via rollouts to find better options.
+    but far from terminal. Tries alternative moves via batched rollouts to find better options.
+    Both original action and alternatives are evaluated with rollouts for fair comparison.
 
     Args:
         trajectories: List of game trajectories
         current_is_black: List indicating if current policy played as black
-        model: Policy network for rollouts
+        opponents: List of opponent models (one per trajectory)
+        current_policy: Current policy network
         device: Torch device
         update: Current update number
 
@@ -144,6 +100,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
         'cf_steps_candidates_total': 0,
         'cf_added_samples': 0,
         'cf_best_winrate_sum': 0.0,
+        'cf_orig_winrate_sum': 0.0,
         'cf_entropy_selected_sum': 0.0,
     }
 
@@ -151,9 +108,12 @@ def generate_cler_samples(trajectories: List[Trajectory],
     if update < CF_START_UPDATE:
         return cler_samples, metrics
 
-    model.eval()
+    current_policy.eval()
 
-    for traj, is_black in zip(trajectories, current_is_black):
+    # Phase 1: Collect all candidate (trajectory, step) pairs from lost games
+    candidate_info = []  # List of (traj_idx, t_star, obs, mask, player, original_action, alt_actions, black_model, white_model, selected_entropy)
+
+    for traj_idx, (traj, is_black, opponent) in enumerate(zip(trajectories, current_is_black, opponents)):
         # Only process losses for current policy
         outcome = traj.outcome
         is_loss = (outcome == GameState.BLACK_WIN and not is_black) or \
@@ -167,6 +127,12 @@ def generate_cler_samples(trajectories: List[Trajectory],
             continue
 
         metrics['cf_attempted_episodes'] += 1
+
+        # Determine black/white model assignment
+        if is_black:
+            black_model, white_model = current_policy, opponent
+        else:
+            black_model, white_model = opponent, current_policy
 
         # Find candidate steps: low entropy, far from terminal, current policy's turn
         T = len(traj.observations)
@@ -217,7 +183,6 @@ def generate_cler_samples(trajectories: List[Trajectory],
                 break
 
         t_star, _, selected_entropy = candidates[selected_idx]
-        metrics['cf_entropy_selected_sum'] += selected_entropy
 
         # Get state at t_star
         obs = traj.observations[t_star]
@@ -228,36 +193,94 @@ def generate_cler_samples(trajectories: List[Trajectory],
         # Get local candidate moves
         local_candidates = get_local_candidate_moves(obs, mask, radius=CF_RADIUS)
 
-        # Remove original action from candidates
-        local_candidates = [a for a in local_candidates if a != original_action]
+        # Remove original action from local candidates for alternatives
+        alt_candidates = [a for a in local_candidates if a != original_action]
 
-        if not local_candidates:
+        if not alt_candidates:
             continue
 
         # Sample up to CF_NUM_ACTIONS alternatives
-        if len(local_candidates) > CF_NUM_ACTIONS:
-            alt_actions = random.sample(local_candidates, CF_NUM_ACTIONS)
+        if len(alt_candidates) > CF_NUM_ACTIONS:
+            alt_actions = random.sample(alt_candidates, CF_NUM_ACTIONS)
         else:
-            alt_actions = local_candidates
+            alt_actions = alt_candidates
 
-        # Run rollouts for each alternative
+        candidate_info.append((
+            traj_idx, t_star, obs, mask, player, original_action, alt_actions,
+            black_model, white_model, selected_entropy
+        ))
+
+        # Stop collecting if we have enough candidates
+        if len(candidate_info) >= CF_MAX_SAMPLES_PER_UPDATE:
+            break
+
+    if not candidate_info:
+        current_policy.train()
+        return cler_samples, metrics
+
+    # Phase 2: Build all rollout configurations (original + alternatives, each repeated CF_NUM_ROLLOUTS times)
+    rollout_configs = []  # (obs, player, action, black_model, white_model)
+    rollout_metadata = []  # (candidate_idx, is_original, action)
+
+    for cand_idx, (_, _, obs, _, player, original_action, alt_actions, black_model, white_model, _) in enumerate(candidate_info):
+        # Add rollouts for original action
+        for _ in range(CF_NUM_ROLLOUTS):
+            rollout_configs.append((obs, player, original_action, black_model, white_model))
+            rollout_metadata.append((cand_idx, True, original_action))
+
+        # Add rollouts for each alternative action
+        for alt_action in alt_actions:
+            for _ in range(CF_NUM_ROLLOUTS):
+                rollout_configs.append((obs, player, alt_action, black_model, white_model))
+                rollout_metadata.append((cand_idx, False, alt_action))
+
+    # Phase 3: Execute all rollouts in batch
+    rollout_results = play_cler_rollouts_batched(
+        rollout_configs,
+        CF_ROLLOUT_TEMP,
+        device,
+        batch_size=BATCH_INFERENCE_SIZE,
+        select_action_fn=select_action_batch_eval
+    )
+
+    # Phase 4: Aggregate results and select best alternatives
+    # Group results by candidate
+    candidate_results = {}  # cand_idx -> {'original': [wins], 'alts': {action: [wins]}}
+    for (cand_idx, is_original, action), won in zip(rollout_metadata, rollout_results):
+        if cand_idx not in candidate_results:
+            candidate_results[cand_idx] = {'original_wins': 0, 'original_count': 0, 'alts': {}}
+
+        if is_original:
+            candidate_results[cand_idx]['original_wins'] += int(won)
+            candidate_results[cand_idx]['original_count'] += 1
+        else:
+            if action not in candidate_results[cand_idx]['alts']:
+                candidate_results[cand_idx]['alts'][action] = {'wins': 0, 'count': 0}
+            candidate_results[cand_idx]['alts'][action]['wins'] += int(won)
+            candidate_results[cand_idx]['alts'][action]['count'] += 1
+
+    # Phase 5: Create CLER samples for candidates that pass the threshold
+    for cand_idx, (traj_idx, t_star, obs, mask, player, original_action, alt_actions, _, _, selected_entropy) in enumerate(candidate_info):
+        if cand_idx not in candidate_results:
+            continue
+
+        results = candidate_results[cand_idx]
+        original_winrate = results['original_wins'] / max(results['original_count'], 1)
+
+        # Find best alternative
         best_action = None
         best_winrate = 0.0
-
-        for action in alt_actions:
-            wins = 0
-            for _ in range(CF_NUM_ROLLOUTS):
-                if run_cler_rollout(model, obs, player, action, CF_ROLLOUT_TEMP, device):
-                    wins += 1
-
-            winrate = wins / CF_NUM_ROLLOUTS
+        for action, stats in results['alts'].items():
+            winrate = stats['wins'] / max(stats['count'], 1)
             if winrate > best_winrate:
                 best_winrate = winrate
                 best_action = action
 
-        # Check if best alternative passes threshold
-        if best_winrate >= CF_MIN_ADD_WINRATE and best_action is not None:
+        # Check if best alternative exceeds original by margin
+        margin = best_winrate - original_winrate
+        if margin >= CF_WIN_MARGIN and best_action is not None:
             # Compute weight (same as step weight from original trajectory)
+            traj = trajectories[traj_idx]
             current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
             step_weight = (1.0 / (current_steps ** EPISODE_WEIGHT_ALPHA)) / 8.0
 
@@ -265,21 +288,16 @@ def generate_cler_samples(trajectories: List[Trajectory],
                 'obs': obs,
                 'action': best_action,
                 'mask': mask,
-                'strength': best_winrate * CF_ADVANTAGE,
+                'strength': margin * CF_ADVANTAGE,
                 'weight': step_weight,
             })
 
             metrics['cf_added_samples'] += 1
             metrics['cf_best_winrate_sum'] += best_winrate
+            metrics['cf_orig_winrate_sum'] += original_winrate
+            metrics['cf_entropy_selected_sum'] += selected_entropy
 
-            # Limit samples per update
-            if len(cler_samples) >= CF_MAX_SAMPLES_PER_UPDATE:
-                break
-
-        if len(cler_samples) >= CF_MAX_SAMPLES_PER_UPDATE:
-            break
-
-    model.train()
+    current_policy.train()
 
     return cler_samples, metrics
 
@@ -1461,7 +1479,7 @@ def main():
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
     print(f"    - SE schedule: {SE_SCHEDULE} ({sum(SE_SCHEDULE)} blocks with SE)")
     print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (+SiLU) -> 225")
-    print(f"  Value head: {WIDTH} -> {VALUE_HEAD_CHANNELS} (+SiLU) -> fc{VALUE_HEAD_HIDDEN} -> 1")
+    print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
     num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
 
     print(f"Training configuration:")
@@ -1561,7 +1579,7 @@ def main():
         'tactics_synthetic_blocks': [], 'imitation_black': [], 'imitation_white': [],
         'win_miss_ema': [], 'block_miss_ema': [], 'win_boost': [], 'block_boost': [],
         'cler_attempted': [], 'cler_candidates': [], 'cler_added': [],
-        'cler_winrate_sum': [], 'cler_entropy_sum': []
+        'cler_winrate_sum': [], 'cler_orig_winrate_sum': [], 'cler_entropy_sum': []
     }
 
     training_start_time = time.time()
@@ -1581,10 +1599,12 @@ def main():
         pairs = []
         current_is_black = []
         opening_ids = []
+        episode_opponents = []  # Track opponent for each episode (for CLER)
         num_openings = len(RENJU_OPENING_SEQUENCES)
         for _ in range(EPISODES_PER_UPDATE):
             # Use difficulty-weighted sampling instead of uniform
             opponent = sample_opponent_weighted(opponent_pool, opponent_pool_updates, per_opponent_win_rates)
+            episode_opponents.append(opponent)
             if random.random() < 0.5:
                 pairs.append((current_policy, opponent))
                 current_is_black.append(True)
@@ -1617,7 +1637,9 @@ def main():
         block_boost = BLOCK_MIN_BOOST + (1.0 - block_hit_rate_ema ** 2) * (BLOCK_MAX_BOOST - BLOCK_MIN_BOOST)
 
         # Generate CLER samples from lost games
-        cler_samples, cler_metrics = generate_cler_samples(trajectories, current_is_black, current_policy, DEVICE, update)
+        cler_samples, cler_metrics = generate_cler_samples(
+            trajectories, current_is_black, episode_opponents, current_policy, DEVICE, update
+        )
 
         t0 = time.time()
         loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss, num_cler, probe_metrics = train_on_batch(
@@ -1672,6 +1694,7 @@ def main():
         metric_buffer['cler_candidates'].append(cler_metrics['cf_steps_candidates_total'])
         metric_buffer['cler_added'].append(cler_metrics['cf_added_samples'])
         metric_buffer['cler_winrate_sum'].append(cler_metrics['cf_best_winrate_sum'])
+        metric_buffer['cler_orig_winrate_sum'].append(cler_metrics['cf_orig_winrate_sum'])
         metric_buffer['cler_entropy_sum'].append(cler_metrics['cf_entropy_selected_sum'])
 
         if (update + 1) % PRINT_INTERVAL == 0:
@@ -1708,9 +1731,11 @@ def main():
             total_cler_candidates = sum(metric_buffer['cler_candidates'])
             total_cler_added = sum(metric_buffer['cler_added'])
             total_cler_winrate_sum = sum(metric_buffer['cler_winrate_sum'])
+            total_cler_orig_winrate_sum = sum(metric_buffer['cler_orig_winrate_sum'])
             total_cler_entropy_sum = sum(metric_buffer['cler_entropy_sum'])
             avg_cler_candidates = total_cler_candidates / max(total_cler_attempted, 1)
             avg_cler_winrate = total_cler_winrate_sum / max(total_cler_added, 1)
+            avg_cler_orig_winrate = total_cler_orig_winrate_sum / max(total_cler_added, 1)
             avg_cler_entropy = total_cler_entropy_sum / max(total_cler_added, 1)
 
             elapsed_time = time.time() - training_start_time
@@ -1767,6 +1792,7 @@ def main():
                 'cf_candidates_avg': avg_cler_candidates,
                 'cf_added': total_cler_added,
                 'cf_winrate_avg': avg_cler_winrate,
+                'cf_orig_winrate_avg': avg_cler_orig_winrate,
                 'cf_entropy_avg': avg_cler_entropy,
                 'time_total': avg_time,
                 'time_selfplay': avg_selfplay_time,
