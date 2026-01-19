@@ -42,8 +42,8 @@ from model import (
     POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN,
     LEARNING_RATE, MIN_LR, LR_DECAY, WEIGHT_DECAY, GRAD_CLIP_NORM,
     EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE, BATCH_INFERENCE_SIZE, TRAIN_BATCH_SIZE,
-    TEMPERATURE_TRAIN, ENTROPY_COEFF_START, ENTROPY_COEFF_END,
-    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS,
+    TEMPERATURE_TRAIN, ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
+    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, ENTROPY_EMA_LAMBDA,
     VALUE_LOSS_COEFF, GAE_LAMBDA, VALUE_BASELINE_START,
     MISS_RATE_EMA_WINDOW, WIN_MIN_BOOST, WIN_MAX_BOOST, BLOCK_MIN_BOOST, BLOCK_MAX_BOOST,
     SYNTHETIC_WIN_BOOST, SYNTHETIC_BLOCKING_BOOST, MAX_SYNTHETIC_WINS, MAX_SYNTHETIC_BLOCKS,
@@ -452,7 +452,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              update: int = 0,
                              win_boost: float = 0.0,
                              block_boost: float = 0.0,
-                             cler_samples: List[dict] = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
+                             cler_samples: List[dict] = None,
+                             ema_entropy: float = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
     """
     Internal training function - processes a batch of trajectories.
 
@@ -667,11 +668,11 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     value_loss_mask_global = ~aug_is_synthetic
     global_value_normalizer = (aug_weights * value_loss_mask_global.float()).sum().item()
 
-    # Entropy coefficient with sigmoid decay
+    # Target entropy with sigmoid decay (higher at start, lower at end)
     midpoint = TOTAL_UPDATES * ENTROPY_DECAY_MIDPOINT_PERCENTAGE
     steepness_k = 3.0 / (TOTAL_UPDATES * ENTROPY_DECAY_STEEPNESS)
     sigmoid_factor = (1.0 - torch.tanh(torch.tensor(steepness_k * (update - midpoint)))) / 2.0
-    current_entropy_coeff = ENTROPY_COEFF_END + (ENTROPY_COEFF_START - ENTROPY_COEFF_END) * sigmoid_factor.item()
+    target_entropy = ENTROPY_TARGET_END + (ENTROPY_TARGET_START - ENTROPY_TARGET_END) * sigmoid_factor.item()
 
     accumulated_loss = 0.0
     accumulated_value_loss = 0.0
@@ -732,13 +733,17 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         value_loss_mb = (batch_weights * batch_value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
 
         policy_loss_mb = -(batch_weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+
+        # Adaptive entropy bonus based on EMA: stronger when EMA entropy is below target
+        # bonus_scale = max(0, target - ema_entropy), scales the entropy gradient
+        entropy_bonus_scale = max(0.0, target_entropy - ema_entropy) if ema_entropy is not None else 1.0
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         # Gradient conflict probing (only on first micro-batch)
         if probe_metrics is None and PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0 and batch_start == 0:
             probe_metrics = probe_gradient_conflict(model, policy_loss_mb, value_loss_mb, update)
 
-        loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + current_entropy_coeff * entropy_loss_mb) / num_accumulation_steps
+        loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
         loss_mb.backward()
 
         accumulated_loss += loss_mb.item()
@@ -771,7 +776,8 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    update: int = 0,
                    win_boost: float = 0.0,
                    block_boost: float = 0.0,
-                   cler_samples: List[dict] = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
+                   cler_samples: List[dict] = None,
+                   ema_entropy: float = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
     """Train on a batch of trajectories with gradient accumulation."""
     if len(trajectories) == 0:
         return 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None
@@ -814,7 +820,8 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             update=update,
             win_boost=win_boost,
             block_boost=block_boost,
-            cler_samples=chunk_cler_samples
+            cler_samples=chunk_cler_samples,
+            ema_entropy=ema_entropy
         )
 
         # Collect probe metrics from first chunk only
@@ -1485,8 +1492,8 @@ def main():
     print(f"Training configuration:")
     print(f"  Learning rate: {LEARNING_RATE} (decay: {LR_DECAY}, min: {MIN_LR})")
     print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
-    print(f"    Entropy coefficient: {ENTROPY_COEFF_START} -> {ENTROPY_COEFF_END} (sigmoid: mid={ENTROPY_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={ENTROPY_DECAY_STEEPNESS:.0%})")
-    print(f"    Effective strength: {ENTROPY_COEFF_START/TEMPERATURE_TRAIN:.2e} -> {ENTROPY_COEFF_END/TEMPERATURE_TRAIN:.2e} (scaled by 1/T)")
+    print(f"    Target entropy: {ENTROPY_TARGET_START} -> {ENTROPY_TARGET_END} nats (sigmoid: mid={ENTROPY_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={ENTROPY_DECAY_STEEPNESS:.0%})")
+    print(f"    Bonus: coeff={ENTROPY_BONUS_COEFF}, EMA lambda={ENTROPY_EMA_LAMBDA}")
     print(f"  Episodes per update: {EPISODES_PER_UPDATE} (chunks: {effective_chunk_size} x {num_accumulation_steps} accumulation steps)")
     print(f"  Batch inference size (self-play): {BATCH_INFERENCE_SIZE}")
     print(f"  Batch size (training): {TRAIN_BATCH_SIZE}")
@@ -1582,6 +1589,9 @@ def main():
         'cler_winrate_sum': [], 'cler_orig_winrate_sum': [], 'cler_entropy_sum': []
     }
 
+    # Entropy EMA for adaptive entropy bonus (initialized to target start)
+    ema_entropy = ENTROPY_TARGET_START
+
     training_start_time = time.time()
 
     if resume_result is not None:
@@ -1644,9 +1654,12 @@ def main():
         t0 = time.time()
         loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss, num_cler, probe_metrics = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
-            win_boost=win_boost, block_boost=block_boost, cler_samples=cler_samples
+            win_boost=win_boost, block_boost=block_boost, cler_samples=cler_samples, ema_entropy=ema_entropy
         )
         t_train = time.time() - t0
+
+        # Update entropy EMA
+        ema_entropy = ENTROPY_EMA_LAMBDA * mean_entropy + (1.0 - ENTROPY_EMA_LAMBDA) * ema_entropy
 
         # Log gradient probe if metrics collected
         if probe_metrics is not None:

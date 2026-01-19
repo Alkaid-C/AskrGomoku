@@ -1,4 +1,5 @@
 *.pt
-*log*
+*.log
 *.json
 __pycache__
+jan*

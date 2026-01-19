@@ -21,15 +21,15 @@ from typing import List, Tuple
 TOTAL_UPDATES = 65536
 
 # --- Model Architecture ---
-N_BLOCKS = 16              # Number of residual blocks
-WIDTH = 96                 # Residual block width (must equal sum of all stem channels)
-STEM_3X3_CHANNELS = 6 * 6      # 3x3 convolution channels in stem
+N_BLOCKS = 16                     # Number of residual blocks
+WIDTH = 96                        # Residual block width (must equal sum of all stem channels)
+STEM_3X3_CHANNELS = 6 * 6         # 3x3 convolution channels in stem
 STEM_SPARSE_5X5_CHANNELS = 3 * 6  # Sparse 5x5 (dilated 3x3 sum) channels in stem
 STEM_DENSE_5X5_CHANNELS = 2 * 6   # Dense 5x5 convolution channels in stem
 STEM_SPARSE_7X7_CHANNELS = 3 * 6  # Sparse 7x7 (dilated 3x3 sum) channels in stem
 STEM_DENSE_7X7_CHANNELS = 1 * 6   # Dense 7x7 convolution channels in stem
 STEM_1x1_CHANNELS = 1 * 6
-GROUPNORM_GROUPS = 16       # Groups for GroupNorm layers (must divide WIDTH evenly)
+GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
 
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
 TRUNK_DILATION2_SCHEDULE = [
@@ -47,43 +47,47 @@ SE_SCHEDULE = [
 ]
 
 # Head
-POLICY_HEAD_D = 128           # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 256  # Policy head global MLP hidden size (h)
-VALUE_HEAD_C1 = 128           # Layer 1: 96 -> 128
-VALUE_HEAD_C2_SPLIT = 128     # Layer 2: 128 -> 128(d1) + 128(d2) = 256
-VALUE_HEAD_HIDDEN = 256       # FC: 256 -> 256 -> 1
+POLICY_HEAD_D = 128            # Policy head intermediate channels (d_p)
+POLICY_HEAD_MLP_HIDDEN = 256   # Policy head global MLP hidden size (h)
+VALUE_HEAD_C1 = 128            # Layer 1: 96 -> 128
+VALUE_HEAD_C2_SPLIT = 128      # Layer 2: 128 -> 128(d1) + 128(d2) = 256
+VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
 
 # --- Optimizer & Learning Rate ---
-LEARNING_RATE = 4e-4
+LEARNING_RATE = 5e-4
 MIN_LR = 1e-4
 LR_DECAY = (MIN_LR / LEARNING_RATE) ** (1.0 / TOTAL_UPDATES)  # Derived
 WEIGHT_DECAY = 1e-8
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 64    # Episodes to collect before each training update
-EPISODES_CHUNK_SIZE = 32    # Chunk size for gradient accumulation (saves VRAM)
-BATCH_INFERENCE_SIZE = 64   # Positions processed simultaneously during self-play
-TRAIN_BATCH_SIZE = 1024     # Micro-batch size for training
+EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
+EPISODES_CHUNK_SIZE = 32       # Chunk size for gradient accumulation (saves VRAM)
+BATCH_INFERENCE_SIZE = 64      # Positions processed simultaneously during self-play
+TRAIN_BATCH_SIZE = 1024        # Micro-batch size for training
 
 # --- Exploration & Entropy ---
-TEMPERATURE_TRAIN = 1.25    # Flattens sampling distribution
-ENTROPY_COEFF_START = 1e-3  # Compensated for 1/T gradient scaling
-ENTROPY_COEFF_END = 1e-5    # Final entropy coefficient
+TEMPERATURE_TRAIN = 1.25       # Flattens sampling distribution
+# Adaptive entropy bonus: bonus = coeff * max(0, target - current_entropy)
+# When entropy is low, bonus is high; when entropy >= target, bonus is zero
+ENTROPY_TARGET_START = 1.25    # Target entropy at start (nats)
+ENTROPY_TARGET_END = 0.5       # Target entropy at end (nats)
+ENTROPY_BONUS_COEFF = 1/128.0  # Coefficient for entropy bonus
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Transition occurs at 75% of training
 ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training duration
+ENTROPY_EMA_LAMBDA = 1/16.0    # EMA update rate for entropy tracking
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF = 0.5      # Weight for value head loss
-GAE_LAMBDA = 0.95           # GAE lambda (0=TD(0), 1=MC)
-VALUE_BASELINE_START = 512 # Update at which to start using value baseline
+VALUE_LOSS_COEFF = 0.5         # Weight for value head loss
+GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
+VALUE_BASELINE_START = 512     # Update at which to start using value baseline
 
 # --- Tactical Enhancements ---
-MISS_RATE_EMA_WINDOW = 128  # Effective window for miss rate EMA
-WIN_MIN_BOOST = 0.0         # Minimum boost for win-in-1 (when miss rate is 0)
-WIN_MAX_BOOST = 1.0         # Maximum boost for win-in-1 (when miss rate is 1)
-BLOCK_MIN_BOOST = 0.0       # Minimum boost for blocking (when miss rate is 0)
-BLOCK_MAX_BOOST = 0.75      # Maximum boost for blocking (when miss rate is 1)
+MISS_RATE_EMA_WINDOW = 128     # Effective window for miss rate EMA
+WIN_MIN_BOOST = 0.0            # Minimum boost for win-in-1 (when miss rate is 0)
+WIN_MAX_BOOST = 1.0            # Maximum boost for win-in-1 (when miss rate is 1)
+BLOCK_MIN_BOOST = 0.0          # Minimum boost for blocking (when miss rate is 0)
+BLOCK_MAX_BOOST = 0.75         # Maximum boost for blocking (when miss rate is 1)
 
 SYNTHETIC_WIN_BOOST = 2.0   # Signal for missed win-in-1 (synthetic examples)
 SYNTHETIC_BLOCKING_BOOST = 1.5  # Signal for missed blocks (synthetic examples)
@@ -92,7 +96,7 @@ MAX_SYNTHETIC_BLOCKS = 256  # Max synthetic blocking examples per batch
 EPISODE_WEIGHT_ALPHA = 0.5  # 0 => per-step weighting, 1 => per-episode equal mass
 
 # --- Imitation Learning ---
-IMITATION_WEIGHT = 0.6      # Weight for learning from opponent's winning moves
+IMITATION_WEIGHT = 0.6           # Weight for learning from opponent's winning moves
 IMITATION_START_UPDATE = 128 * 6 # Update at which to enable imitation learning
 
 # --- Counterfactual Low-Entropy Rescue (CLER) ---
