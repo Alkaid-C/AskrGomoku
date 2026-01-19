@@ -46,9 +46,9 @@ SE_SCHEDULE = [
     True, True, False, False,
 ]
 POLICY_HEAD_D = 64          # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 64 # Policy head global MLP hidden size (h)
-VALUE_HEAD_CHANNELS = 16    # Channels after value head 1x1 conv (d)
-VALUE_HEAD_HIDDEN = 96      # Hidden layer size for value head MLP
+POLICY_HEAD_MLP_HIDDEN = 128 # Policy head global MLP hidden size (h)
+VALUE_HEAD_CHANNELS = 32    # Channels after value head 1x1 conv (d)
+VALUE_HEAD_HIDDEN = 128      # Hidden layer size for value head MLP
 
 # --- Optimizer & Learning Rate ---
 LEARNING_RATE = 4e-4
@@ -90,7 +90,20 @@ EPISODE_WEIGHT_ALPHA = 0.5  # 0 => per-step weighting, 1 => per-episode equal ma
 
 # --- Imitation Learning ---
 IMITATION_WEIGHT = 0.6      # Weight for learning from opponent's winning moves
-IMITATION_START_UPDATE = 1024  # Update at which to enable imitation learning
+IMITATION_START_UPDATE = 128 * 6 # Update at which to enable imitation learning
+
+# --- Counterfactual Low-Entropy Rescue (CLER) ---
+CF_START_UPDATE = 128 * 6       # Update at which to enable CLER
+CF_TRIGGER_PROB = 0.15          # Probability of triggering CLER on a lost game
+CF_ADVANTAGE = 0.75             # Strength multiplier for CLER samples
+CF_MIN_STEPS_TO_END = 5         # Minimum steps from terminal to consider
+CF_ENTROPY_TH = 0.5             # Entropy threshold (nats) - below this is "overconfident"
+CF_RADIUS = 2                   # Manhattan distance for local candidate moves
+CF_NUM_ACTIONS = 8              # Number of alternative actions to evaluate
+CF_NUM_ROLLOUTS = 8             # Rollouts per alternative action
+CF_MIN_ADD_WINRATE = 0.625       # Minimum winrate to add synthetic sample (5/8)
+CF_MAX_SAMPLES_PER_UPDATE = 128 # Max CLER samples per training update
+CF_ROLLOUT_TEMP = 1.0     # Temperature for CLER rollouts
 
 # --- Opening Seeding ---
 SEED_PROBABILITY = 0.25         # Probability of starting from a Renju opening
@@ -124,6 +137,9 @@ LOGIT_MASK_VALUE = -1e9
 # --- Logging & Checkpointing ---
 PRINT_INTERVAL = 8         # Print stats every N updates
 TRAINING_STATE_FILE = "training_state.json"
+
+# --- Gradient Conflict Probing ---
+PROBE_INTERVAL = 64        # Probe gradient conflict every N updates (0 = disable)
 
 # ============================================================================
 # PyTorch Performance Settings
@@ -366,15 +382,15 @@ def mask_batch_to_tensor(mask_list: List[np.ndarray], device: torch.device) -> t
 def select_action_batch(model: nn.Module, obs_list: List[np.ndarray],
                         mask_list: List[np.ndarray],
                         temperature: float, device: torch.device,
-                        deterministic: bool = False) -> Tuple[List[int], List[float]]:
+                        deterministic: bool = False) -> Tuple[List[int], List[float], List[float]]:
     """
     Select actions for a batch of positions using the policy network.
 
     Returns:
-        Tuple of (actions, log_probs)
+        Tuple of (actions, log_probs, entropies)
     """
     if len(obs_list) == 0:
-        return [], []
+        return [], [], []
 
     with torch.no_grad():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
@@ -403,7 +419,10 @@ def select_action_batch(model: nn.Module, obs_list: List[np.ndarray],
             log_probs = dist.log_prob(actions_tensor)
             log_probs = torch.clamp(log_probs, min=LOG_PROB_MIN).cpu().numpy().tolist()
 
-    return actions, log_probs
+        # Compute entropy for CLER (in nats, using temperature-scaled distribution)
+        entropies = dist.entropy().cpu().numpy().tolist()
+
+    return actions, log_probs, entropies
 
 
 def select_action_batch_eval(model: nn.Module, obs_list: List[np.ndarray],

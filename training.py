@@ -19,11 +19,16 @@ import json
 import os
 import glob
 import re
+import argparse
+
+from csv_logger import CSVLogger
 
 from gomoku_selfplay import (
     Player, GameState, Trajectory,
     play_episodes_batched, play_eval_games, augment_batch_gpu,
     find_all_win_in_1, find_blocking_moves,
+    compute_returns, compute_gae_for_trajectories, compute_outcome_stats,
+    board_from_observation, get_local_candidate_moves, idx_to_pos, encode_observation,
     RENJU_OPENING_SEQUENCES
 )
 
@@ -42,6 +47,9 @@ from model import (
     MISS_RATE_EMA_WINDOW, WIN_MIN_BOOST, WIN_MAX_BOOST, BLOCK_MIN_BOOST, BLOCK_MAX_BOOST,
     SYNTHETIC_WIN_BOOST, SYNTHETIC_BLOCKING_BOOST, MAX_SYNTHETIC_WINS, MAX_SYNTHETIC_BLOCKS,
     EPISODE_WEIGHT_ALPHA, IMITATION_WEIGHT, IMITATION_START_UPDATE,
+    CF_START_UPDATE, CF_TRIGGER_PROB, CF_ADVANTAGE, CF_MIN_STEPS_TO_END, CF_ENTROPY_TH,
+    CF_RADIUS, CF_NUM_ACTIONS, CF_NUM_ROLLOUTS, CF_MIN_ADD_WINRATE,
+    CF_MAX_SAMPLES_PER_UPDATE, CF_ROLLOUT_TEMP,
     SEED_PROBABILITY,
     OPPONENT_POOL_SIZE, EVAL_ROUNDS, EVAL_TEMP,
     EVAL_INTERVAL_EARLY, EVAL_INTERVAL_MID, EVAL_INTERVAL_LATE, WIN_RATE_THRESHOLD,
@@ -49,139 +57,370 @@ from model import (
     QUICK_SCREEN_ROUNDS, TOP_K_QUICK_SCREEN, FINAL_SCREEN_ROUNDS, MAX_MINED_OPPONENTS_PER_EVENT,
     UNIFORM_SAMPLING_FRACTION, DEFAULT_WIN_RATE,
     LOG_PROB_MIN, LOGIT_MASK_VALUE,
-    PRINT_INTERVAL, TRAINING_STATE_FILE, DEVICE,
+    PRINT_INTERVAL, TRAINING_STATE_FILE, PROBE_INTERVAL, DEVICE,
     # Classes and functions
     GomokuPolicyNet, zero_center_taps,
     obs_batch_to_tensor, mask_batch_to_tensor, select_action_batch, select_action_batch_eval
 )
 
 # ============================================================================
-# Trajectory Processing
+# Counterfactual Low-Entropy Rescue (CLER)
 # ============================================================================
 
-def compute_returns(traj: Trajectory) -> List[float]:
+def run_cler_rollout(model: nn.Module, obs: np.ndarray, next_player: Player,
+                     first_action: int, temperature: float, device: torch.device) -> bool:
     """
-    Compute per-step returns from trajectory.
+    Run a single rollout from a position with a forced first move.
 
-    Returns z_t for each step t: +1 if player_t won, -1 if lost, 0 if draw.
+    Args:
+        model: Policy network
+        obs: Observation at the decision point [3, 15, 15]
+        next_player: Player to move at decision point
+        first_action: Forced first action (flat index)
+        temperature: Rollout temperature
+        device: Torch device
+
+    Returns:
+        True if the player who made first_action wins, False otherwise
     """
-    returns = []
-    outcome = traj.outcome
+    # Reconstruct board and apply first move
+    board = board_from_observation(obs, next_player)
+    row, col = idx_to_pos(first_action)
+    outcome = board.Move((row, col))
 
-    if outcome == GameState.DRAW:
-        winner = None
-    elif outcome == GameState.BLACK_WIN:
-        winner = Player.BLACK
-    elif outcome == GameState.WHITE_WIN:
-        winner = Player.WHITE
-    else:
-        raise ValueError(f"Invalid outcome: {outcome}")
+    if outcome != GameState.CONTINUE:
+        # Game ended immediately
+        if outcome == GameState.DRAW:
+            return False  # Draw counts as loss for CLER purposes
+        return (outcome == GameState.BLACK_WIN and next_player == Player.BLACK) or \
+               (outcome == GameState.WHITE_WIN and next_player == Player.WHITE)
 
-    for player_t in traj.players:
-        if winner is None:
-            z_t = 0.0
-        elif winner == player_t:
-            z_t = 1.0
-        else:
-            z_t = -1.0
-        returns.append(z_t)
+    # Play out the rest of the game
+    while True:
+        legal_mask, current_player = board.GetLegalMoves()
+        c0, c1, _ = board.GetBoardState()
+        current_obs = encode_observation(c0, c1)
 
-    return returns
+        # Get action from model
+        actions = select_action_batch_eval(model, [current_obs], [legal_mask], temperature, device)
+        action = actions[0]
+
+        row, col = idx_to_pos(action)
+        outcome = board.Move((row, col))
+
+        if outcome != GameState.CONTINUE:
+            if outcome == GameState.DRAW:
+                return False
+            return (outcome == GameState.BLACK_WIN and next_player == Player.BLACK) or \
+                   (outcome == GameState.WHITE_WIN and next_player == Player.WHITE)
 
 
-def compute_gae_for_trajectories(model: nn.Module, trajectories: List[Trajectory],
-                                   device: torch.device, gae_lambda: float) -> List[np.ndarray]:
+def generate_cler_samples(trajectories: List[Trajectory],
+                          current_is_black: List[bool],
+                          model: nn.Module,
+                          device: torch.device,
+                          update: int = 0) -> Tuple[List[dict], dict]:
     """
-    Compute GAE advantages for all trajectories.
+    Generate Counterfactual Low-Entropy Rescue samples from lost games.
 
-    For two-player games with canonical representation:
-        delta_n = -V(S_{n+1}) - V(S_n) for non-terminal
-        delta_n = z - V(S_n) for terminal
-        A_n = delta_n - lambda * A_{n+1}
+    For lost games, identifies steps where the policy was overconfident (low entropy)
+    but far from terminal. Tries alternative moves via rollouts to find better options.
+
+    Args:
+        trajectories: List of game trajectories
+        current_is_black: List indicating if current policy played as black
+        model: Policy network for rollouts
+        device: Torch device
+        update: Current update number
+
+    Returns:
+        Tuple of (cler_samples, metrics) where:
+        - cler_samples: List of dicts with keys: obs, action, mask, strength, weight
+        - metrics: Dict with logging metrics
     """
-    all_gae = []
-
-    for traj in trajectories:
-        T = len(traj.observations)
-        if T == 0:
-            all_gae.append(np.array([]))
-            continue
-
-        obs_tensor = obs_batch_to_tensor(traj.observations, device)
-        with torch.no_grad():
-            _, values = model(obs_tensor)
-        values = values.squeeze(1).cpu().numpy()
-
-        returns = compute_returns(traj)
-
-        gae_advantages = np.zeros(T, dtype=np.float32)
-        gae = 0.0
-
-        for t in reversed(range(T)):
-            if t == T - 1:
-                delta = returns[t] - values[t]
-            else:
-                delta = -values[t + 1] - values[t]
-
-            gae = delta - gae_lambda * gae
-            gae_advantages[t] = gae
-
-        all_gae.append(gae_advantages)
-
-    return all_gae
-
-
-def compute_outcome_stats(trajectories: List[Trajectory], current_is_black: List[bool]) -> dict:
-    """Compute statistics about game outcomes from current policy's perspective."""
-    current_wins = 0
-    current_losses = 0
-    draws = 0
-    total_steps = []
-
-    wins_as_black = 0
-    wins_as_white = 0
-    games_as_black = 0
-    games_as_white = 0
-
-    for traj, is_black in zip(trajectories, current_is_black):
-        total_steps.append(len(traj.actions))
-
-        if is_black:
-            games_as_black += 1
-        else:
-            games_as_white += 1
-
-        if traj.outcome == GameState.DRAW:
-            draws += 1
-        elif traj.outcome == GameState.BLACK_WIN:
-            if is_black:
-                current_wins += 1
-                wins_as_black += 1
-            else:
-                current_losses += 1
-        elif traj.outcome == GameState.WHITE_WIN:
-            if not is_black:
-                current_wins += 1
-                wins_as_white += 1
-            else:
-                current_losses += 1
-
-    total_games = len(trajectories)
-    win_rate = current_wins / total_games if total_games > 0 else 0
-    win_rate_as_black = wins_as_black / games_as_black if games_as_black > 0 else 0
-    win_rate_as_white = wins_as_white / games_as_white if games_as_white > 0 else 0
-
-    return {
-        'wins': current_wins,
-        'losses': current_losses,
-        'draws': draws,
-        'win_rate': win_rate,
-        'win_rate_as_black': win_rate_as_black,
-        'win_rate_as_white': win_rate_as_white,
-        'avg_length': np.mean(total_steps) if total_steps else 0,
-        'draw_rate': draws / total_games if total_games else 0
+    cler_samples = []
+    metrics = {
+        'cf_attempted_episodes': 0,
+        'cf_steps_candidates_total': 0,
+        'cf_added_samples': 0,
+        'cf_best_winrate_sum': 0.0,
+        'cf_entropy_selected_sum': 0.0,
     }
 
+    # Skip if before start update
+    if update < CF_START_UPDATE:
+        return cler_samples, metrics
+
+    model.eval()
+
+    for traj, is_black in zip(trajectories, current_is_black):
+        # Only process losses for current policy
+        outcome = traj.outcome
+        is_loss = (outcome == GameState.BLACK_WIN and not is_black) or \
+                  (outcome == GameState.WHITE_WIN and is_black)
+
+        if not is_loss:
+            continue
+
+        # Trigger with probability
+        if random.random() > CF_TRIGGER_PROB:
+            continue
+
+        metrics['cf_attempted_episodes'] += 1
+
+        # Find candidate steps: low entropy, far from terminal, current policy's turn
+        T = len(traj.observations)
+        candidates = []
+
+        for t in range(T):
+            # Check if current policy's turn
+            if not traj.is_current_policy[t]:
+                continue
+
+            # Check steps to end
+            steps_to_end = T - t - 1
+            if steps_to_end < CF_MIN_STEPS_TO_END:
+                continue
+
+            # Check entropy threshold
+            entropy = traj.entropies[t]
+            if entropy >= CF_ENTROPY_TH:
+                continue
+
+            # Skip if tactical position (already handled by tactical bonuses)
+            obs = traj.observations[t]
+            mask = traj.legal_masks[t]
+            if find_all_win_in_1(obs, mask):
+                continue
+            if find_blocking_moves(obs, mask) is not None:
+                continue
+
+            # Weight: lower entropy = higher weight
+            weight = CF_ENTROPY_TH - entropy
+            candidates.append((t, weight, entropy))
+
+        metrics['cf_steps_candidates_total'] += len(candidates)
+
+        if not candidates:
+            continue
+
+        # Weighted sample one step
+        weights = [c[1] for c in candidates]
+        total_weight = sum(weights)
+        r = random.random() * total_weight
+        cumsum = 0.0
+        selected_idx = 0
+        for i, w in enumerate(weights):
+            cumsum += w
+            if r <= cumsum:
+                selected_idx = i
+                break
+
+        t_star, _, selected_entropy = candidates[selected_idx]
+        metrics['cf_entropy_selected_sum'] += selected_entropy
+
+        # Get state at t_star
+        obs = traj.observations[t_star]
+        mask = traj.legal_masks[t_star]
+        player = traj.players[t_star]
+        original_action = traj.actions[t_star]
+
+        # Get local candidate moves
+        local_candidates = get_local_candidate_moves(obs, mask, radius=CF_RADIUS)
+
+        # Remove original action from candidates
+        local_candidates = [a for a in local_candidates if a != original_action]
+
+        if not local_candidates:
+            continue
+
+        # Sample up to CF_NUM_ACTIONS alternatives
+        if len(local_candidates) > CF_NUM_ACTIONS:
+            alt_actions = random.sample(local_candidates, CF_NUM_ACTIONS)
+        else:
+            alt_actions = local_candidates
+
+        # Run rollouts for each alternative
+        best_action = None
+        best_winrate = 0.0
+
+        for action in alt_actions:
+            wins = 0
+            for _ in range(CF_NUM_ROLLOUTS):
+                if run_cler_rollout(model, obs, player, action, CF_ROLLOUT_TEMP, device):
+                    wins += 1
+
+            winrate = wins / CF_NUM_ROLLOUTS
+            if winrate > best_winrate:
+                best_winrate = winrate
+                best_action = action
+
+        # Check if best alternative passes threshold
+        if best_winrate >= CF_MIN_ADD_WINRATE and best_action is not None:
+            # Compute weight (same as step weight from original trajectory)
+            current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
+            step_weight = (1.0 / (current_steps ** EPISODE_WEIGHT_ALPHA)) / 8.0
+
+            cler_samples.append({
+                'obs': obs,
+                'action': best_action,
+                'mask': mask,
+                'strength': best_winrate * CF_ADVANTAGE,
+                'weight': step_weight,
+            })
+
+            metrics['cf_added_samples'] += 1
+            metrics['cf_best_winrate_sum'] += best_winrate
+
+            # Limit samples per update
+            if len(cler_samples) >= CF_MAX_SAMPLES_PER_UPDATE:
+                break
+
+        if len(cler_samples) >= CF_MAX_SAMPLES_PER_UPDATE:
+            break
+
+    model.train()
+
+    return cler_samples, metrics
+
+
+# ============================================================================
+# Gradient Conflict Probing
+# ============================================================================
+
+def probe_gradient_conflict(model: nn.Module, policy_loss: torch.Tensor,
+                             value_loss: torch.Tensor, update: int) -> Dict[str, float]:
+    """
+    Probe gradient conflict between policy and value losses.
+
+    Computes cosine similarity between policy gradients and value gradients
+    for different parts of the network:
+    - Stem
+    - Trunk blocks 0-3, 4-7, 8-11, 12-15
+    - Overall (all trunk + stem)
+
+    Args:
+        model: The neural network model
+        policy_loss: Policy loss tensor (single scalar)
+        value_loss: Value loss tensor (single scalar)
+        update: Current update number (for logging)
+
+    Returns:
+        Dictionary containing gradient conflict metrics
+    """
+    # Temporarily save current gradients (if any) and zero them
+    saved_grads = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            saved_grads[name] = param.grad.clone()
+            param.grad = None
+
+    # Compute policy gradients
+    policy_loss.backward(retain_graph=True)
+    policy_grads = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            policy_grads[name] = param.grad.clone()
+
+    # Zero gradients and compute value gradients
+    model.zero_grad()
+    value_loss.backward(retain_graph=True)
+    value_grads = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            value_grads[name] = param.grad.clone()
+
+    # Helper function to compute cosine similarity
+    def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
+        """
+        Compute cosine similarity between two gradient dictionaries for specified parameters.
+
+        Returns:
+            Tuple of (cosine_similarity, norm1, norm2)
+        """
+        grads_1 = []
+        grads_2 = []
+        for name in param_names:
+            if name in grad_dict_1 and name in grad_dict_2:
+                grads_1.append(grad_dict_1[name].flatten())
+                grads_2.append(grad_dict_2[name].flatten())
+
+        if not grads_1:
+            return 0.0, 0.0, 0.0
+
+        vec1 = torch.cat(grads_1)
+        vec2 = torch.cat(grads_2)
+
+        norm1 = vec1.norm().item()
+        norm2 = vec2.norm().item()
+
+        if norm1 < 1e-8 or norm2 < 1e-8:
+            return 0.0, norm1, norm2
+
+        cos = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0)).item()
+        return cos, norm1, norm2
+
+    # Categorize parameters
+    stem_params = []
+    trunk_params = {f'blocks_{i}-{i+3}': [] for i in range(0, N_BLOCKS, 4)}
+    all_trunk_stem_params = []
+
+    for name in policy_grads.keys():
+        # Stem parameters
+        if any(x in name for x in ['conv_3x3', 'conv_sparse5', 'conv_dense_5x5',
+                                     'conv_sparse7', 'conv_dense_7x7', 'conv_1x1',
+                                     'stem_norm']):
+            stem_params.append(name)
+            all_trunk_stem_params.append(name)
+
+        # Trunk blocks
+        elif 'blocks.' in name:
+            # Extract block index
+            block_idx = int(name.split('blocks.')[1].split('.')[0])
+            # Determine which layer (every 4 blocks)
+            layer_start = (block_idx // 4) * 4
+            layer_key = f'blocks_{layer_start}-{layer_start+3}'
+            trunk_params[layer_key].append(name)
+            all_trunk_stem_params.append(name)
+
+    # Compute cosine similarities
+    # Overall
+    overall_cos, overall_norm_p, overall_norm_v = cosine_sim(policy_grads, value_grads, all_trunk_stem_params)
+
+    # Stem
+    stem_cos, stem_norm_p, stem_norm_v = cosine_sim(policy_grads, value_grads, stem_params)
+
+    # Trunk layers (every 4 blocks)
+    trunk_metrics = {}
+    for layer_key in sorted(trunk_params.keys()):
+        layer_cos, layer_norm_p, layer_norm_v = cosine_sim(policy_grads, value_grads, trunk_params[layer_key])
+        trunk_metrics[layer_key] = (layer_cos, layer_norm_p, layer_norm_v)
+
+    # Restore original gradients
+    model.zero_grad()
+    for name, param in model.named_parameters():
+        if name in saved_grads:
+            param.grad = saved_grads[name]
+
+    # Build metrics dictionary
+    metrics = {
+        'overall_cos_sim': overall_cos,
+        'overall_policy_norm': overall_norm_p,
+        'overall_value_norm': overall_norm_v,
+        'stem_cos_sim': stem_cos,
+        'stem_policy_norm': stem_norm_p,
+        'stem_value_norm': stem_norm_v,
+    }
+
+    # Add trunk block metrics
+    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15']:
+        cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
+        prefix = layer_key.replace('-', '_')
+        metrics[f'{prefix}_cos_sim'] = cos
+        metrics[f'{prefix}_policy_norm'] = norm_p
+        metrics[f'{prefix}_value_norm'] = norm_v
+
+    return metrics
 
 # ============================================================================
 # Training
@@ -194,7 +433,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              do_optimizer_step: bool = True,
                              update: int = 0,
                              win_boost: float = 0.0,
-                             block_boost: float = 0.0) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int]:
+                             block_boost: float = 0.0,
+                             cler_samples: List[dict] = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
     """
     Internal training function - processes a batch of trajectories.
 
@@ -208,7 +448,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     use_value_baseline = (update >= VALUE_BASELINE_START)
 
     if use_value_baseline and GAE_LAMBDA < 1.0:
-        all_traj_gae = compute_gae_for_trajectories(model, trajectories, device, GAE_LAMBDA)
+        all_traj_gae = compute_gae_for_trajectories(model, trajectories, device, GAE_LAMBDA, obs_batch_to_tensor)
     else:
         all_traj_gae = None
 
@@ -365,6 +605,22 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                         all_is_terminal.append(False)
                         num_synthetic_blocks += 1
 
+    # CLER (Counterfactual Low-Entropy Rescue) samples
+    num_cler_samples = 0
+    if cler_samples:
+        for sample in cler_samples:
+            all_obs.append(sample['obs'])
+            all_actions.append(sample['action'])
+            all_masks.append(sample['mask'])
+            all_returns.append(sample['strength'])
+            all_value_targets.append(0.0)
+            all_is_synthetic.append(True)
+            all_gae_advantages.append(sample['strength'])
+            all_weights.append(sample['weight'])
+            all_next_obs.append(np.zeros_like(sample['obs']))
+            all_is_terminal.append(True)
+            num_cler_samples += 1
+
     # Convert to GPU tensors
     obs_tensor = obs_batch_to_tensor(all_obs, device)
     next_obs_tensor = obs_batch_to_tensor(all_next_obs, device)
@@ -458,6 +714,11 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         policy_loss_mb = -(batch_weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
+        # Gradient conflict probing (only on first micro-batch)
+        probe_metrics = None
+        if PROBE_INTERVAL > 0 and update % PROBE_INTERVAL == 0 and batch_start == 0:
+            probe_metrics = probe_gradient_conflict(model, policy_loss_mb, value_loss_mb, update)
+
         loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + current_entropy_coeff * entropy_loss_mb) / num_accumulation_steps
         loss_mb.backward()
 
@@ -481,7 +742,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     mean_return = np.mean(all_returns_for_logging)
 
-    return total_loss_scalar, mean_return, total_entropy_scalar, total_value_loss_scalar, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss
+    return total_loss_scalar, mean_return, total_entropy_scalar, total_value_loss_scalar, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss, num_cler_samples, probe_metrics
 
 
 def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
@@ -490,10 +751,11 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    chunk_size: int = EPISODES_CHUNK_SIZE,
                    update: int = 0,
                    win_boost: float = 0.0,
-                   block_boost: float = 0.0) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int]:
+                   block_boost: float = 0.0,
+                   cler_samples: List[dict] = None) -> Tuple[float, float, float, float, float, int, int, int, int, int, int, int, int, int, int, int, int, Optional[Dict[str, float]]]:
     """Train on a batch of trajectories with gradient accumulation."""
     if len(trajectories) == 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        return 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, None
 
     num_chunks = (len(trajectories) + chunk_size - 1) // chunk_size
     chunks = [trajectories[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks)]
@@ -516,19 +778,29 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     total_win_miss = 0
     total_block_opp = 0
     total_block_miss = 0
+    total_cler_samples = 0
     num_chunks_processed = 0
+    collected_probe_metrics = None
 
     for i, chunk in enumerate(chunks):
         is_last_chunk = (i == len(chunks) - 1)
 
-        loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, chunk_win_opp, chunk_win_miss, chunk_block_opp, chunk_block_miss = _train_on_batch_internal(
+        # Pass CLER samples only to first chunk to avoid duplicating them
+        chunk_cler_samples = cler_samples if i == 0 else None
+
+        loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, chunk_win_opp, chunk_win_miss, chunk_block_opp, chunk_block_miss, num_cler, probe_metrics = _train_on_batch_internal(
             model, chunk, optimizer, device,
             num_accumulation_steps=num_chunks,
             do_optimizer_step=is_last_chunk,
             update=update,
             win_boost=win_boost,
-            block_boost=block_boost
+            block_boost=block_boost,
+            cler_samples=chunk_cler_samples
         )
+
+        # Collect probe metrics from first chunk only
+        if i == 0 and probe_metrics is not None:
+            collected_probe_metrics = probe_metrics
 
         total_loss += loss * num_chunks
         total_entropy += mean_entropy
@@ -545,6 +817,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
         total_win_miss += chunk_win_miss
         total_block_opp += chunk_block_opp
         total_block_miss += chunk_block_miss
+        total_cler_samples += num_cler
         num_chunks_processed += 1
 
         for traj in chunk:
@@ -559,7 +832,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     avg_raw_value_mse = total_raw_value_mse / num_chunks_processed
     mean_return = np.mean(total_returns) if total_returns else 0.0
 
-    return avg_loss, mean_return, avg_entropy, avg_value_loss, avg_raw_value_mse, total_wins, total_blocks, total_synthetic_wins_eq, total_synthetic_wins_missed, total_synthetic_blocks, total_imitation_black, total_imitation_white, total_win_opp, total_win_miss, total_block_opp, total_block_miss
+    return avg_loss, mean_return, avg_entropy, avg_value_loss, avg_raw_value_mse, total_wins, total_blocks, total_synthetic_wins_eq, total_synthetic_wins_missed, total_synthetic_blocks, total_imitation_black, total_imitation_white, total_win_opp, total_win_miss, total_block_opp, total_block_miss, total_cler_samples, collected_probe_metrics
 
 
 # ============================================================================
@@ -779,11 +1052,12 @@ def load_checkpoint_model(checkpoint_path: str, device: torch.device) -> Optiona
         return None
 
 
-def discover_historical_checkpoints(min_update: int = None) -> List[int]:
+def discover_historical_checkpoints(output_dir: str, min_update: int = None) -> List[int]:
     """
     Discover all checkpoint files and return their update numbers.
 
     Args:
+        output_dir: Directory containing checkpoints
         min_update: If specified, only return checkpoints >= this update number
 
     Returns:
@@ -792,7 +1066,7 @@ def discover_historical_checkpoints(min_update: int = None) -> List[int]:
     if min_update is None:
         min_update = SCAN_START_UPDATE
 
-    checkpoint_files = glob.glob("checkpoint_update_*.pt")
+    checkpoint_files = glob.glob(os.path.join(output_dir, "checkpoint_update_*.pt"))
     update_numbers = []
 
     pattern = re.compile(r'checkpoint_update_(\d+)\.pt')
@@ -870,46 +1144,52 @@ def evaluate_single_opponent(current_model: nn.Module, opponent_model: nn.Module
     return (total_wins + 0.5 * total_draws) / total_games if total_games > 0 else DEFAULT_WIN_RATE
 
 
-def scan_historical_exploiters(current_model: nn.Module, opponent_pool_updates: List[int],
-                                scan_event_num: int, device: torch.device) -> List[Tuple[int, float]]:
+def scan_historical_exploiters(output_dir: str, current_model: nn.Module, opponent_pool_updates: List[int],
+                                scan_event_num: int, device: torch.device) -> Tuple[List[Tuple[int, float]], int, int]:
     """
     Scan historical checkpoints to find exploiters (hard opponents for current policy).
 
     Args:
+        output_dir: Directory containing checkpoints
         current_model: The current policy model
         opponent_pool_updates: List of update numbers already in the pool (to skip)
         scan_event_num: The scan event number for bucket selection
         device: Torch device
 
     Returns:
-        List of (update_number, win_rate) tuples for mined exploiters, sorted by difficulty
+        Tuple of (mined_exploiters, total_candidates, candidates_after_filter) where:
+        - mined_exploiters: List of (update_number, win_rate) tuples, sorted by difficulty
+        - total_candidates: Total number of candidates in this bucket
+        - candidates_after_filter: Number of candidates after filtering pool duplicates
     """
     print(f"  Scanning historical checkpoints (scan event {scan_event_num}, bucket {scan_event_num % NUM_SCAN_BUCKETS})...")
 
     # Discover all late-phase checkpoints
-    all_checkpoints = discover_historical_checkpoints(min_update=SCAN_START_UPDATE)
+    all_checkpoints = discover_historical_checkpoints(output_dir, min_update=SCAN_START_UPDATE)
     if not all_checkpoints:
         print(f"  No historical checkpoints found >= update {SCAN_START_UPDATE}")
-        return []
+        return [], 0, 0
 
     # Get candidates for this bucket
     candidates = get_bucket_candidates(scan_event_num, all_checkpoints)
-    print(f"  Found {len(candidates)} checkpoints in bucket {scan_event_num % NUM_SCAN_BUCKETS}")
+    total_candidates = len(candidates)
+    print(f"  Found {total_candidates} checkpoints in bucket {scan_event_num % NUM_SCAN_BUCKETS}")
 
     # Filter out checkpoints already in the pool
     pool_set = set(opponent_pool_updates)
     candidates = [c for c in candidates if c not in pool_set]
-    print(f"  {len(candidates)} candidates after filtering pool duplicates")
+    candidates_after_filter = len(candidates)
+    print(f"  {candidates_after_filter} candidates after filtering pool duplicates")
 
     if not candidates:
-        return []
+        return [], total_candidates, candidates_after_filter
 
     # Quick screen: evaluate each candidate with few rounds
     print(f"  Quick screen ({QUICK_SCREEN_ROUNDS} rounds per candidate)...")
     quick_results = []
 
     for update_num in candidates:
-        checkpoint_path = f"checkpoint_update_{update_num}.pt"
+        checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update_num}.pt")
         opponent = load_checkpoint_model(checkpoint_path, device)
         if opponent is None:
             continue
@@ -922,7 +1202,7 @@ def scan_historical_exploiters(current_model: nn.Module, opponent_pool_updates: 
         torch.cuda.empty_cache()
 
     if not quick_results:
-        return []
+        return [], total_candidates, candidates_after_filter
 
     # Sort by win rate ascending (lowest = hardest opponents)
     quick_results.sort(key=lambda x: x[1])
@@ -936,7 +1216,7 @@ def scan_historical_exploiters(current_model: nn.Module, opponent_pool_updates: 
     final_results = []
 
     for update_num, _ in hardest_candidates:
-        checkpoint_path = f"checkpoint_update_{update_num}.pt"
+        checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update_num}.pt")
         opponent = load_checkpoint_model(checkpoint_path, device)
         if opponent is None:
             continue
@@ -954,7 +1234,7 @@ def scan_historical_exploiters(current_model: nn.Module, opponent_pool_updates: 
     if mined:
         print(f"  Mined exploiters: {[(u, f'{wr:.2%}') for u, wr in mined]}")
 
-    return mined
+    return mined, total_candidates, candidates_after_filter
 
 
 def sample_opponent_weighted(opponent_pool: deque, opponent_pool_updates: List[int],
@@ -1006,7 +1286,7 @@ def sample_opponent_weighted(opponent_pool: deque, opponent_pool_updates: List[i
 # Training State Management
 # ============================================================================
 
-def save_training_state(update: int, opponent_pool_updates: List[int],
+def save_training_state(output_dir: str, update: int, opponent_pool_updates: List[int],
                         win_miss_ema: float = 1.0,
                         block_miss_ema: float = 1.0,
                         per_opponent_win_rates: Dict[str, float] = None,
@@ -1024,13 +1304,14 @@ def save_training_state(update: int, opponent_pool_updates: List[int],
         'evals_since_last_scan': evals_since_last_scan
     }
 
-    temp_file = TRAINING_STATE_FILE + '.tmp'
+    training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
+    temp_file = training_state_file + '.tmp'
     with open(temp_file, 'w') as f:
         json.dump(state, f, indent=2)
-    os.replace(temp_file, TRAINING_STATE_FILE)
+    os.replace(temp_file, training_state_file)
 
 
-def load_training_state(device: torch.device) -> Optional[Tuple[nn.Module, torch.optim.Optimizer,
+def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple[nn.Module, torch.optim.Optimizer,
                                                                   torch.optim.lr_scheduler.LambdaLR,
                                                                   deque, int, int, float, float,
                                                                   Dict[str, float], int, int]]:
@@ -1042,14 +1323,15 @@ def load_training_state(device: torch.device) -> Optional[Tuple[nn.Module, torch
                   win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter,
                   evals_since_last_scan) or None if loading fails
     """
-    if not os.path.exists(TRAINING_STATE_FILE):
-        print(f"No training state file found ({TRAINING_STATE_FILE})")
+    training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
+    if not os.path.exists(training_state_file):
+        print(f"No training state file found ({training_state_file})")
         return None
 
-    print(f"Found training state file: {TRAINING_STATE_FILE}")
+    print(f"Found training state file: {training_state_file}")
 
     try:
-        with open(TRAINING_STATE_FILE, 'r') as f:
+        with open(training_state_file, 'r') as f:
             state = json.load(f)
     except Exception as e:
         print(f"Error loading training state JSON: {e}")
@@ -1071,7 +1353,7 @@ def load_training_state(device: torch.device) -> Optional[Tuple[nn.Module, torch
     if per_opponent_win_rates:
         print(f"Per-opponent win rates: {len(per_opponent_win_rates)} entries")
 
-    checkpoint_path = f"checkpoint_update_{current_update}.pt"
+    checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{current_update}.pt")
     if not os.path.exists(checkpoint_path):
         print(f"Error: Checkpoint not found: {checkpoint_path}")
         return None
@@ -1105,7 +1387,7 @@ def load_training_state(device: torch.device) -> Optional[Tuple[nn.Module, torch
 
     opponent_pool = deque()
     for pool_update in opponent_pool_updates:
-        pool_checkpoint_path = f"checkpoint_update_{pool_update}.pt"
+        pool_checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{pool_update}.pt")
         if not os.path.exists(pool_checkpoint_path):
             print(f"Warning: Opponent pool checkpoint not found: {pool_checkpoint_path}")
             print(f"Skipping this opponent")
@@ -1147,6 +1429,19 @@ def main():
     import sys
     sys.stdout.reconfigure(line_buffering=True)
     sys.stderr.reconfigure(line_buffering=True)
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Train Gomoku policy network with self-play', add_help=False)
+    parser.add_argument('output_dir', type=str)
+    args = parser.parse_args()
+
+    output_dir = args.output_dir
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Initialize CSV logger
+    csv_logger = CSVLogger(output_dir)
+    print(f"Output directory: {output_dir}")
+    print()
 
     effective_chunk_size = min(EPISODES_CHUNK_SIZE, EPISODES_PER_UPDATE)
     if EPISODES_PER_UPDATE < EPISODES_CHUNK_SIZE:
@@ -1201,7 +1496,7 @@ def main():
     print("=" * 60)
     print("Checking for existing training state...")
     print("=" * 60)
-    resume_result = load_training_state(DEVICE)
+    resume_result = load_training_state(output_dir, DEVICE)
 
     if resume_result is not None:
         (current_policy, optimizer, scheduler, opponent_pool, start_update, next_eval_update,
@@ -1263,7 +1558,9 @@ def main():
         'train_time': [], 'tactics_wins': [], 'tactics_blocks': [],
         'tactics_synthetic_wins_eq': [], 'tactics_synthetic_wins_missed': [],
         'tactics_synthetic_blocks': [], 'imitation_black': [], 'imitation_white': [],
-        'win_miss_ema': [], 'block_miss_ema': [], 'win_boost': [], 'block_boost': []
+        'win_miss_ema': [], 'block_miss_ema': [], 'win_boost': [], 'block_boost': [],
+        'cler_attempted': [], 'cler_candidates': [], 'cler_added': [],
+        'cler_winrate_sum': [], 'cler_entropy_sum': []
     }
 
     training_start_time = time.time()
@@ -1318,12 +1615,21 @@ def main():
         block_hit_rate_ema = 1.0 - block_miss_ema
         block_boost = BLOCK_MIN_BOOST + (1.0 - block_hit_rate_ema ** 2) * (BLOCK_MAX_BOOST - BLOCK_MIN_BOOST)
 
+        # Generate CLER samples from lost games
+        cler_samples, cler_metrics = generate_cler_samples(trajectories, current_is_black, current_policy, DEVICE, update)
+
         t0 = time.time()
-        loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss = train_on_batch(
+        loss, mean_return, mean_entropy, value_loss, raw_value_mse, num_wins, num_blocks, num_synthetic_wins_eq, num_synthetic_wins_missed, num_synthetic_blocks, num_imitation_black, num_imitation_white, win_opp, win_miss, block_opp, block_miss, num_cler, probe_metrics = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
-            win_boost=win_boost, block_boost=block_boost
+            win_boost=win_boost, block_boost=block_boost, cler_samples=cler_samples
         )
         t_train = time.time() - t0
+
+        # Log gradient probe if metrics collected
+        if probe_metrics is not None:
+            csv_logger.log_gradient_probe(update + 1, probe_metrics)
+            print(f"  [Probe] Overall cos_sim={probe_metrics['overall_cos_sim']:+.3f} | "
+                  f"Stem={probe_metrics['stem_cos_sim']:+.3f}")
 
         this_win_miss_rate = win_miss / win_opp if win_opp > 0 else 0.0
         this_block_miss_rate = block_miss / block_opp if block_opp > 0 else 0.0
@@ -1361,6 +1667,11 @@ def main():
         metric_buffer['block_miss_ema'].append(block_miss_ema)
         metric_buffer['win_boost'].append(win_boost)
         metric_buffer['block_boost'].append(block_boost)
+        metric_buffer['cler_attempted'].append(cler_metrics['cf_attempted_episodes'])
+        metric_buffer['cler_candidates'].append(cler_metrics['cf_steps_candidates_total'])
+        metric_buffer['cler_added'].append(cler_metrics['cf_added_samples'])
+        metric_buffer['cler_winrate_sum'].append(cler_metrics['cf_best_winrate_sum'])
+        metric_buffer['cler_entropy_sum'].append(cler_metrics['cf_entropy_selected_sum'])
 
         if (update + 1) % PRINT_INTERVAL == 0:
             avg_loss = np.mean(metric_buffer['loss'])
@@ -1391,6 +1702,16 @@ def main():
             latest_win_boost = metric_buffer['win_boost'][-1] if metric_buffer['win_boost'] else 0.0
             latest_block_boost = metric_buffer['block_boost'][-1] if metric_buffer['block_boost'] else 0.0
 
+            # CLER metrics aggregation
+            total_cler_attempted = sum(metric_buffer['cler_attempted'])
+            total_cler_candidates = sum(metric_buffer['cler_candidates'])
+            total_cler_added = sum(metric_buffer['cler_added'])
+            total_cler_winrate_sum = sum(metric_buffer['cler_winrate_sum'])
+            total_cler_entropy_sum = sum(metric_buffer['cler_entropy_sum'])
+            avg_cler_candidates = total_cler_candidates / max(total_cler_attempted, 1)
+            avg_cler_winrate = total_cler_winrate_sum / max(total_cler_added, 1)
+            avg_cler_entropy = total_cler_entropy_sum / max(total_cler_added, 1)
+
             elapsed_time = time.time() - training_start_time
             updates_done = update + 1
             updates_remaining = TOTAL_UPDATES - updates_done
@@ -1411,36 +1732,62 @@ def main():
             elapsed_str = format_time(elapsed_time)
             eta_str = format_time(eta_seconds)
 
-            selfplay_pct = (avg_selfplay_time / avg_time * 100) if avg_time > 0 else 0
-            train_pct = (avg_train_time / avg_time * 100) if avg_time > 0 else 0
+            # Simplified print output
+            print(f"Update {update + 1:5d}/{TOTAL_UPDATES} | "
+                  f"WinRate: {avg_win_rate:.0%}(W{avg_win_rate_white:.0%}-B{avg_win_rate_black:.0%}) | "
+                  f"AvgLen: {avg_length:.1f} | "
+                  f"Entropy: {avg_entropy:.3f} | "
+                  f"MissEMA: W={latest_win_miss_ema:.0%} B={latest_block_miss_ema:.0%} | "
+                  f"{avg_time:.2f}s/upd | "
+                  f"Elapsed: {elapsed_str} | ETA: {eta_str}")
 
-            phase_indicator = "RAW" if update < VALUE_BASELINE_START else "VALUE+TACT"
-
-            print(f"Update {update + 1:5d}/{TOTAL_UPDATES} | Loss: {avg_loss:+.4f} | "
-                  f"WinRate: {avg_win_rate:.0%}(B{avg_win_rate_black:.0%}-W{avg_win_rate_white:.0%}) | AvgLen: {avg_length:.1f} | Elapsed: {elapsed_str} | ETA: {eta_str}")
-            print(f"  Phase: {phase_indicator} | "
-                  f"Tactics: W({total_wins_found}v +{total_synthetic_wins_eq}eq +{total_synthetic_wins_missed}miss) B({total_blocks_found}v +{total_synthetic_blocks}) | "
-                  f"Imitate: {total_imitation}(B{total_imitation_black}+W{total_imitation_white})")
-            print(f"  MissEMA: W={latest_win_miss_ema:.1%} B={latest_block_miss_ema:.1%} | "
-                  f"DynBoost: W={latest_win_boost:.3f} B={latest_block_boost:.3f}")
-            print(f"  Entropy: {avg_entropy:.3f} | V_loss: {avg_value_loss:.4f} | Raw_MSE: {avg_raw_value_mse:.4f} | "
-                  f"Time/Update: {avg_time:.2f}s ({selfplay_pct:.0f}%/{train_pct:.0f}%)")
+            # Log to CSV
+            csv_logger.log_training_update(update + 1, {
+                'loss': avg_loss,
+                'win_rate': avg_win_rate,
+                'win_rate_black': avg_win_rate_black,
+                'win_rate_white': avg_win_rate_white,
+                'avg_game_length': avg_length,
+                'entropy': avg_entropy,
+                'value_loss': avg_value_loss,
+                'raw_value_mse': avg_raw_value_mse,
+                'tactics_wins': total_wins_found,
+                'tactics_blocks': total_blocks_found,
+                'tactics_synth_wins_eq': total_synthetic_wins_eq,
+                'tactics_synth_wins_missed': total_synthetic_wins_missed,
+                'tactics_synth_blocks': total_synthetic_blocks,
+                'imitation_black': total_imitation_black,
+                'imitation_white': total_imitation_white,
+                'win_miss_ema': latest_win_miss_ema,
+                'block_miss_ema': latest_block_miss_ema,
+                'win_boost': latest_win_boost,
+                'block_boost': latest_block_boost,
+                'cf_attempted': total_cler_attempted,
+                'cf_candidates_avg': avg_cler_candidates,
+                'cf_added': total_cler_added,
+                'cf_winrate_avg': avg_cler_winrate,
+                'cf_entropy_avg': avg_cler_entropy,
+                'time_total': avg_time,
+                'time_selfplay': avg_selfplay_time,
+                'time_train': avg_train_time,
+                'learning_rate': current_lr
+            })
 
             for key in metric_buffer:
                 metric_buffer[key] = []
 
         if update + 1 >= next_eval_update:
-            print(f"\n--- Evaluation at update {update + 1} ---")
+            print(f"\n--- Eval @ {update + 1} ---")
 
             # Step 1: Save current checkpoint
-            checkpoint_path = f"checkpoint_update_{update + 1}.pt"
+            checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update + 1}.pt")
             torch.save({
                 'update': update + 1,
                 'model_state_dict': current_policy.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
             }, checkpoint_path)
-            print(f"Saved checkpoint: {checkpoint_path}")
+            print(f"  Saved: {os.path.basename(checkpoint_path)}")
 
             # Step 2: Run evaluation with per-opponent stats
             eval_start_time = time.time()
@@ -1454,32 +1801,62 @@ def main():
             for opp_key, stats in per_opp_stats.items():
                 per_opponent_win_rates[opp_key] = stats['win_rate']
 
-            print(f"Win rate against pool: {win_rate:.3f} ({EVAL_ROUNDS * 2 * len(opponent_pool)} games) | Eval time: {eval_time:.1f}s")
-
-            # Show per-opponent breakdown (top 3 hardest and easiest)
+            # Show per-opponent breakdown (hardest and easiest)
             sorted_opps = sorted(per_opp_stats.items(), key=lambda x: x[1]['win_rate'])
-            if len(sorted_opps) > 0:
-                hardest = sorted_opps[:3]
-                easiest = sorted_opps[-3:] if len(sorted_opps) > 3 else []
-                hardest_str = ", ".join([f"{k}:{v['win_rate']:.0%}" for k, v in hardest])
-                print(f"  Hardest opponents: {hardest_str}")
-                if easiest:
-                    easiest_str = ", ".join([f"{k}:{v['win_rate']:.0%}" for k, v in reversed(easiest)])
-                    print(f"  Easiest opponents: {easiest_str}")
+            hardest_opp_id = int(sorted_opps[0][0]) if sorted_opps else -1
+            hardest_win_rate = sorted_opps[0][1]['win_rate'] if sorted_opps else 0.0
+            easiest_opp_id = int(sorted_opps[-1][0]) if sorted_opps else -1
+            easiest_win_rate = sorted_opps[-1][1]['win_rate'] if sorted_opps else 0.0
+
+            # Simplified print
+            total_games = EVAL_ROUNDS * 2 * len(opponent_pool)
+            print(f"  WinRate: {win_rate:.1%} ({total_games} games, {eval_time:.1f}s) | "
+                  f"Hard: {hardest_opp_id}:{hardest_win_rate:.0%} Easy: {easiest_opp_id}:{easiest_win_rate:.0%}")
 
             # Step 3: Conditionally add current snapshot to pool (using evict-easiest)
+            checkpoint_added = False
+            evicted_opponent_id = -1
             if win_rate >= WIN_RATE_THRESHOLD:
-                print(f"Win rate {win_rate:.3f} >= {WIN_RATE_THRESHOLD}, adding current to pool")
+                checkpoint_added = True
                 evicted = add_opponent_to_pool(
                     opponent_pool, opponent_pool_updates, current_policy, update + 1,
                     per_opponent_win_rates, DEVICE
                 )
                 if evicted is not None:
-                    print(f"  Evicted easiest opponent (update {evicted})")
+                    evicted_opponent_id = evicted
+                    print(f"  Pool: +current -{evicted}")
                     # Remove evicted opponent from win rate tracking
                     per_opponent_win_rates.pop(str(evicted), None)
+                else:
+                    print(f"  Pool: +current")
             else:
-                print(f"Win rate {win_rate:.3f} < {WIN_RATE_THRESHOLD}, not adding current to pool")
+                print(f"  Pool: no change (WR {win_rate:.1%} < {WIN_RATE_THRESHOLD:.1%})")
+
+            # Log eval summary to CSV
+            csv_logger.log_eval_summary(update + 1, {
+                'overall_win_rate': win_rate,
+                'total_games': total_games,
+                'eval_time': eval_time,
+                'hardest_opponent_id': hardest_opp_id,
+                'hardest_win_rate': hardest_win_rate,
+                'easiest_opponent_id': easiest_opp_id,
+                'easiest_win_rate': easiest_win_rate,
+                'pool_size': len(opponent_pool),
+                'checkpoint_added': checkpoint_added,
+                'evicted_opponent_id': evicted_opponent_id
+            })
+
+            # Log per-opponent details to CSV
+            for opp_key, stats in per_opp_stats.items():
+                opp_id = int(opp_key)
+                losses = stats['games'] - stats['wins'] - stats['draws']
+                csv_logger.log_eval_opponent_details(update + 1, opp_id, {
+                    'wins': stats['wins'],
+                    'losses': losses,
+                    'draws': stats['draws'],
+                    'games': stats['games'],
+                    'win_rate': stats['win_rate']
+                })
 
             # Step 4: Check scan trigger and run historical exploiter scan
             evals_since_last_scan += 1
@@ -1491,16 +1868,17 @@ def main():
             )
 
             if should_scan:
-                print(f"\n--- Historical Exploiter Scan ---")
+                print(f"\n--- Mining @ {update + 1} | Bucket {scan_event_counter % NUM_SCAN_BUCKETS} ---")
                 scan_start_time = time.time()
 
-                mined_exploiters = scan_historical_exploiters(
-                    current_policy, opponent_pool_updates, scan_event_counter, DEVICE
+                mined_exploiters, total_candidates, candidates_after_filter = scan_historical_exploiters(
+                    output_dir, current_policy, opponent_pool_updates, scan_event_counter, DEVICE
                 )
 
-                # Add mined exploiters to pool
-                for mined_update, mined_win_rate in mined_exploiters:
-                    mined_checkpoint = f"checkpoint_update_{mined_update}.pt"
+                # Add mined exploiters to pool and log to CSV
+                bucket_id = scan_event_counter % NUM_SCAN_BUCKETS
+                for rank, (mined_update, mined_win_rate) in enumerate(mined_exploiters, start=1):
+                    mined_checkpoint = os.path.join(output_dir, f"checkpoint_update_{mined_update}.pt")
                     mined_model = load_checkpoint_model(mined_checkpoint, DEVICE)
                     if mined_model is not None:
                         evicted = add_opponent_to_pool(
@@ -1509,14 +1887,32 @@ def main():
                         )
                         # Set the mined opponent's win rate based on scanning result
                         per_opponent_win_rates[str(mined_update)] = mined_win_rate
-                        print(f"  Added mined exploiter update {mined_update} (win_rate: {mined_win_rate:.1%})")
+
+                        evicted_id = evicted if evicted is not None else -1
+                        print(f"  Found: {mined_update}:{mined_win_rate:.0%} | +{mined_update} -{evicted_id if evicted_id != -1 else 'none'}")
+
+                        # Log to CSV
+                        csv_logger.log_mining_event(
+                            scan_update=update + 1,
+                            scan_event_num=scan_event_counter,
+                            bucket_id=bucket_id,
+                            total_candidates=total_candidates,
+                            candidates_after_filter=candidates_after_filter,
+                            mined_opponent_id=mined_update,
+                            mined_win_rate=mined_win_rate,
+                            mined_rank=rank,
+                            added_to_pool=True,
+                            evicted_opponent_id=evicted_id,
+                            scan_time=time.time() - scan_start_time
+                        )
+
                         if evicted is not None:
-                            print(f"    Evicted easiest opponent (update {evicted})")
                             per_opponent_win_rates.pop(str(evicted), None)
                         del mined_model
 
                 scan_time = time.time() - scan_start_time
-                print(f"  Scan completed in {scan_time:.1f}s")
+                if not mined_exploiters:
+                    print(f"  No exploiters found ({scan_time:.1f}s)")
 
                 # Update scan counters
                 scan_event_counter += 1
@@ -1524,28 +1920,26 @@ def main():
 
             # Step 5: Save training state with all new fields
             save_training_state(
-                update + 1, opponent_pool_updates, win_miss_ema, block_miss_ema,
+                output_dir, update + 1, opponent_pool_updates, win_miss_ema, block_miss_ema,
                 per_opponent_win_rates, scan_event_counter, evals_since_last_scan
             )
-            print(f"Saved training state: {TRAINING_STATE_FILE}")
-            print(f"Pool: {opponent_pool_updates}")
 
             eval_interval = get_eval_interval(update + 1)
             next_eval_update = (update + 1) + eval_interval
-            print(f"Next eval at update {next_eval_update} (interval: {eval_interval})")
+            print(f"  Next eval: {next_eval_update}")
 
             torch.cuda.empty_cache()
             print()
 
-    final_path = "final_policy.pt"
+    final_path = os.path.join(output_dir, "final_policy.pt")
     torch.save(current_policy.state_dict(), final_path)
     print(f"\nTraining complete! Final model saved to {final_path}")
 
     save_training_state(
-        TOTAL_UPDATES, opponent_pool_updates, win_miss_ema, block_miss_ema,
+        output_dir, TOTAL_UPDATES, opponent_pool_updates, win_miss_ema, block_miss_ema,
         per_opponent_win_rates, scan_event_counter, evals_since_last_scan
     )
-    print(f"Final training state saved to {TRAINING_STATE_FILE}")
+    print(f"Final training state saved")
 
 
 if __name__ == "__main__":

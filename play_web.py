@@ -179,15 +179,45 @@ h1 {
 .cell {
     width: 40px;
     height: 40px;
-    border: 1px solid #8b4513;
     position: relative;
     cursor: pointer;
     background: #deb887;
-    transition: background 0.2s;
 }
 
-.cell:hover:not(.occupied) {
-    background: #f0e68c;
+/* Draw grid lines using pseudo-elements */
+.cell::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: #8b4513;
+    transform: translateY(-50%);
+    pointer-events: none;
+}
+
+.cell::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: #8b4513;
+    transform: translateX(-50%);
+    pointer-events: none;
+}
+
+/* Edge cells - lines stop at center */
+.cell.edge-left::before { left: 50%; }
+.cell.edge-right::before { right: 50%; left: auto; width: 50%; }
+.cell.edge-top::after { top: 50%; }
+.cell.edge-bottom::after { bottom: 50%; top: auto; height: 50%; }
+
+.cell:hover:not(.occupied)::before,
+.cell:hover:not(.occupied)::after {
+    background: #5568d3;
 }
 
 .cell.occupied {
@@ -474,10 +504,9 @@ h1 {
         <div class="control-panel">
             <div class="checkpoint-selector">
                 <label for="checkpoint-select">Select Checkpoint:</label>
-                <select id="checkpoint-select">
+                <select id="checkpoint-select" onchange="loadCheckpoint()">
                     <option value="">-- Loading checkpoints --</option>
                 </select>
-                <button id="load-btn" onclick="loadCheckpoint()">Load Model</button>
                 <span id="model-status" class="status">No model loaded</span>
             </div>
         </div>
@@ -607,6 +636,11 @@ function initBoard() {
             cell.className = 'cell';
             cell.dataset.row = row;
             cell.dataset.col = col;
+            // Add edge classes for grid line rendering
+            if (col === 0) cell.classList.add('edge-left');
+            if (col === 14) cell.classList.add('edge-right');
+            if (row === 0) cell.classList.add('edge-top');
+            if (row === 14) cell.classList.add('edge-bottom');
             cell.onclick = () => handleCellClick(row, col);
             board.appendChild(cell);
         }
@@ -617,7 +651,13 @@ function renderBoard() {
     for (let row = 0; row < 15; row++) {
         for (let col = 0; col < 15; col++) {
             const cell = getCell(row, col);
-            cell.className = 'cell';
+            // Preserve edge classes when re-rendering
+            const edgeClasses = [];
+            if (col === 0) edgeClasses.push('edge-left');
+            if (col === 14) edgeClasses.push('edge-right');
+            if (row === 0) edgeClasses.push('edge-top');
+            if (row === 14) edgeClasses.push('edge-bottom');
+            cell.className = 'cell ' + edgeClasses.join(' ');
             cell.innerHTML = '';
 
             // Add stone if occupied
@@ -859,7 +899,6 @@ async function loadCheckpoint() {
     const filename = select.value;
 
     if (!filename) {
-        alert('Please select a checkpoint');
         return;
     }
 

@@ -283,6 +283,73 @@ def pos_to_idx(row: int, col: int) -> int:
     return row * 15 + col
 
 
+def board_from_observation(obs: np.ndarray, next_player: 'Player') -> 'GomokuBoard':
+    """
+    Reconstruct a GomokuBoard from an observation and player to move.
+
+    Args:
+        obs: Observation [3, 15, 15] where [0] is current player, [1] is opponent
+        next_player: The player who is to move next (absolute color)
+
+    Returns:
+        GomokuBoard with the reconstructed state
+    """
+    board = GomokuBoard()
+    current_pieces = obs[0]
+    opponent_pieces = obs[1]
+
+    if next_player == Player.BLACK:
+        # Current player is black, opponent is white
+        board.black_pieces = current_pieces.copy()
+        board.white_pieces = opponent_pieces.copy()
+    else:
+        # Current player is white, opponent is black
+        board.white_pieces = current_pieces.copy()
+        board.black_pieces = opponent_pieces.copy()
+
+    board.who_to_play = next_player
+    board.occupied_count = int(np.sum(current_pieces) + np.sum(opponent_pieces))
+
+    return board
+
+
+def get_local_candidate_moves(obs: np.ndarray, legal_mask: np.ndarray, radius: int = 2) -> List[int]:
+    """
+    Get legal moves within Manhattan distance of existing stones.
+
+    Args:
+        obs: Observation [3, 15, 15]
+        legal_mask: Legal moves mask [15, 15]
+        radius: Manhattan distance radius
+
+    Returns:
+        List of flat action indices for local candidate moves
+    """
+    occupied = ((obs[0] == 1) | (obs[1] == 1))
+    candidates = []
+
+    # Get all legal positions
+    legal_positions = np.argwhere(legal_mask == 1)
+
+    for pos in legal_positions:
+        r, c = pos[0], pos[1]
+        # Check if any stone within Manhattan distance
+        found_neighbor = False
+        for dr in range(-radius, radius + 1):
+            if found_neighbor:
+                break
+            for dc in range(-radius, radius + 1):
+                if abs(dr) + abs(dc) > radius:
+                    continue
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < 15 and 0 <= nc < 15 and occupied[nr, nc]:
+                    candidates.append(r * 15 + c)
+                    found_neighbor = True
+                    break
+
+    return candidates
+
+
 # ============================================================================
 # Self-Play with Batched Inference
 # ============================================================================
@@ -297,6 +364,7 @@ class Trajectory:
         self.legal_masks = []   # List of [15, 15] legal masks
         self.is_current_policy = []  # List of bools: True if current_policy moved
         self.log_probs = []     # List of log probabilities (from temperature-scaled distribution)
+        self.entropies = []     # List of policy entropies (nats) for CLER
         self.outcome = None     # GameState enum
 
 
@@ -399,19 +467,22 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
             # Run batched inference for each unique model
             all_actions = [None] * len(batch_games)
             all_log_probs = [None] * len(batch_games)
+            all_entropies = [None] * len(batch_games)
             for model_id, group in model_groups.items():
-                actions, log_probs = select_action_batch_fn(
+                actions, log_probs, entropies = select_action_batch_fn(
                     group['model'], group['obs'], group['masks'],
                     temperature, device, deterministic
                 )
-                for idx, action, log_prob in zip(group['indices'], actions, log_probs):
+                for idx, action, log_prob, entropy in zip(group['indices'], actions, log_probs, entropies):
                     all_actions[idx] = action
                     all_log_probs[idx] = log_prob
+                    all_entropies[idx] = entropy
 
             # Execute moves
-            for game, action, log_prob in zip(batch_games, all_actions, all_log_probs):
+            for game, action, log_prob, entropy in zip(batch_games, all_actions, all_log_probs, all_entropies):
                 game.traj.actions.append(action)
                 game.traj.log_probs.append(log_prob)
+                game.traj.entropies.append(entropy)
                 row, col = idx_to_pos(action)
                 outcome = game.board.Move((row, col))
 
@@ -687,3 +758,139 @@ def find_blocking_moves(obs: np.ndarray, legal_mask: np.ndarray) -> Optional[Lis
                 return None
 
     return blocking_positions if blocking_positions else None
+
+
+# ============================================================================
+# Trajectory Processing Utilities
+# ============================================================================
+
+def compute_returns(traj: Trajectory) -> List[float]:
+    """
+    Compute per-step returns from trajectory.
+
+    Returns z_t for each step t: +1 if player_t won, -1 if lost, 0 if draw.
+    """
+    returns = []
+    outcome = traj.outcome
+
+    if outcome == GameState.DRAW:
+        winner = None
+    elif outcome == GameState.BLACK_WIN:
+        winner = Player.BLACK
+    elif outcome == GameState.WHITE_WIN:
+        winner = Player.WHITE
+    else:
+        raise ValueError(f"Invalid outcome: {outcome}")
+
+    for player_t in traj.players:
+        if winner is None:
+            z_t = 0.0
+        elif winner == player_t:
+            z_t = 1.0
+        else:
+            z_t = -1.0
+        returns.append(z_t)
+
+    return returns
+
+
+def compute_gae_for_trajectories(model, trajectories: List[Trajectory],
+                                  device, gae_lambda: float,
+                                  obs_batch_to_tensor_fn) -> List[np.ndarray]:
+    """
+    Compute GAE advantages for all trajectories.
+
+    For two-player games with canonical representation:
+        delta_n = -V(S_{n+1}) - V(S_n) for non-terminal
+        delta_n = z - V(S_n) for terminal
+        A_n = delta_n - lambda * A_{n+1}
+
+    Args:
+        model: Neural network model with value head
+        trajectories: List of trajectory objects
+        device: torch device
+        gae_lambda: GAE lambda parameter
+        obs_batch_to_tensor_fn: Function to convert observation list to tensor
+    """
+    all_gae = []
+
+    for traj in trajectories:
+        T = len(traj.observations)
+        if T == 0:
+            all_gae.append(np.array([]))
+            continue
+
+        obs_tensor = obs_batch_to_tensor_fn(traj.observations, device)
+        with torch.no_grad():
+            _, values = model(obs_tensor)
+        values = values.squeeze(1).cpu().numpy()
+
+        returns = compute_returns(traj)
+
+        gae_advantages = np.zeros(T, dtype=np.float32)
+        gae = 0.0
+
+        for t in reversed(range(T)):
+            if t == T - 1:
+                delta = returns[t] - values[t]
+            else:
+                delta = -values[t + 1] - values[t]
+
+            gae = delta - gae_lambda * gae
+            gae_advantages[t] = gae
+
+        all_gae.append(gae_advantages)
+
+    return all_gae
+
+
+def compute_outcome_stats(trajectories: List[Trajectory], current_is_black: List[bool]) -> dict:
+    """Compute statistics about game outcomes from current policy's perspective."""
+    current_wins = 0
+    current_losses = 0
+    draws = 0
+    total_steps = []
+
+    wins_as_black = 0
+    wins_as_white = 0
+    games_as_black = 0
+    games_as_white = 0
+
+    for traj, is_black in zip(trajectories, current_is_black):
+        total_steps.append(len(traj.actions))
+
+        if is_black:
+            games_as_black += 1
+        else:
+            games_as_white += 1
+
+        if traj.outcome == GameState.DRAW:
+            draws += 1
+        elif traj.outcome == GameState.BLACK_WIN:
+            if is_black:
+                current_wins += 1
+                wins_as_black += 1
+            else:
+                current_losses += 1
+        elif traj.outcome == GameState.WHITE_WIN:
+            if not is_black:
+                current_wins += 1
+                wins_as_white += 1
+            else:
+                current_losses += 1
+
+    total_games = len(trajectories)
+    win_rate = current_wins / total_games if total_games > 0 else 0
+    win_rate_as_black = wins_as_black / games_as_black if games_as_black > 0 else 0
+    win_rate_as_white = wins_as_white / games_as_white if games_as_white > 0 else 0
+
+    return {
+        'wins': current_wins,
+        'losses': current_losses,
+        'draws': draws,
+        'win_rate': win_rate,
+        'win_rate_as_black': win_rate_as_black,
+        'win_rate_as_white': win_rate_as_white,
+        'avg_length': np.mean(total_steps) if total_steps else 0,
+        'draw_rate': draws / total_games if total_games else 0
+    }
