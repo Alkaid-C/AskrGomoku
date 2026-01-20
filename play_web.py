@@ -1119,24 +1119,20 @@ function updateTemperatureDisplay() {
 
 
 def get_available_checkpoints():
-    """Get list of all available checkpoint files."""
-    checkpoint_files = glob.glob("checkpoint_update_*.pt")
-    pattern = re.compile(r'checkpoint_update_(\d+)\.pt')
+    """Get list of all available checkpoint files (recursively searches all subdirectories)."""
+    # Recursively find all .pt files
+    checkpoint_files = glob.glob("**/*.pt", recursive=True)
 
     checkpoints = []
     for filepath in checkpoint_files:
-        filename = os.path.basename(filepath)
-        match = pattern.match(filename)
-        if match:
-            update_num = int(match.group(1))
-            checkpoints.append({
-                'filename': filename,
-                'update': update_num,
-                'display': f"Update {update_num}"
-            })
+        checkpoints.append({
+            'filename': filepath,
+            'display': filepath,
+            'mtime': os.path.getmtime(filepath)
+        })
 
-    # Sort by update number
-    checkpoints.sort(key=lambda x: x['update'])
+    # Sort by modification time, newest first
+    checkpoints.sort(key=lambda x: x['mtime'], reverse=True)
     return checkpoints
 
 
