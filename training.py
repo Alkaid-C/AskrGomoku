@@ -126,13 +126,14 @@ def compute_gae_for_trajectories(model: nn.Module, trajectories: List[Trajectory
 # Gradient Conflict Probing
 # ============================================================================
 
-def probe_gradient_conflict(model: nn.Module, policy_loss: torch.Tensor,
-                             value_loss: torch.Tensor, update: int) -> Dict[str, float]:
+def probe_gradient_conflict_microbatch(model: nn.Module, policy_loss: torch.Tensor,
+                                        value_loss: torch.Tensor, update: int) -> Dict[str, float]:
     """
-    Probe gradient conflict between policy and value losses.
+    Probe gradient conflict between policy and value losses on a micro-batch.
 
     Computes cosine similarity between policy gradients and value gradients
-    for different parts of the network.
+    for different parts of the network. This version works on a single micro-batch
+    to minimize memory overhead.
     """
     # Temporarily save current gradients (if any) and zero them
     saved_grads = {}
@@ -150,12 +151,201 @@ def probe_gradient_conflict(model: nn.Module, policy_loss: torch.Tensor,
 
     # Zero gradients and compute value gradients
     model.zero_grad()
-    value_loss.backward(retain_graph=True)
+    value_loss.backward()
     value_grads = {}
     for name, param in model.named_parameters():
         if param.grad is not None:
             value_grads[name] = param.grad.clone()
 
+    def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
+        grads_1 = []
+        grads_2 = []
+        for name in param_names:
+            if name in grad_dict_1 and name in grad_dict_2:
+                grads_1.append(grad_dict_1[name].flatten())
+                grads_2.append(grad_dict_2[name].flatten())
+
+        if not grads_1:
+            return 0.0, 0.0, 0.0
+
+        vec1 = torch.cat(grads_1)
+        vec2 = torch.cat(grads_2)
+
+        norm1 = vec1.norm().item()
+        norm2 = vec2.norm().item()
+
+        if norm1 < 1e-8 or norm2 < 1e-8:
+            return 0.0, norm1, norm2
+
+        cos = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0)).item()
+        return cos, norm1, norm2
+
+    # Categorize parameters
+    stem_params = []
+    trunk_params = {f'blocks_{i}-{i+3}': [] for i in range(0, N_BLOCKS, 4)}
+    all_trunk_stem_params = []
+
+    for name in policy_grads.keys():
+        if any(x in name for x in ['conv_3x3', 'conv_sparse5', 'conv_dense_5x5',
+                                     'conv_sparse7', 'conv_dense_7x7', 'conv_1x1',
+                                     'stem_norm']):
+            stem_params.append(name)
+            all_trunk_stem_params.append(name)
+        elif 'blocks.' in name:
+            block_idx = int(name.split('blocks.')[1].split('.')[0])
+            layer_start = (block_idx // 4) * 4
+            layer_key = f'blocks_{layer_start}-{layer_start+3}'
+            trunk_params[layer_key].append(name)
+            all_trunk_stem_params.append(name)
+
+    # Compute cosine similarities
+    overall_cos, overall_norm_p, overall_norm_v = cosine_sim(policy_grads, value_grads, all_trunk_stem_params)
+    stem_cos, stem_norm_p, stem_norm_v = cosine_sim(policy_grads, value_grads, stem_params)
+
+    trunk_metrics = {}
+    for layer_key in sorted(trunk_params.keys()):
+        layer_cos, layer_norm_p, layer_norm_v = cosine_sim(policy_grads, value_grads, trunk_params[layer_key])
+        trunk_metrics[layer_key] = (layer_cos, layer_norm_p, layer_norm_v)
+
+    # Restore original gradients
+    model.zero_grad()
+    for name, param in model.named_parameters():
+        if name in saved_grads:
+            param.grad = saved_grads[name]
+
+    # Build metrics dictionary
+    metrics = {
+        'overall_cos_sim': overall_cos,
+        'overall_policy_norm': overall_norm_p,
+        'overall_value_norm': overall_norm_v,
+        'stem_cos_sim': stem_cos,
+        'stem_policy_norm': stem_norm_p,
+        'stem_value_norm': stem_norm_v,
+    }
+
+    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15']:
+        cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
+        prefix = layer_key.replace('-', '_')
+        metrics[f'{prefix}_cos_sim'] = cos
+        metrics[f'{prefix}_policy_norm'] = norm_p
+        metrics[f'{prefix}_value_norm'] = norm_v
+
+    return metrics
+
+
+def probe_gradient_conflict_chunked(
+    model: nn.Module,
+    obs_chunks: List[torch.Tensor],
+    next_obs_chunks: List[torch.Tensor],
+    actions_chunks: List[torch.Tensor],
+    masks_chunks: List[torch.Tensor],
+    returns_chunks: List[torch.Tensor],
+    value_targets_chunks: List[torch.Tensor],
+    is_terminal_chunks: List[torch.Tensor],
+    is_synthetic_chunks: List[torch.Tensor],
+    weights_chunks: List[torch.Tensor],
+    gae_advantages_chunks: List[torch.Tensor],
+    next_values_chunks: List[Optional[torch.Tensor]],
+    global_normalizers: Tuple[float, float],
+    use_value_baseline: bool,
+    update: int
+) -> Dict[str, float]:
+    """
+    Probe gradient conflict using chunked gradient accumulation.
+
+    Computes gradients for policy and value losses separately across chunks,
+    accumulating them without retaining the full computational graph.
+    This is memory-efficient for large batches.
+    """
+    # Save current gradients
+    saved_grads = {}
+    for name, param in model.named_parameters():
+        if param.grad is not None:
+            saved_grads[name] = param.grad.clone()
+
+    # Initialize accumulated gradients
+    policy_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+    value_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+
+    global_policy_entropy_normalizer, global_value_normalizer = global_normalizers
+
+    # Accumulate policy gradients across chunks
+    model.zero_grad()
+    for i in range(len(obs_chunks)):
+        obs = obs_chunks[i]
+        next_obs = next_obs_chunks[i]
+        actions = actions_chunks[i]
+        masks = masks_chunks[i]
+        returns = returns_chunks[i]
+        value_targets = value_targets_chunks[i]
+        is_terminal = is_terminal_chunks[i]
+        is_synthetic = is_synthetic_chunks[i]
+        weights = weights_chunks[i]
+        gae_advantages = gae_advantages_chunks[i]
+        next_values = next_values_chunks[i]
+
+        batch_size = obs.size(0)
+
+        logits_grid, values = model(obs)
+        logits = logits_grid.squeeze(1)
+        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
+        logits_flat = logits.view(batch_size, 225)
+
+        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
+        dist = Categorical(logits=logits_scaled)
+        batch_log_probs = dist.log_prob(actions)
+        batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
+
+        advantages = gae_advantages if use_value_baseline else returns
+        policy_loss = -(weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+
+        policy_loss.backward()
+
+        # Accumulate policy gradients
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                policy_grads[name] += param.grad.detach()
+
+        model.zero_grad()
+
+    # Accumulate value gradients across chunks
+    for i in range(len(obs_chunks)):
+        obs = obs_chunks[i]
+        next_obs = next_obs_chunks[i]
+        value_targets = value_targets_chunks[i]
+        is_terminal = is_terminal_chunks[i]
+        is_synthetic = is_synthetic_chunks[i]
+        weights = weights_chunks[i]
+        next_values = next_values_chunks[i]
+
+        _, values = model(obs)
+        values = values.squeeze(1)
+
+        if next_values is None:
+            with torch.no_grad():
+                _, next_values_computed = model(next_obs)
+            next_values = next_values_computed.squeeze(1)
+
+        effective_value_targets = torch.where(
+            is_terminal,
+            value_targets,
+            -next_values.detach()
+        )
+
+        value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
+        value_loss_mask = ~is_synthetic
+        value_loss = (weights * value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
+
+        value_loss.backward()
+
+        # Accumulate value gradients
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                value_grads[name] += param.grad.detach()
+
+        model.zero_grad()
+
+    # Compute cosine similarity helper
     def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
         grads_1 = []
         grads_2 = []
@@ -245,14 +435,15 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              block_boost: float = 0.0,
                              cler_samples: List[dict] = None,
                              ema_entropy: float = None,
-                             win_rate: float = 0.5) -> Tuple[float, float, float, float, float, TacticalStats, int, int, int, Optional[torch.Tensor], Optional[torch.Tensor]]:
+                             win_rate: float = 0.5) -> Tuple[float, float, float, float, float, TacticalStats, int, int, int, Optional[dict]]:
     """
     Internal training function - processes a batch of trajectories.
 
     Returns:
         Tuple of (loss, mean_return, entropy, value_loss, raw_value_mse,
                   tactical_stats, num_imitation_black, num_imitation_white,
-                  num_cler_samples, probe_policy_loss, probe_value_loss)
+                  num_cler_samples, probe_data)
+        probe_data is a dict with chunked tensors for gradient probing, or None
     """
     use_value_baseline = (update >= VALUE_BASELINE_START)
 
@@ -513,10 +704,19 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     accumulated_weighted_entropy_sum = 0.0
     accumulated_weight_sum = 0.0
 
-    # Accumulate losses for full-update probing
+    # Collect data for chunked gradient probing (if needed)
     should_probe = PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0
-    probe_policy_loss_accum = None
-    probe_value_loss_accum = None
+    probe_obs_chunks = [] if should_probe else None
+    probe_next_obs_chunks = [] if should_probe else None
+    probe_actions_chunks = [] if should_probe else None
+    probe_masks_chunks = [] if should_probe else None
+    probe_returns_chunks = [] if should_probe else None
+    probe_value_targets_chunks = [] if should_probe else None
+    probe_is_terminal_chunks = [] if should_probe else None
+    probe_is_synthetic_chunks = [] if should_probe else None
+    probe_weights_chunks = [] if should_probe else None
+    probe_gae_advantages_chunks = [] if should_probe else None
+    probe_next_values_chunks = [] if should_probe else None
 
     # Process in micro-batches
     for batch_start in range(0, len(aug_obs), TRAIN_BATCH_SIZE):
@@ -534,6 +734,19 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_weights = aug_weights[batch_start:batch_end]
         batch_size = batch_end - batch_start
 
+        # Collect chunks for gradient probing (detached copies to avoid graph retention)
+        if should_probe:
+            probe_obs_chunks.append(batch_obs.detach())
+            probe_next_obs_chunks.append(batch_next_obs.detach())
+            probe_actions_chunks.append(batch_actions.detach())
+            probe_masks_chunks.append(batch_masks.detach())
+            probe_returns_chunks.append(batch_returns.detach())
+            probe_value_targets_chunks.append(batch_value_targets.detach())
+            probe_is_terminal_chunks.append(batch_is_terminal.detach())
+            probe_is_synthetic_chunks.append(batch_is_synthetic.detach())
+            probe_weights_chunks.append(batch_weights.detach())
+            probe_gae_advantages_chunks.append(batch_gae_advantages.detach())
+
         logits_grid, values = model(batch_obs)
         logits = logits_grid.squeeze(1)
         logits = logits.masked_fill(~batch_masks, LOGIT_MASK_VALUE)
@@ -550,10 +763,14 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         # Use 8-fold averaged next_values for consistent TD targets if available
         if aug_next_values_averaged is not None:
             next_values = aug_next_values_averaged[batch_start:batch_end]
+            if should_probe:
+                probe_next_values_chunks.append(next_values.detach())
         else:
             with torch.no_grad():
                 _, next_values = model(batch_next_obs)
             next_values = next_values.squeeze(1)
+            if should_probe:
+                probe_next_values_chunks.append(None)  # Will be computed in probe
 
         if not use_value_baseline:
             advantages = batch_returns
@@ -576,17 +793,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         entropy_bonus_scale = target_entropy / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
-        # Accumulate losses for full-update gradient probing
-        if should_probe:
-            if probe_policy_loss_accum is None:
-                probe_policy_loss_accum = policy_loss_mb
-                probe_value_loss_accum = value_loss_mb
-            else:
-                probe_policy_loss_accum = probe_policy_loss_accum + policy_loss_mb
-                probe_value_loss_accum = probe_value_loss_accum + value_loss_mb
-
         loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
-        loss_mb.backward(retain_graph=should_probe)
+        loss_mb.backward()
 
         accumulated_loss += loss_mb.item()
         accumulated_value_loss += value_loss_mb.item()
@@ -604,9 +812,28 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     mean_return = np.mean(all_returns_for_logging) if all_returns_for_logging else 0.0
 
+    # Package probe data if collected
+    probe_data = None
+    if should_probe:
+        probe_data = {
+            'obs_chunks': probe_obs_chunks,
+            'next_obs_chunks': probe_next_obs_chunks,
+            'actions_chunks': probe_actions_chunks,
+            'masks_chunks': probe_masks_chunks,
+            'returns_chunks': probe_returns_chunks,
+            'value_targets_chunks': probe_value_targets_chunks,
+            'is_terminal_chunks': probe_is_terminal_chunks,
+            'is_synthetic_chunks': probe_is_synthetic_chunks,
+            'weights_chunks': probe_weights_chunks,
+            'gae_advantages_chunks': probe_gae_advantages_chunks,
+            'next_values_chunks': probe_next_values_chunks,
+            'global_normalizers': (global_policy_entropy_normalizer, global_value_normalizer),
+            'use_value_baseline': use_value_baseline
+        }
+
     return (total_loss_scalar, mean_return, total_entropy_scalar, total_value_loss_scalar,
             raw_value_mse, tactical_stats, num_imitation_black, num_imitation_white,
-            num_cler_samples, probe_policy_loss_accum, probe_value_loss_accum)
+            num_cler_samples, probe_data)
 
 
 def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
@@ -650,10 +877,9 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     num_chunks_processed = 0
     collected_probe_metrics = None
 
-    # Accumulate losses for full-update gradient probing
+    # Collect probe data from all chunks
     should_probe = PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0
-    total_probe_policy_loss = None
-    total_probe_value_loss = None
+    all_probe_data = [] if should_probe else None
 
     for i, chunk in enumerate(chunks):
 
@@ -662,7 +888,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
 
         (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
          tactical_stats, num_imitation_black, num_imitation_white,
-         num_cler, probe_policy_loss, probe_value_loss) = _train_on_batch_internal(
+         num_cler, probe_data) = _train_on_batch_internal(
             model, chunk, optimizer, device,
             num_accumulation_steps=num_chunks,
             update=update,
@@ -673,14 +899,9 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             win_rate=win_rate
         )
 
-        # Accumulate probe losses across chunks for full-update probing
-        if should_probe and probe_policy_loss is not None:
-            if total_probe_policy_loss is None:
-                total_probe_policy_loss = probe_policy_loss
-                total_probe_value_loss = probe_value_loss
-            else:
-                total_probe_policy_loss = total_probe_policy_loss + probe_policy_loss
-                total_probe_value_loss = total_probe_value_loss + probe_value_loss
+        # Collect probe data from each chunk
+        if should_probe and probe_data is not None:
+            all_probe_data.append(probe_data)
 
         total_loss += loss * num_chunks
         total_entropy += mean_entropy
@@ -710,9 +931,54 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                     total_returns.append(z_t)
 
     # Run gradient probe on full update (after all chunks processed, before optimizer step)
-    if should_probe and total_probe_policy_loss is not None:
-        collected_probe_metrics = probe_gradient_conflict(
-            model, total_probe_policy_loss, total_probe_value_loss, update
+    if should_probe and all_probe_data:
+        # Merge probe data from all chunks
+        merged_obs_chunks = []
+        merged_next_obs_chunks = []
+        merged_actions_chunks = []
+        merged_masks_chunks = []
+        merged_returns_chunks = []
+        merged_value_targets_chunks = []
+        merged_is_terminal_chunks = []
+        merged_is_synthetic_chunks = []
+        merged_weights_chunks = []
+        merged_gae_advantages_chunks = []
+        merged_next_values_chunks = []
+
+        # Concatenate chunks from all episode chunks
+        for probe_data in all_probe_data:
+            merged_obs_chunks.extend(probe_data['obs_chunks'])
+            merged_next_obs_chunks.extend(probe_data['next_obs_chunks'])
+            merged_actions_chunks.extend(probe_data['actions_chunks'])
+            merged_masks_chunks.extend(probe_data['masks_chunks'])
+            merged_returns_chunks.extend(probe_data['returns_chunks'])
+            merged_value_targets_chunks.extend(probe_data['value_targets_chunks'])
+            merged_is_terminal_chunks.extend(probe_data['is_terminal_chunks'])
+            merged_is_synthetic_chunks.extend(probe_data['is_synthetic_chunks'])
+            merged_weights_chunks.extend(probe_data['weights_chunks'])
+            merged_gae_advantages_chunks.extend(probe_data['gae_advantages_chunks'])
+            merged_next_values_chunks.extend(probe_data['next_values_chunks'])
+
+        # Use global normalizers from first chunk (they should be the same across chunks)
+        global_normalizers = all_probe_data[0]['global_normalizers']
+        use_value_baseline = all_probe_data[0]['use_value_baseline']
+
+        collected_probe_metrics = probe_gradient_conflict_chunked(
+            model,
+            merged_obs_chunks,
+            merged_next_obs_chunks,
+            merged_actions_chunks,
+            merged_masks_chunks,
+            merged_returns_chunks,
+            merged_value_targets_chunks,
+            merged_is_terminal_chunks,
+            merged_is_synthetic_chunks,
+            merged_weights_chunks,
+            merged_gae_advantages_chunks,
+            merged_next_values_chunks,
+            global_normalizers,
+            use_value_baseline,
+            update
         )
 
     # Optimizer step (after all gradients accumulated)
