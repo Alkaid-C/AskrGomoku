@@ -16,7 +16,7 @@ import torch.nn.functional as F
 import numpy as np
 
 from model import GomokuPolicyNet, N_BLOCKS
-from gomoku import encode_observation, idx_to_pos, pos_to_idx
+from gomoku_selfplay import encode_observation, idx_to_pos, pos_to_idx
 
 app = Flask(__name__)
 

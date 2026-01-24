@@ -1,18 +1,26 @@
 """
 Gomoku Policy+Value Network Architecture and Configuration.
 
-Contains the neural network architecture (GomokuPolicyNet) and structural constants.
+Contains the neural network architecture (GomokuPolicyNet), configuration constants,
+and inference helper functions used during self-play and evaluation.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
+from torch.distributions import Categorical
+import numpy as np
+from typing import List, Tuple
+
 
 # ============================================================================
-# Model Architecture Constants
+# Configuration
 # ============================================================================
 
+# --- Training Duration ---
+TOTAL_UPDATES = 65536
+
+# --- Model Architecture ---
 N_BLOCKS = 16                     # Number of residual blocks
 WIDTH = 96                        # Residual block width (must equal sum of all stem channels)
 STEM_3X3_CHANNELS = 6 * 6         # 3x3 convolution channels in stem
@@ -45,11 +53,109 @@ VALUE_HEAD_C1 = 128            # Layer 1: 96 -> 128
 VALUE_HEAD_C2_SPLIT = 128      # Layer 2: 128 -> 128(d1) + 128(d2) = 256
 VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
 
-# Training Config
-SEED_PROBABILITY = 0.25
+# --- Optimizer & Learning Rate ---
+LEARNING_RATE = 5e-4
+MIN_LR = 1e-4
+LR_DECAY = (MIN_LR / LEARNING_RATE) ** (1.0 / TOTAL_UPDATES)  # Derived
+WEIGHT_DECAY = 1e-8
+GRAD_CLIP_NORM = 16.0
 
-# Numerical Stability
+# --- Batching & Memory ---
+EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
+EPISODES_CHUNK_SIZE = 16       # Chunk size for gradient accumulation (saves VRAM)
+BATCH_INFERENCE_SIZE = 64      # Positions processed simultaneously during self-play
+TRAIN_BATCH_SIZE = 512        # Micro-batch size for training
+
+# --- Exploration & Entropy ---
+TEMPERATURE_TRAIN = 1.0       # Flattens sampling distribution
+# Adaptive entropy bonus: bonus = coeff * max(0, target - current_entropy)
+# When entropy is low, bonus is high; when entropy >= target, bonus is zero
+ENTROPY_TARGET_START = 1.5    # Target entropy at start (nats)
+ENTROPY_TARGET_END = 0.5       # Target entropy at end (nats)
+ENTROPY_BONUS_COEFF = 1/32.0  # Coefficient for entropy bonus
+ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Transition occurs at 75% of training
+ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training duration
+ENTROPY_EMA_LAMBDA = 1/16.0    # EMA update rate for entropy tracking
+
+# --- Value Head & Advantage Estimation ---
+VALUE_LOSS_COEFF = 1.0         # Weight for value head loss
+GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
+VALUE_BASELINE_START = 512     # Update at which to start using value baseline
+
+# --- Tactical Enhancements ---
+MISS_RATE_EMA_WINDOW = 128     # Effective window for miss rate EMA
+WIN_MIN_BOOST = 0.0            # Minimum boost for win-in-1 (when miss rate is 0)
+WIN_MAX_BOOST = 1.0            # Maximum boost for win-in-1 (when miss rate is 1)
+BLOCK_MIN_BOOST = 0.0          # Minimum boost for blocking (when miss rate is 0)
+BLOCK_MAX_BOOST = 0.75         # Maximum boost for blocking (when miss rate is 1)
+
+SYNTHETIC_WIN_BOOST = 2.0   # Signal for missed win-in-1 (synthetic examples)
+SYNTHETIC_BLOCKING_BOOST = 1.5  # Signal for missed blocks (synthetic examples)
+MAX_SYNTHETIC_WINS = 256    # Max synthetic win-in-1 examples per batch
+MAX_SYNTHETIC_BLOCKS = 256  # Max synthetic blocking examples per batch
+EPISODE_WEIGHT_ALPHA = 0.5  # 0 => per-step weighting, 1 => per-episode equal mass
+
+# --- Imitation Learning ---
+IMITATION_WEIGHT = 0.6           # Weight for learning from opponent's winning moves
+IMITATION_START_UPDATE = 128 * 6 # Update at which to enable imitation learning
+
+# --- Counterfactual Low-Entropy Rescue (CLER) ---
+CF_START_UPDATE = 128 * 6       # Update at which to enable CLER
+CF_TRIGGER_PROB = 0.25          # Probability of triggering CLER on a lost game
+CF_ADVANTAGE = 1.25              # Strength multiplier for CLER samples
+CF_MIN_STEPS_TO_END = 6         # Minimum steps from terminal to consider
+CF_ENTROPY_TH = 0.5             # Entropy threshold (nats) - below this is "overconfident"
+CF_RADIUS = 2                   # Manhattan distance for local candidate moves
+CF_NUM_ACTIONS = 8              # Number of alternative actions to evaluate
+CF_NUM_ROLLOUTS = 8             # Rollouts per alternative action
+CF_WIN_MARGIN = 0.375           # Minimum margin over original action's winrate
+CF_MAX_SAMPLES_PER_UPDATE = 999 # Max CLER samples per training update
+CF_ROLLOUT_TEMP = 1.0           # Temperature for CLER rollouts
+
+# --- Opening Seeding ---
+SEED_PROBABILITY = 0.25         # Probability of starting from a Renju opening
+
+# --- Self-Play & Evaluation ---
+OPPONENT_POOL_SIZE = 16
+EVAL_ROUNDS = 32           # Rounds per eval
+EVAL_TEMP = 1.0            # Temperature for evaluation
+EVAL_INTERVAL_EARLY = 8    # Eval interval for early training phase
+EVAL_INTERVAL_MID = 32     # Eval interval for mid training phase
+EVAL_INTERVAL_LATE = 128   # Eval interval for late training phase
+WIN_RATE_THRESHOLD = 0.625 # Win rate needed to update opponent pool
+
+# --- Historical Exploiter Scanning ---
+SCAN_START_UPDATE = 8192         # Start scanning after this update (late phase)
+SCAN_PERIOD = 16                 # Scan every N evaluations (after SCAN_START_UPDATE)
+NUM_SCAN_BUCKETS = 4             # Number of buckets for round-robin checkpoint coverage
+QUICK_SCREEN_ROUNDS = 16         # Games per candidate in quick screening phase
+TOP_K_QUICK_SCREEN = 16          # Number of hardest candidates to advance to final screen
+FINAL_SCREEN_ROUNDS = 64         # Games per candidate in final screening phase
+MAX_MINED_OPPONENTS_PER_EVENT = 2  # Max historical exploiters added per scan event
+
+# --- Dynamic Opponent Sampling ---
+UNIFORM_SAMPLING_FRACTION = 0.5    # Fraction of episodes using uniform sampling
+DEFAULT_WIN_RATE = 0.5             # Default win rate for opponents without eval stats
+
+# --- Numerical Stability ---
+LOG_PROB_MIN = -10.0       # Minimum log probability
 LOGIT_MASK_VALUE = -1e9
+
+# --- Logging & Checkpointing ---
+PRINT_INTERVAL = 8         # Print stats every N updates
+TRAINING_STATE_FILE = "training_state.json"
+
+# --- Gradient Conflict Probing ---
+PROBE_INTERVAL = 64        # Probe gradient conflict every N updates (0 = disable)
+
+# ============================================================================
+# PyTorch Performance Settings
+# ============================================================================
+
+# --- Device ---
+DEVICE = torch.device("cuda")
+torch.backends.cudnn.conv.fp32_precision = 'tf32'  # New API in PyTorch2.9
+torch.backends.cuda.matmul.fp32_precision = 'tf32' # New API in PyTorch2.9
 
 
 # ============================================================================
@@ -161,6 +267,11 @@ class GomokuPolicyNet(nn.Module):
 
         Returns:
             Tuple of (logits_grid [B, 1, 15, 15], value [B, 1])
+
+        Policy head uses FiLM (Feature-wise Linear Modulation):
+            - Local features extracted by 3x conv tower
+            - Global state from GAP generates γ, β modulation parameters
+            - Modulated features: H' = γ ⊙ H + β
         """
         branch_3x3 = self.conv_3x3(x)
         branch_sparse_5x5 = self.conv_sparse5_d1(x) + self.conv_sparse5_d2(x)
@@ -261,8 +372,108 @@ class ResidualBlock(nn.Module):
 def zero_center_taps(model: nn.Module) -> None:
     """
     Zero out center taps in dilated stem convolutions to prevent redundant center contributions.
+
+    Should be called once after model initialization. Gradient hooks registered in the model
+    __init__ prevent optimizer updates to these positions, so no need to call after optimizer.step().
     """
     with torch.no_grad():
         model.conv_sparse5_d2.weight[:, :, 1, 1] = 0
         model.conv_sparse7_d2.weight[:, :, 1, 1] = 0
         model.conv_sparse7_d3.weight[:, :, 1, 1] = 0
+
+
+
+
+# ============================================================================
+# Inference Helper Functions
+# ============================================================================
+
+def obs_batch_to_tensor(obs_list: List[np.ndarray], device: torch.device) -> torch.Tensor:
+    """Convert list of observations to batched tensor."""
+    return torch.from_numpy(np.stack(obs_list)).float().to(device)
+
+
+def mask_batch_to_tensor(mask_list: List[np.ndarray], device: torch.device) -> torch.Tensor:
+    """Convert list of legal masks to batched tensor."""
+    return torch.from_numpy(np.stack(mask_list)).bool().to(device)
+
+
+def select_action_batch(model: nn.Module, obs_list: List[np.ndarray],
+                        mask_list: List[np.ndarray],
+                        temperature: float, device: torch.device,
+                        deterministic: bool = False) -> Tuple[List[int], List[float], List[float]]:
+    """
+    Select actions for a batch of positions using the policy network.
+
+    Returns:
+        Tuple of (actions, log_probs, entropies)
+    """
+    if len(obs_list) == 0:
+        return [], [], []
+
+    with torch.no_grad():
+        obs_tensor = obs_batch_to_tensor(obs_list, device)
+        mask_tensor = mask_batch_to_tensor(mask_list, device)
+
+        logits_grid, _ = model(obs_tensor)
+        logits = logits_grid.squeeze(1)
+
+        logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
+
+        if temperature > 0 and not deterministic:
+            logits = logits / temperature
+
+        logits_flat = logits.view(len(obs_list), 225)
+
+        if deterministic or temperature == 0:
+            actions = logits_flat.argmax(dim=1).cpu().numpy().tolist()
+            dist = Categorical(logits=logits_flat)
+            actions_tensor = torch.tensor(actions, dtype=torch.long, device=device)
+            log_probs = dist.log_prob(actions_tensor)
+            log_probs = torch.clamp(log_probs, min=LOG_PROB_MIN).cpu().numpy().tolist()
+        else:
+            dist = Categorical(logits=logits_flat)
+            actions_tensor = dist.sample()
+            actions = actions_tensor.cpu().numpy().tolist()
+            log_probs = dist.log_prob(actions_tensor)
+            log_probs = torch.clamp(log_probs, min=LOG_PROB_MIN).cpu().numpy().tolist()
+
+        # Compute entropy for CLER (in nats, using temperature-scaled distribution)
+        entropies = dist.entropy().cpu().numpy().tolist()
+
+    return actions, log_probs, entropies
+
+
+def select_action_batch_eval(model: nn.Module, obs_list: List[np.ndarray],
+                              mask_list: List[np.ndarray],
+                              temperature: float, device: torch.device,
+                              deterministic: bool = False) -> List[int]:
+    """
+    Select actions for evaluation - no log_prob computation.
+
+    Returns:
+        List of action indices
+    """
+    if len(obs_list) == 0:
+        return []
+
+    with torch.no_grad():
+        obs_tensor = obs_batch_to_tensor(obs_list, device)
+        mask_tensor = mask_batch_to_tensor(mask_list, device)
+
+        logits_grid, _ = model(obs_tensor)
+        logits = logits_grid.squeeze(1)
+        logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
+
+        if temperature > 0 and not deterministic:
+            logits = logits / temperature
+
+        logits_flat = logits.view(len(obs_list), 225)
+
+        if deterministic or temperature == 0:
+            actions = logits_flat.argmax(dim=1).cpu().tolist()
+        else:
+            probs = F.softmax(logits_flat, dim=1)
+            actions = torch.multinomial(probs, num_samples=1).squeeze(1).cpu().tolist()
+
+    return actions
