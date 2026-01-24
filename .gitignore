@@ -1,3 +1,5 @@
+GEMINI.md
+.gitignore
 *.pt
 *.log
 *.json
