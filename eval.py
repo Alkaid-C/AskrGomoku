@@ -345,9 +345,9 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
     """
     print(f"  Scanning historical checkpoints (scan event {scan_event_num}, bucket {scan_event_num % NUM_SCAN_BUCKETS})...")
 
-    all_checkpoints = discover_historical_checkpoints(output_dir, min_update=SCAN_START_UPDATE)
+    all_checkpoints = discover_historical_checkpoints(output_dir, min_update=0)
     if not all_checkpoints:
-        print(f"  No historical checkpoints found >= update {SCAN_START_UPDATE}")
+        print(f"  No historical checkpoints found")
         return [], 0, 0
 
     candidates = get_bucket_candidates(scan_event_num, all_checkpoints)

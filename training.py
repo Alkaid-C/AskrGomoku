@@ -56,7 +56,7 @@ EVAL_WIN_RATE_EMA_WINDOW = 3   # Effective window for evaluation win rate EMA (e
 # --- Entropy Bonus ---
 ENTROPY_TARGET_START = 1.0     # Entropy bonus numerator at start (nats)
 ENTROPY_TARGET_END = 0.25      # Entropy bonus numerator at end (nats)
-ENTROPY_BONUS_COEFF = 1/64.0   # Coefficient for entropy bonus
+ENTROPY_BONUS_COEFF = 1/128.0   # Coefficient for entropy bonus
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Transition occurs at 75% of training
 ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training duration
 
@@ -586,7 +586,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 probe_value_loss_accum = probe_value_loss_accum + value_loss_mb
 
         loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
-        loss_mb.backward()
+        loss_mb.backward(retain_graph=should_probe)
 
         accumulated_loss += loss_mb.item()
         accumulated_value_loss += value_loss_mb.item()

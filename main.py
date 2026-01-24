@@ -351,7 +351,7 @@ def main():
     }
 
     # Entropy EMA for adaptive entropy bonus
-    ema_entropy = ENTROPY_TARGET_START
+    ema_entropy = np.log(225)
 
     training_start_time = time.time()
 
