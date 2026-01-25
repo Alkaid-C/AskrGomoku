@@ -198,21 +198,6 @@ class GomokuBoard:
 
         return state
 
-    def Render(self) -> str:
-        """
-        Render the board as an ASCII string.
-
-        Returns:
-            String representation where:
-            - '.' represents empty cell
-            - 'x' represents black stone
-            - 'o' represents white stone
-        """
-        chars = np.full((15, 15), '.', dtype='U1')
-        chars[self.black_pieces == 1] = 'x'
-        chars[self.white_pieces == 1] = 'o'
-        return '\n'.join(''.join(row) for row in chars)
-
     def _check_win(self, row: int, col: int, pieces: np.ndarray) -> bool:
         """
         Check if placing a stone at (row, col) results in a win.
@@ -291,11 +276,6 @@ def encode_observation(c0: np.ndarray, c1: np.ndarray) -> np.ndarray:
 def idx_to_pos(idx: int) -> Tuple[int, int]:
     """Convert flat index to (row, col)."""
     return (idx // 15, idx % 15)
-
-
-def pos_to_idx(row: int, col: int) -> int:
-    """Convert (row, col) to flat index."""
-    return row * 15 + col
 
 
 def board_from_observation(obs: np.ndarray, next_player: Player) -> GomokuBoard:
@@ -386,12 +366,12 @@ def mask_batch_to_tensor(mask_list: List[np.ndarray], device: torch.device) -> t
 def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
                         mask_list: List[np.ndarray],
                         temperature: float, device: torch.device,
-                        deterministic: bool = False) -> Tuple[List[int], List[float], List[float]]:
+                        deterministic: bool = False) -> Tuple[List[int], List[float]]:
     """
     Select actions for a batch of positions using the policy network.
 
     Returns:
-        Tuple of (actions, log_probs, entropies)
+        Tuple of (actions, entropies)
     """
     with torch.no_grad():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
@@ -418,10 +398,7 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
         actions = actions_tensor.cpu().numpy().tolist()
         entropies = dist.entropy().cpu().numpy().tolist()
 
-        # log_probs not computed - training recomputes them from current policy
-        log_probs = [0.0] * len(actions)
-
-    return actions, log_probs, entropies
+    return actions, entropies
 
 
 def select_action_batch_eval(model: torch.nn.Module, obs_list: List[np.ndarray],
@@ -469,7 +446,6 @@ class Trajectory:
         self.players = []       # List of Player enum values (absolute)
         self.legal_masks = []   # List of [15, 15] legal masks
         self.is_current_policy = []  # List of bools: True if current_policy moved
-        self.log_probs = []     # List of log probabilities (from temperature-scaled distribution)
         self.entropies = []     # List of policy entropies (nats) for CLER
         self.outcome = None     # GameState enum
 
@@ -572,22 +548,19 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
 
             # Run batched inference for each unique model
             all_actions = [None] * len(batch_games)
-            all_log_probs = [None] * len(batch_games)
             all_entropies = [None] * len(batch_games)
             for model_id, group in model_groups.items():
-                actions, log_probs, entropies = select_action_batch_fn(
+                actions, entropies = select_action_batch_fn(
                     group['model'], group['obs'], group['masks'],
                     temperature, device, deterministic
                 )
-                for idx, action, log_prob, entropy in zip(group['indices'], actions, log_probs, entropies):
+                for idx, action, entropy in zip(group['indices'], actions, entropies):
                     all_actions[idx] = action
-                    all_log_probs[idx] = log_prob
                     all_entropies[idx] = entropy
 
             # Execute moves
-            for game, action, log_prob, entropy in zip(batch_games, all_actions, all_log_probs, all_entropies):
+            for game, action, entropy in zip(batch_games, all_actions, all_entropies):
                 game.traj.actions.append(action)
-                game.traj.log_probs.append(log_prob)
                 game.traj.entropies.append(entropy)
                 row, col = idx_to_pos(action)
                 outcome = game.board.Move((row, col))

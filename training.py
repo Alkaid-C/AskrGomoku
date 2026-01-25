@@ -16,15 +16,15 @@ import numpy as np
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
 
-from model import DEVICE, N_BLOCKS
+from model import N_BLOCKS
 from gomoku import (
-    Trajectory, GameState, Player,
+    Trajectory,
     obs_batch_to_tensor, mask_batch_to_tensor,
     compute_returns, TEMPERATURE_TRAIN, LOG_PROB_MIN, LOGIT_MASK_VALUE
 )
 from enhancement import (
     apply_tactical_enhancements, augment_batch_8fold,
-    TacticalStats, TacticalBoostInfo, EPISODE_WEIGHT_ALPHA,
+    TacticalStats, EPISODE_WEIGHT_ALPHA,
     IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
 )
 
@@ -50,15 +50,15 @@ EPISODES_CHUNK_SIZE = 32       # Chunk size for gradient accumulation (saves VRA
 TRAIN_BATCH_SIZE = 256 * 3     # Micro-batch size for training
 
 # --- EMA Smoothing ---
-EMA_WINDOW = 64               # Effective window for per-update EMA tracking (alpha = 1/window)
-EVAL_WIN_RATE_EMA_WINDOW = 3   # Effective window for evaluation win rate EMA (evals happen less frequently)
+EMA_WINDOW = 64                # Effective window for per-update EMA tracking (alpha = 1/window)
+EVAL_WIN_RATE_EMA_WINDOW = 2   # Effective window for evaluation win rate EMA (evals happen less frequently)
 
 # --- Entropy Bonus ---
-ENTROPY_TARGET_START = 1.0     # Entropy bonus numerator at start (nats)
-ENTROPY_TARGET_END = 0.25      # Entropy bonus numerator at end (nats)
+ENTROPY_TARGET_START = 1.0      # Entropy bonus numerator at start (nats)
+ENTROPY_TARGET_END = 0.1875      # Entropy bonus numerator at end (nats)
 ENTROPY_BONUS_COEFF = 1/128.0   # Coefficient for entropy bonus
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of total training
-ENTROPY_DECAY_STEEPNESS = 0.5  # Sigmoid width as fraction of total training
+ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
 VALUE_LOSS_COEFF = 1.0         # Weight for value head loss
@@ -303,7 +303,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Track trajectory structure for GAE computation
     sample_to_traj = []  # Maps sample index to (traj_idx, step_idx)
 
-    num_trajectories = 0
     num_imitation_black = 0
     num_imitation_white = 0
 
@@ -315,8 +314,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         if current_steps == 0:
             continue
 
-        num_trajectories += 1
-
         imitation_enabled = IMITATION_MAX_WEIGHT > 0 and update >= IMITATION_START_UPDATE
 
         current_weight = (1.0 / (current_steps ** EPISODE_WEIGHT_ALPHA)) / 8.0
@@ -324,8 +321,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         base_imitation_weight = (1.0 - win_rate) * (IMITATION_MAX_WEIGHT - IMITATION_MIN_WEIGHT) + IMITATION_MIN_WEIGHT
         imitation_weight = base_imitation_weight * current_weight if imitation_enabled else 0
 
-        for step_idx, (obs, action, legal_mask, log_prob, z_t, is_current) in enumerate(zip(
-            traj.observations, traj.actions, traj.legal_masks, traj.log_probs, returns, traj.is_current_policy
+        for step_idx, (obs, action, legal_mask, z_t, is_current) in enumerate(zip(
+            traj.observations, traj.actions, traj.legal_masks, returns, traj.is_current_policy
         )):
             if is_current:
                 all_obs.append(obs)
@@ -541,7 +538,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     accumulated_value_loss = 0.0
     accumulated_value_mse_sum = 0.0
     accumulated_value_mse_count = 0
-    accumulated_weighted_policy_loss_sum = 0.0
     accumulated_weighted_entropy_sum = 0.0
     accumulated_weight_sum = 0.0
 
@@ -639,7 +635,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         accumulated_loss += loss_mb.item()
         accumulated_value_loss += value_loss_mb.item()
-        accumulated_weighted_policy_loss_sum += (batch_weights * advantages * batch_log_probs).sum().item()
         accumulated_weighted_entropy_sum += (batch_weights * entropies).sum().item()
         accumulated_weight_sum += batch_weights.sum().item()
         accumulated_value_mse_sum += (value_mse * batch_value_loss_mask.float()).sum().item()

@@ -8,7 +8,6 @@ Entry point for Gomoku self-play training. Contains:
 """
 
 import torch
-import torch.nn as nn
 from collections import deque
 import numpy as np
 import random

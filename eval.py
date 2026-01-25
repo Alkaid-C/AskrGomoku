@@ -278,7 +278,7 @@ def sample_opponent_weighted(opponent_pool: deque, opponent_pool_updates: List[i
     if random.random() < UNIFORM_SAMPLING_FRACTION:
         return random.choice(pool_list)
 
-    # Difficulty-weighted: weight = 1 - win_rate
+    # Difficulty-weighted: weight = 1 - win_rate (clamped to >= 0.01)
     weights = []
     for update_num in opponent_pool_updates:
         key = str(update_num)
@@ -287,9 +287,6 @@ def sample_opponent_weighted(opponent_pool: deque, opponent_pool_updates: List[i
         weights.append(weight)
 
     total_weight = sum(weights)
-    if total_weight <= 0:
-        return random.choice(pool_list)
-
     probs = [w / total_weight for w in weights]
     idx = random.choices(range(len(pool_list)), weights=probs, k=1)[0]
     return pool_list[idx]

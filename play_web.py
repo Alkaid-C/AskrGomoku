@@ -9,14 +9,13 @@ All HTML, CSS, and JavaScript are embedded in this file for portability.
 
 import os
 import glob
-import re
 from flask import Flask, jsonify, request
 import torch
 import torch.nn.functional as F
 import numpy as np
 
 from model import GomokuPolicyNet, N_BLOCKS
-from gomoku import encode_observation, idx_to_pos, pos_to_idx
+from gomoku import encode_observation, idx_to_pos
 
 app = Flask(__name__)
 
@@ -1202,10 +1201,9 @@ def run_inference(black_pieces, white_pieces, current_player, temperature=1.0):
             - value: float (from BLACK's perspective)
             - probabilities: list of {row, col, prob} for all legal moves
             - all_probs_grid: 15x15 grid of probabilities (0 for illegal)
-    """
-    if current_model is None:
-        return None
 
+    Note: Caller must ensure current_model is not None before calling.
+    """
     obs = board_to_observation(black_pieces, white_pieces, current_player)
     legal_mask = get_legal_mask(black_pieces, white_pieces)
 

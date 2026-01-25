@@ -1,0 +1,139 @@
+nohup: ignoring input
+Output directory: j25
+
+Using device: cuda
+Model architecture:
+  Stem (dilated design):
+    - 3x3: 36ch
+    - 5x5 sparse (d1+d2): 18ch, 5x5 dense: 12ch
+    - 7x7 sparse (d1+d2+d3): 18ch, 7x7 dense: 6ch
+    - Total: 96 channels (center taps zeroed for d>1)
+  Residual blocks: 16 x 96 channels
+    - Dilation schedule (conv2): [1, 1, 2, 3, 1, 1, 2, 3, 1, 1, 2, 3, 1, 1, 1, 1]
+    - SE schedule: [False, False, False, False, True, True, False, False, True, True, False, False, True, True, False, False] (6 blocks with SE)
+  Policy head: 96 -> 128 (+SiLU) -> 225
+  Value head: 96 -> 128 -> 256 -> GAP -> fc256 -> 1
+Training configuration:
+  Learning rate: 0.0001220703125 (tanh decay: mid=75%, steep=50%, min: 1.52587890625e-05)
+  Exploration (hybrid): Temperature=1.0 (behavior) + Entropy bonus (gradient)
+    Target entropy: 1.0 -> 0.1875 nats (sigmoid: mid=62%, steep=62%)
+    Bonus: coeff=0.0078125
+  EMA windows: per-update=64, eval win_rate=2
+  Episodes per update: 64 (chunks: 32 x 2 accumulation steps)
+  Batch inference size (self-play): 1024
+  Data augmentation: 8-fold symmetry (rot + flip)
+  Imitation learning: Dynamic weight (win_rate=0: 1.5, win_rate=1: 0.5), start: update 128
+  Value head: ENABLED (weight: 1.0, targets: TD(0))
+  GAE: lambda=0.95 (blend)
+  Phased training:
+    - Phase 1 (0-511): Raw returns + tactical bonuses
+    - Phase 2 (512+): Value baseline + tactical bonuses (always)
+    - Tactical bonuses prevent terminal state learning collapse
+  Opening seeding: 25% of games start from Renju opening (184 patterns)
+  Opponent pool size: 16
+  Eval interval: 8 (early) -> 32 (mid) -> 128 (late)
+  Pool eviction: evict-easiest (by current win rate)
+  Historical exploiter scanning:
+    - Starts at update 8192, every 16 evals
+    - 4 buckets for round-robin coverage
+  Total updates: 65536
+
+============================================================
+Checking for existing training state...
+============================================================
+No training state file found (j25/training_state.json)
+Starting fresh training (no existing state found)
+============================================================
+
+Initializing opponent pool with random policies...
+Opponent pool initialized with 16 models
+
+Update     8/65536 | WinRate: 88%(W89%-B87%) | AvgLen: 68.1 | Entropy: 4.599 | MissEMA: W=99% B=100% | 26.01s/upd | Elapsed: 3m28s | ETA: 473h24m
+
+--- Eval @ 8 ---
+  Saved: checkpoint_update_8.pt
+  WinRate: 100.0% (1024 games, 43.2s) | Hard: 0:100% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 16
+
+Update    16/65536 | WinRate: 96%(W96%-B94%) | AvgLen: 28.7 | Entropy: 3.857 | MissEMA: W=97% B=95% | 12.88s/upd | Elapsed: 5m54s | ETA: 403h10m
+
+--- Eval @ 16 ---
+  Saved: checkpoint_update_16.pt
+  WinRate: 99.5% (1024 games, 25.7s) | Hard: 8:92% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 24
+
+Update    24/65536 | WinRate: 97%(W96%-B99%) | AvgLen: 13.5 | Entropy: 2.752 | MissEMA: W=89% B=93% | 5.01s/upd | Elapsed: 7m00s | ETA: 318h41m
+
+--- Eval @ 24 ---
+  Saved: checkpoint_update_24.pt
+  WinRate: 98.1% (1024 games, 17.8s) | Hard: 16:72% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 32
+
+Update    32/65536 | WinRate: 94%(W94%-B94%) | AvgLen: 11.9 | Entropy: 2.271 | MissEMA: W=81% B=91% | 4.14s/upd | Elapsed: 7m51s | ETA: 268h00m
+
+--- Eval @ 32 ---
+  Saved: checkpoint_update_32.pt
+  WinRate: 97.2% (1024 games, 14.7s) | Hard: 24:58% Easy: 8:100%
+  Pool: +current -0
+  Next eval: 40
+
+Update    40/65536 | WinRate: 95%(W92%-B97%) | AvgLen: 9.8 | Entropy: 1.487 | MissEMA: W=72% B=89% | 3.36s/upd | Elapsed: 8m33s | ETA: 233h19m
+
+--- Eval @ 40 ---
+  Saved: checkpoint_update_40.pt
+  WinRate: 93.1% (1024 games, 15.4s) | Hard: 32:42% Easy: 8:100%
+  Pool: +current -0
+  Next eval: 48
+
+Update    48/65536 | WinRate: 91%(W84%-B96%) | AvgLen: 9.9 | Entropy: 1.634 | MissEMA: W=65% B=90% | 3.38s/upd | Elapsed: 9m15s | ETA: 210h33m
+
+--- Eval @ 48 ---
+  Saved: checkpoint_update_48.pt
+  WinRate: 91.6% (1024 games, 15.3s) | Hard: 40:45% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 56
+
+Update    56/65536 | WinRate: 92%(W88%-B97%) | AvgLen: 9.3 | Entropy: 1.271 | MissEMA: W=57% B=91% | 3.20s/upd | Elapsed: 9m56s | ETA: 193h46m
+
+--- Eval @ 56 ---
+  Saved: checkpoint_update_56.pt
+  WinRate: 90.2% (1024 games, 13.5s) | Hard: 48:53% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 64
+
+  [Probe] Overall cos_sim=+0.029 | Stem=-0.007
+Update    64/65536 | WinRate: 88%(W79%-B96%) | AvgLen: 8.9 | Entropy: 1.154 | MissEMA: W=51% B=91% | 3.73s/upd | Elapsed: 10m40s | ETA: 181h53m
+
+--- Eval @ 64 ---
+  Saved: checkpoint_update_64.pt
+  WinRate: 87.5% (1024 games, 14.4s) | Hard: 56:50% Easy: 8:100%
+  Pool: +current -0
+  Next eval: 72
+
+Update    72/65536 | WinRate: 85%(W76%-B94%) | AvgLen: 8.9 | Entropy: 1.244 | MissEMA: W=45% B=92% | 3.13s/upd | Elapsed: 11m19s | ETA: 171h39m
+
+--- Eval @ 72 ---
+  Saved: checkpoint_update_72.pt
+  WinRate: 84.5% (1024 games, 14.4s) | Hard: 64:48% Easy: 8:100%
+  Pool: +current -0
+  Next eval: 80
+
+Update    80/65536 | WinRate: 81%(W68%-B96%) | AvgLen: 8.8 | Entropy: 1.313 | MissEMA: W=40% B=93% | 3.15s/upd | Elapsed: 11m59s | ETA: 163h29m
+
+--- Eval @ 80 ---
+  Saved: checkpoint_update_80.pt
+  WinRate: 80.9% (1024 games, 14.4s) | Hard: 64:45% Easy: 0:100%
+  Pool: +current -0
+  Next eval: 88
+
+Update    88/65536 | WinRate: 78%(W62%-B94%) | AvgLen: 8.7 | Entropy: 1.366 | MissEMA: W=35% B=94% | 3.05s/upd | Elapsed: 12m38s | ETA: 156h39m
+
+--- Eval @ 88 ---
+  Saved: checkpoint_update_88.pt
+  WinRate: 79.0% (1024 games, 13.1s) | Hard: 72:47% Easy: 8:100%
+  Pool: +current -0
+  Next eval: 96
+

@@ -17,10 +17,9 @@ import random
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from model import DEVICE
 from gomoku import (
-    Player, GameState, Trajectory,
-    board_from_observation, get_local_candidate_moves, idx_to_pos, encode_observation,
+    GameState, Trajectory,
+    get_local_candidate_moves,
     play_cler_rollouts_batched, select_action_batch_eval,
     BATCH_INFERENCE_SIZE
 )
@@ -44,10 +43,10 @@ MAX_SYNTHETIC_BLOCKS = 256     # Max synthetic blocking examples per batch
 # --- Imitation Learning ---
 IMITATION_MAX_WEIGHT = 1.5      # Maximum weight for imitation learning (at 0% win rate)
 IMITATION_MIN_WEIGHT = 0.5      # Minimum weight for imitation learning (at 100% win rate)
-IMITATION_START_UPDATE = 512    # Update at which to enable imitation learning
+IMITATION_START_UPDATE = 128    # Update at which to enable imitation learning
 
 # --- Counterfactual Low-Entropy Rescue (CLER) ---
-CF_START_UPDATE = 512          # Update at which to enable CLER
+CF_START_UPDATE = 128          # Update at which to enable CLER
 CF_TRIGGER_PROB = 0.25         # Probability of triggering CLER on a lost game
 CF_ADVANTAGE = 1.25            # Strength multiplier for CLER samples
 CF_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
