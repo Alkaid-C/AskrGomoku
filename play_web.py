@@ -1021,10 +1021,9 @@ function highlightMove(row, col) {
 }
 
 async function makeAIMove() {
-    if (!aiData) {
-        await getAISuggestion();
-        if (!aiData) return;
-    }
+    // Always get fresh AI analysis for current board state
+    await getAISuggestion();
+    if (!aiData) return;
 
     const [row, col] = aiData.best_move;
 
@@ -1232,8 +1231,8 @@ def run_inference(black_pieces, white_pieces, current_player, temperature=1.0):
     # Get probabilities
     probs = F.softmax(logits_scaled.view(-1), dim=0).view(15, 15)
 
-    # Find best move
-    best_idx = logits_masked.view(-1).argmax().item()
+    # Sample move from probability distribution (respects temperature)
+    best_idx = torch.multinomial(probs.view(-1), num_samples=1).item()
     best_row, best_col = idx_to_pos(best_idx)
 
     # Convert value to BLACK's perspective

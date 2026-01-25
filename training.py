@@ -50,7 +50,7 @@ EPISODES_CHUNK_SIZE = 32       # Chunk size for gradient accumulation (saves VRA
 TRAIN_BATCH_SIZE = 256 * 3     # Micro-batch size for training
 
 # --- EMA Smoothing ---
-EMA_WINDOW = 128               # Effective window for per-update EMA tracking (alpha = 1/window)
+EMA_WINDOW = 64               # Effective window for per-update EMA tracking (alpha = 1/window)
 EVAL_WIN_RATE_EMA_WINDOW = 3   # Effective window for evaluation win rate EMA (evals happen less frequently)
 
 # --- Entropy Bonus ---
@@ -63,7 +63,7 @@ ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training du
 # --- Value Head & Advantage Estimation ---
 VALUE_LOSS_COEFF = 1.0         # Weight for value head loss
 GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
-VALUE_BASELINE_START = 128 * 6 # Update at which to start using value baseline
+VALUE_BASELINE_START = 512     # Update at which to start using value baseline
 
 # --- Logging ---
 PRINT_INTERVAL = 8             # Print stats every N updates
