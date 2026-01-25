@@ -33,9 +33,9 @@ DEFAULT_WIN_RATE = 0.5         # Default win rate for new opponents
 # --- Evaluation ---
 EVAL_ROUNDS = 32               # Number of evaluation rounds per opponent
 EVAL_TEMP = 1.0                # Temperature for evaluation
-EVAL_INTERVAL_EARLY = 8        # Evaluation interval for updates 0-512
-EVAL_INTERVAL_MID = 32         # Evaluation interval for updates 512-8192
-EVAL_INTERVAL_LATE = 128       # Evaluation interval for updates 8192+
+EVAL_INTERVAL_EARLY = 8        # Evaluation interval for early training
+EVAL_INTERVAL_MID = 32         # Evaluation interval for mid training
+EVAL_INTERVAL_LATE = 128       # Evaluation interval for late training
 WIN_RATE_THRESHOLD = 19.0/32   # Minimum win rate to add to opponent pool
 
 # --- Opponent Sampling ---

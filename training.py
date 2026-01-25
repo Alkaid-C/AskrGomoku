@@ -57,8 +57,8 @@ EVAL_WIN_RATE_EMA_WINDOW = 3   # Effective window for evaluation win rate EMA (e
 ENTROPY_TARGET_START = 1.0     # Entropy bonus numerator at start (nats)
 ENTROPY_TARGET_END = 0.25      # Entropy bonus numerator at end (nats)
 ENTROPY_BONUS_COEFF = 1/128.0   # Coefficient for entropy bonus
-ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Transition occurs at 75% of training
-ENTROPY_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training duration
+ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of total training
+ENTROPY_DECAY_STEEPNESS = 0.5  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
 VALUE_LOSS_COEFF = 1.0         # Weight for value head loss
@@ -71,167 +71,8 @@ PROBE_INTERVAL = 64            # Probe gradient conflict every N updates (0 = di
 
 
 # ============================================================================
-# GAE Computation
-# ============================================================================
-
-def compute_gae_for_trajectories(model: nn.Module, trajectories: List[Trajectory],
-                                  device: torch.device, gae_lambda: float) -> List[np.ndarray]:
-    """
-    Compute GAE advantages for all trajectories.
-
-    For two-player games with canonical representation:
-        delta_n = -V(S_{n+1}) - V(S_n) for non-terminal
-        delta_n = z - V(S_n) for terminal
-        A_n = delta_n - lambda * A_{n+1}
-
-    Args:
-        model: Neural network model with value head
-        trajectories: List of trajectory objects
-        device: torch device
-        gae_lambda: GAE lambda parameter
-    """
-    all_gae = []
-
-    for traj in trajectories:
-        T = len(traj.observations)
-        if T == 0:
-            all_gae.append(np.array([]))
-            continue
-
-        obs_tensor = obs_batch_to_tensor(traj.observations, device)
-        with torch.no_grad():
-            _, values = model(obs_tensor)
-        values = values.squeeze(1).cpu().numpy()
-
-        returns = compute_returns(traj)
-
-        gae_advantages = np.zeros(T, dtype=np.float32)
-        gae = 0.0
-
-        for t in reversed(range(T)):
-            if t == T - 1:
-                delta = returns[t] - values[t]
-            else:
-                delta = -values[t + 1] - values[t]
-
-            gae = delta - gae_lambda * gae
-            gae_advantages[t] = gae
-
-        all_gae.append(gae_advantages)
-
-    return all_gae
-
-
-# ============================================================================
 # Gradient Conflict Probing
 # ============================================================================
-
-def probe_gradient_conflict_microbatch(model: nn.Module, policy_loss: torch.Tensor,
-                                        value_loss: torch.Tensor, update: int) -> Dict[str, float]:
-    """
-    Probe gradient conflict between policy and value losses on a micro-batch.
-
-    Computes cosine similarity between policy gradients and value gradients
-    for different parts of the network. This version works on a single micro-batch
-    to minimize memory overhead.
-    """
-    # Temporarily save current gradients (if any) and zero them
-    saved_grads = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            saved_grads[name] = param.grad.clone()
-            param.grad = None
-
-    # Compute policy gradients
-    policy_loss.backward(retain_graph=True)
-    policy_grads = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            policy_grads[name] = param.grad.clone()
-
-    # Zero gradients and compute value gradients
-    model.zero_grad()
-    value_loss.backward()
-    value_grads = {}
-    for name, param in model.named_parameters():
-        if param.grad is not None:
-            value_grads[name] = param.grad.clone()
-
-    def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
-        grads_1 = []
-        grads_2 = []
-        for name in param_names:
-            if name in grad_dict_1 and name in grad_dict_2:
-                grads_1.append(grad_dict_1[name].flatten())
-                grads_2.append(grad_dict_2[name].flatten())
-
-        if not grads_1:
-            return 0.0, 0.0, 0.0
-
-        vec1 = torch.cat(grads_1)
-        vec2 = torch.cat(grads_2)
-
-        norm1 = vec1.norm().item()
-        norm2 = vec2.norm().item()
-
-        if norm1 < 1e-8 or norm2 < 1e-8:
-            return 0.0, norm1, norm2
-
-        cos = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0)).item()
-        return cos, norm1, norm2
-
-    # Categorize parameters
-    stem_params = []
-    trunk_params = {f'blocks_{i}-{i+3}': [] for i in range(0, N_BLOCKS, 4)}
-    all_trunk_stem_params = []
-
-    for name in policy_grads.keys():
-        if any(x in name for x in ['conv_3x3', 'conv_sparse5', 'conv_dense_5x5',
-                                     'conv_sparse7', 'conv_dense_7x7', 'conv_1x1',
-                                     'stem_norm']):
-            stem_params.append(name)
-            all_trunk_stem_params.append(name)
-        elif 'blocks.' in name:
-            block_idx = int(name.split('blocks.')[1].split('.')[0])
-            layer_start = (block_idx // 4) * 4
-            layer_key = f'blocks_{layer_start}-{layer_start+3}'
-            trunk_params[layer_key].append(name)
-            all_trunk_stem_params.append(name)
-
-    # Compute cosine similarities
-    overall_cos, overall_norm_p, overall_norm_v = cosine_sim(policy_grads, value_grads, all_trunk_stem_params)
-    stem_cos, stem_norm_p, stem_norm_v = cosine_sim(policy_grads, value_grads, stem_params)
-
-    trunk_metrics = {}
-    for layer_key in sorted(trunk_params.keys()):
-        layer_cos, layer_norm_p, layer_norm_v = cosine_sim(policy_grads, value_grads, trunk_params[layer_key])
-        trunk_metrics[layer_key] = (layer_cos, layer_norm_p, layer_norm_v)
-
-    # Restore original gradients
-    model.zero_grad()
-    for name, param in model.named_parameters():
-        if name in saved_grads:
-            param.grad = saved_grads[name]
-
-    # Build metrics dictionary
-    metrics = {
-        'overall_cos_sim': overall_cos,
-        'overall_policy_norm': overall_norm_p,
-        'overall_value_norm': overall_norm_v,
-        'stem_cos_sim': stem_cos,
-        'stem_policy_norm': stem_norm_p,
-        'stem_value_norm': stem_norm_v,
-    }
-
-    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15']:
-        cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
-        prefix = layer_key.replace('-', '_')
-        metrics[f'{prefix}_cos_sim'] = cos
-        metrics[f'{prefix}_policy_norm'] = norm_p
-        metrics[f'{prefix}_value_norm'] = norm_v
-
-    return metrics
-
 
 def probe_gradient_conflict_chunked(
     model: nn.Module,
@@ -292,7 +133,7 @@ def probe_gradient_conflict_chunked(
         logits_flat = logits.view(batch_size, 225)
 
         logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
-        dist = Categorical(logits=logits_scaled)
+        dist = Categorical(logits=logits_scaled, validate_args=False)
         batch_log_probs = dist.log_prob(actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
 
@@ -753,7 +594,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         logits_flat = logits.view(batch_size, 225)
 
         logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
-        dist = Categorical(logits=logits_scaled)
+        dist = Categorical(logits=logits_scaled, validate_args=False)
         entropies = dist.entropy()
         batch_log_probs = dist.log_prob(batch_actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
@@ -852,14 +693,6 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     Returns:
         Dictionary with training statistics
     """
-    if len(trajectories) == 0:
-        return {
-            'loss': 0.0, 'mean_return': 0.0, 'entropy': 0.0, 'value_loss': 0.0,
-            'raw_value_mse': 0.0, 'tactical_stats': TacticalStats(),
-            'imitation_black': 0, 'imitation_white': 0, 'cler_samples': 0,
-            'probe_metrics': None
-        }
-
     num_chunks = (len(trajectories) + chunk_size - 1) // chunk_size
     chunks = [trajectories[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks)]
 

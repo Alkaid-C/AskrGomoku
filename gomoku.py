@@ -26,7 +26,7 @@ from model import DEVICE
 # ============================================================================
 
 BATCH_INFERENCE_SIZE = 1024      # Positions processed simultaneously during self-play
-TEMPERATURE_TRAIN = 1.0        # Flattens sampling distribution
+TEMPERATURE_TRAIN = 1.0        # Softmax temperature for training (>1 flattens, <1 sharpens)
 SEED_PROBABILITY = 0.25        # Probability of starting from a Renju opening
 LOG_PROB_MIN = -10.0           # Minimum log probability
 LOGIT_MASK_VALUE = -1e9
@@ -393,9 +393,6 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
     Returns:
         Tuple of (actions, log_probs, entropies)
     """
-    if len(obs_list) == 0:
-        return [], [], []
-
     with torch.no_grad():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
@@ -411,20 +408,18 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
         logits_flat = logits.view(len(obs_list), 225)
 
         if deterministic or temperature == 0:
-            actions = logits_flat.argmax(dim=1).cpu().numpy().tolist()
-            dist = Categorical(logits=logits_flat)
-            actions_tensor = torch.tensor(actions, dtype=torch.long, device=device)
-            log_probs = dist.log_prob(actions_tensor)
-            log_probs = torch.clamp(log_probs, min=LOG_PROB_MIN).cpu().numpy().tolist()
+            actions_tensor = logits_flat.argmax(dim=1)
+            dist = Categorical(logits=logits_flat, validate_args=False)
         else:
-            dist = Categorical(logits=logits_flat)
+            dist = Categorical(logits=logits_flat, validate_args=False)
             actions_tensor = dist.sample()
-            actions = actions_tensor.cpu().numpy().tolist()
-            log_probs = dist.log_prob(actions_tensor)
-            log_probs = torch.clamp(log_probs, min=LOG_PROB_MIN).cpu().numpy().tolist()
 
-        # Compute entropy for CLER (in nats, using temperature-scaled distribution)
+        # Separate transfers (stacking adds overhead)
+        actions = actions_tensor.cpu().numpy().tolist()
         entropies = dist.entropy().cpu().numpy().tolist()
+
+        # log_probs not computed - training recomputes them from current policy
+        log_probs = [0.0] * len(actions)
 
     return actions, log_probs, entropies
 
@@ -439,9 +434,6 @@ def select_action_batch_eval(model: torch.nn.Module, obs_list: List[np.ndarray],
     Returns:
         List of action indices
     """
-    if len(obs_list) == 0:
-        return []
-
     with torch.no_grad():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
@@ -761,9 +753,6 @@ def play_cler_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, i
     Returns:
         List of bool indicating if first_player won for each rollout
     """
-    if not rollout_configs:
-        return []
-
     # Initialize all rollout games
     games = [CLERRolloutState(obs, player, action, black_model, white_model)
              for obs, player, action, black_model, white_model in rollout_configs]
