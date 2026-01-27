@@ -7,6 +7,12 @@ Entry point for Gomoku self-play training. Contains:
 - CLI argument parsing
 """
 
+import os
+
+# Enable expandable segments to reduce CUDA memory fragmentation
+# This helps avoid OOM errors when there is reserved but unallocated memory
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 import torch
 from collections import deque
 import numpy as np
@@ -59,6 +65,9 @@ from csv_logger import CSVLogger
 DEVICE = torch.device("cuda")
 torch.backends.cudnn.conv.fp32_precision = 'tf32'
 torch.backends.cuda.matmul.fp32_precision = 'tf32'
+
+# Memory management
+CACHE_CLEAR_INTERVAL = 8  # Clear CUDA cache every N updates to prevent fragmentation (0 = disable)
 
 
 # ============================================================================
@@ -412,6 +421,10 @@ def main():
             win_rate=win_rate_ema
         )
         t_train = time.time() - t0
+
+        # Clear CUDA cache periodically to prevent fragmentation
+        if CACHE_CLEAR_INTERVAL > 0 and (update + 1) % CACHE_CLEAR_INTERVAL == 0:
+            torch.cuda.empty_cache()
 
         # Update entropy EMA
         ema_alpha = 1.0 / EMA_WINDOW

@@ -18,7 +18,7 @@ import re
 import random
 from typing import List, Tuple, Optional, Dict
 
-from model import GomokuPolicyNet, N_BLOCKS, DEVICE
+from model import GomokuPolicyNet, N_BLOCKS
 from gomoku import GameState, play_eval_games, select_action_batch_eval
 
 
@@ -33,7 +33,7 @@ DEFAULT_WIN_RATE = 0.5         # Default win rate for new opponents
 # --- Evaluation ---
 EVAL_ROUNDS = 32               # Number of evaluation rounds per opponent
 EVAL_TEMP = 1.0                # Temperature for evaluation
-EVAL_INTERVAL_EARLY = 8        # Evaluation interval for early training
+EVAL_INTERVAL_EARLY = 4        # Evaluation interval for early training
 EVAL_INTERVAL_MID = 32         # Evaluation interval for mid training
 EVAL_INTERVAL_LATE = 128       # Evaluation interval for late training
 WIN_RATE_THRESHOLD = 19.0/32   # Minimum win rate to add to opponent pool
@@ -88,9 +88,9 @@ def load_checkpoint_model(checkpoint_path: str, device: torch.device) -> Optiona
 
 def get_eval_interval(update: int) -> int:
     """Get adaptive evaluation interval based on training progress."""
-    if update < 512:
+    if update < 128:
         return EVAL_INTERVAL_EARLY
-    elif update < 8192:
+    elif update < 2048:
         return EVAL_INTERVAL_MID
     else:
         return EVAL_INTERVAL_LATE

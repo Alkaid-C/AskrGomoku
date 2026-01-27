@@ -15,10 +15,9 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
 import random
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from enum import Enum
 
-from model import DEVICE
 
 
 # ============================================================================
@@ -455,7 +454,6 @@ class GameState_InProgress:
 
     def __init__(self, game_id: int, black_model, white_model,
                  current_is_black: bool, opening_id: int = -1):
-        self.game_id = game_id
         self.board = GomokuBoard(opening_id=opening_id)
         self.black_model = black_model
         self.white_model = white_model

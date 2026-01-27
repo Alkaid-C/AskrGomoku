@@ -1220,18 +1220,19 @@ def run_inference(black_pieces, white_pieces, current_player, temperature=1.0):
     logits_masked = logits.clone()
     logits_masked[~legal_mask_tensor.squeeze(0)] = -1e9
 
-    # Apply temperature
-    if temperature > 0:
-        logits_scaled = logits_masked / temperature
+    # Apply temperature and select move
+    if temperature == 0:
+        # Deterministic: pick highest probability move (argmax)
+        best_idx = logits_masked.view(-1).argmax().item()
+        best_row, best_col = idx_to_pos(best_idx)
+        # For display purposes, still compute softmax probabilities
+        probs = F.softmax(logits_masked.view(-1), dim=0).view(15, 15)
     else:
-        logits_scaled = logits_masked
-
-    # Get probabilities
-    probs = F.softmax(logits_scaled.view(-1), dim=0).view(15, 15)
-
-    # Sample move from probability distribution (respects temperature)
-    best_idx = torch.multinomial(probs.view(-1), num_samples=1).item()
-    best_row, best_col = idx_to_pos(best_idx)
+        # Stochastic: sample from temperature-scaled distribution
+        logits_scaled = logits_masked / temperature
+        probs = F.softmax(logits_scaled.view(-1), dim=0).view(15, 15)
+        best_idx = torch.multinomial(probs.view(-1), num_samples=1).item()
+        best_row, best_col = idx_to_pos(best_idx)
 
     # Convert value to BLACK's perspective
     # value is from current player's perspective
@@ -1316,9 +1317,6 @@ def api_inference():
         return jsonify({'error': 'No model loaded'})
 
     result = run_inference(black_pieces, white_pieces, current_player, temperature)
-
-    if result is None:
-        return jsonify({'error': 'Inference failed'})
 
     return jsonify(result)
 

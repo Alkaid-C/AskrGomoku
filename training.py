@@ -14,7 +14,6 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
 from typing import List, Tuple, Optional, Dict
-from dataclasses import dataclass
 
 from model import N_BLOCKS
 from gomoku import (
@@ -47,7 +46,7 @@ GRAD_CLIP_NORM = 16.0
 # --- Batching & Memory ---
 EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
 EPISODES_CHUNK_SIZE = 32       # Chunk size for gradient accumulation (saves VRAM)
-TRAIN_BATCH_SIZE = 256 * 3     # Micro-batch size for training
+TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
 
 # --- EMA Smoothing ---
 EMA_WINDOW = 64                # Effective window for per-update EMA tracking (alpha = 1/window)
@@ -66,7 +65,7 @@ GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
 VALUE_BASELINE_START = 512     # Update at which to start using value baseline
 
 # --- Logging ---
-PRINT_INTERVAL = 8             # Print stats every N updates
+PRINT_INTERVAL = 1             # Print stats every N updates
 PROBE_INTERVAL = 64            # Probe gradient conflict every N updates (0 = disable)
 
 
@@ -88,8 +87,7 @@ def probe_gradient_conflict_chunked(
     gae_advantages_chunks: List[torch.Tensor],
     next_values_chunks: List[Optional[torch.Tensor]],
     global_normalizers: Tuple[float, float],
-    use_value_baseline: bool,
-    update: int
+    use_value_baseline: bool
 ) -> Dict[str, float]:
     """
     Probe gradient conflict using chunked gradient accumulation.
@@ -805,8 +803,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             merged_gae_advantages_chunks,
             merged_next_values_chunks,
             global_normalizers,
-            use_value_baseline,
-            update
+            use_value_baseline
         )
 
     # Optimizer step (after all gradients accumulated)
