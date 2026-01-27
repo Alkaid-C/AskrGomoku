@@ -17,7 +17,7 @@ import os
 import argparse
 from typing import Optional, Tuple, Dict, List
 
-from model import GomokuPolicyNet, N_BLOCKS, zero_center_taps, DEVICE, WIDTH
+from model import GomokuPolicyNet, N_BLOCKS, zero_center_taps, WIDTH
 from model import (
     STEM_3X3_CHANNELS, STEM_SPARSE_5X5_CHANNELS, STEM_DENSE_5X5_CHANNELS,
     STEM_SPARSE_7X7_CHANNELS, STEM_DENSE_7X7_CHANNELS,
@@ -30,7 +30,6 @@ from gomoku import (
 )
 from enhancement import (
     generate_cler_samples, compute_adaptive_boosts, update_miss_rate_ema,
-    CLERStats, CF_START_UPDATE,
     IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
 )
 from training import (
@@ -40,10 +39,10 @@ from training import (
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
     ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
     VALUE_LOSS_COEFF, GAE_LAMBDA, VALUE_BASELINE_START,
-    PRINT_INTERVAL, PROBE_INTERVAL
+    PRINT_INTERVAL
 )
 from eval import (
-    create_random_policy, copy_model, load_checkpoint_model,
+    create_random_policy, load_checkpoint_model,
     get_eval_interval, evaluate_policy, sample_opponent_weighted,
     add_opponent_to_pool, scan_historical_exploiters,
     OPPONENT_POOL_SIZE, EVAL_ROUNDS, WIN_RATE_THRESHOLD,
@@ -51,6 +50,15 @@ from eval import (
 )
 
 from csv_logger import CSVLogger
+
+
+# ============================================================================
+# PyTorch Performance Settings
+# ============================================================================
+
+DEVICE = torch.device("cuda")
+torch.backends.cudnn.conv.fp32_precision = 'tf32'
+torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
 
 # ============================================================================
