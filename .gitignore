@@ -5,5 +5,7 @@ GEMINI.md
 *.pt
 *.log
 *.json
+*.csv
 __pycache__
 jan*
+j*/
