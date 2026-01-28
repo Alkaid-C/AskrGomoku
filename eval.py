@@ -49,6 +49,7 @@ QUICK_SCREEN_ROUNDS = 16       # Rounds for quick screen
 TOP_K_QUICK_SCREEN = 16        # Keep top K from quick screen
 FINAL_SCREEN_ROUNDS = 64       # Rounds for final screen
 MAX_MINED_OPPONENTS_PER_EVENT = 2  # Max opponents to add per scan
+MINING_WIN_RATE_THRESHOLD = 0.5    # Only mine opponents with win rate below this
 
 
 # ============================================================================
@@ -400,9 +401,15 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
         torch.cuda.empty_cache()
 
     final_results.sort(key=lambda x: x[1])
-    mined = final_results[:MAX_MINED_OPPONENTS_PER_EVENT]
+    # Only mine opponents that are actually hard (win rate < threshold)
+    hard_opponents = [(u, wr) for u, wr in final_results if wr < MINING_WIN_RATE_THRESHOLD]
+    mined = hard_opponents[:MAX_MINED_OPPONENTS_PER_EVENT]
 
     if mined:
         print(f"  Mined exploiters: {[(u, f'{wr:.2%}') for u, wr in mined]}")
+    elif final_results:
+        # Log the best (lowest) win rate for context
+        best_wr = final_results[0][1]
+        print(f"  No exploiters mined (best win rate {best_wr:.2%} >= threshold {MINING_WIN_RATE_THRESHOLD:.0%})")
 
     return mined, total_candidates, candidates_after_filter
