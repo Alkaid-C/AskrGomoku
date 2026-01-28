@@ -4,7 +4,7 @@ Training Enhancements Module
 Contains sample enhancement logic that modifies or generates training samples:
 - Tactical search (win-in-1, blocking detection)
 - 8-fold symmetry data augmentation (GPU accelerated)
-- CLER (Counterfactual Low-Entropy Rescue) sample generation
+- Off-policy rollout sample generation
 - Imitation learning sample extraction
 
 All enhancements are "sample generators/modifiers" with clean interfaces.
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from gomoku import (
     GameState, Trajectory,
     get_local_candidate_moves,
-    play_cler_rollouts_batched, select_action_batch_eval,
+    play_offpolicy_rollouts_batched, select_action_batch_eval,
     BATCH_INFERENCE_SIZE
 )
 from training import (
@@ -49,18 +49,18 @@ IMITATION_MAX_WEIGHT = 1.5      # Maximum weight for imitation learning (at 0% w
 IMITATION_MIN_WEIGHT = 0.5      # Minimum weight for imitation learning (at 100% win rate)
 IMITATION_START_UPDATE = 128    # Update at which to enable imitation learning
 
-# --- Counterfactual Low-Entropy Rescue (CLER) ---
-CF_START_UPDATE = 128          # Update at which to enable CLER
-CF_TRIGGER_PROB = 0.25         # Probability of triggering CLER on a lost game
-CF_ADVANTAGE = 1.25            # Strength multiplier for CLER samples
-CF_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
-CF_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = target_entropy * multiplier)
-CF_RADIUS = 2                  # Manhattan distance for local candidate moves
-CF_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
-CF_NUM_ROLLOUTS = 8            # Rollouts per alternative action
-CF_WIN_MARGIN = 0.375          # Minimum margin over original action's winrate
-CF_MAX_SAMPLES_PER_UPDATE = 999  # Max CLER samples per training update
-CF_ROLLOUT_TEMP = 1.0          # Temperature for CLER rollouts
+# --- Off-Policy Rollout ---
+OPR_START_UPDATE = 128          # Update at which to enable off-policy rollout
+OPR_TRIGGER_PROB = 0.25         # Probability of triggering off-policy rollout on a lost game
+OPR_ADVANTAGE = 1.25            # Strength multiplier for off-policy rollout samples
+OPR_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
+OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = target_entropy * multiplier)
+OPR_RADIUS = 2                  # Manhattan distance for local candidate moves
+OPR_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
+OPR_NUM_ROLLOUTS = 8            # Rollouts per alternative action
+OPR_WIN_MARGIN = 0.375          # Minimum margin over original action's winrate
+OPR_MAX_SAMPLES_PER_UPDATE = 999  # Max off-policy rollout samples per training update
+OPR_ROLLOUT_TEMP = 1.0          # Temperature for off-policy rollouts
 
 # --- Sample Weighting ---
 EPISODE_WEIGHT_ALPHA = 0.25     # 0 => per-step weighting, 1 => per-episode equal mass
@@ -92,8 +92,8 @@ class TacticalBoostInfo:
 
 
 @dataclass
-class CLERStats:
-    """Statistics from CLER generation."""
+class OffPolicyRolloutStats:
+    """Statistics from off-policy rollout generation."""
     attempted_episodes: int = 0
     candidates_total: int = 0
     samples_added: int = 0
@@ -317,17 +317,17 @@ def augment_batch_8fold(obs_batch: torch.Tensor, actions: torch.Tensor,
 
 
 # ============================================================================
-# CLER (Counterfactual Low-Entropy Rescue)
+# Off-Policy Rollout
 # ============================================================================
 
-def generate_cler_samples(trajectories: List[Trajectory],
-                          current_is_black: List[bool],
-                          opponents: List[nn.Module],
-                          current_policy: nn.Module,
-                          device: torch.device,
-                          update: int = 0) -> Tuple[List[dict], CLERStats]:
+def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
+                                       current_is_black: List[bool],
+                                       opponents: List[nn.Module],
+                                       current_policy: nn.Module,
+                                       device: torch.device,
+                                       update: int = 0) -> Tuple[List[dict], OffPolicyRolloutStats]:
     """
-    Generate Counterfactual Low-Entropy Rescue samples from lost games.
+    Generate off-policy rollout samples from lost games.
 
     For lost games, identifies steps where the policy was overconfident (low entropy)
     but far from terminal. Tries alternative moves via batched rollouts to find better options.
@@ -342,15 +342,15 @@ def generate_cler_samples(trajectories: List[Trajectory],
         update: Current update number
 
     Returns:
-        Tuple of (cler_samples, stats) where:
-        - cler_samples: List of dicts with keys: obs, action, mask, strength, weight
-        - stats: CLERStats with logging metrics
+        Tuple of (opr_samples, stats) where:
+        - opr_samples: List of dicts with keys: obs, action, mask, strength, weight
+        - stats: OffPolicyRolloutStats with logging metrics
     """
-    cler_samples = []
-    stats = CLERStats()
+    opr_samples = []
+    stats = OffPolicyRolloutStats()
 
     # Skip if before start update
-    if update < CF_START_UPDATE:
+    if update < OPR_START_UPDATE:
         return cler_samples, stats
 
     # Compute target entropy for adaptive threshold
@@ -374,7 +374,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
             continue
 
         # Trigger with probability
-        if random.random() > CF_TRIGGER_PROB:
+        if random.random() > OPR_TRIGGER_PROB:
             continue
 
         stats.attempted_episodes += 1
@@ -390,7 +390,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
         candidates = []
 
         # Compute adaptive entropy threshold
-        entropy_threshold = target_entropy * CF_ENTROPY_TH_MULTIPLIER
+        entropy_threshold = target_entropy * OPR_ENTROPY_TH_MULTIPLIER
 
         for t in range(T):
             # Check if current policy's turn
@@ -399,7 +399,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
 
             # Check steps to end
             steps_to_end = T - t - 1
-            if steps_to_end < CF_MIN_STEPS_TO_END:
+            if steps_to_end < OPR_MIN_STEPS_TO_END:
                 continue
 
             # Check entropy threshold (adaptive based on target entropy)
@@ -445,7 +445,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
         original_action = traj.actions[t_star]
 
         # Get local candidate moves
-        local_candidates = get_local_candidate_moves(obs, mask, radius=CF_RADIUS)
+        local_candidates = get_local_candidate_moves(obs, mask, radius=OPR_RADIUS)
 
         # Remove original action from local candidates for alternatives
         alt_candidates = [a for a in local_candidates if a != original_action]
@@ -453,9 +453,9 @@ def generate_cler_samples(trajectories: List[Trajectory],
         if not alt_candidates:
             continue
 
-        # Sample up to CF_NUM_ACTIONS alternatives
-        if len(alt_candidates) > CF_NUM_ACTIONS:
-            alt_actions = random.sample(alt_candidates, CF_NUM_ACTIONS)
+        # Sample up to OPR_NUM_ACTIONS alternatives
+        if len(alt_candidates) > OPR_NUM_ACTIONS:
+            alt_actions = random.sample(alt_candidates, OPR_NUM_ACTIONS)
         else:
             alt_actions = alt_candidates
 
@@ -465,12 +465,12 @@ def generate_cler_samples(trajectories: List[Trajectory],
         ))
 
         # Stop collecting if we have enough candidates
-        if len(candidate_info) >= CF_MAX_SAMPLES_PER_UPDATE:
+        if len(candidate_info) >= OPR_MAX_SAMPLES_PER_UPDATE:
             break
 
     if not candidate_info:
         current_policy.train()
-        return cler_samples, stats
+        return opr_samples, stats
 
     # Phase 2: Build all rollout configurations
     rollout_configs = []
@@ -478,20 +478,20 @@ def generate_cler_samples(trajectories: List[Trajectory],
 
     for cand_idx, (_, _, obs, _, player, original_action, alt_actions, black_model, white_model, _) in enumerate(candidate_info):
         # Add rollouts for original action
-        for _ in range(CF_NUM_ROLLOUTS):
+        for _ in range(OPR_NUM_ROLLOUTS):
             rollout_configs.append((obs, player, original_action, black_model, white_model))
             rollout_metadata.append((cand_idx, True, original_action))
 
         # Add rollouts for each alternative action
         for alt_action in alt_actions:
-            for _ in range(CF_NUM_ROLLOUTS):
+            for _ in range(OPR_NUM_ROLLOUTS):
                 rollout_configs.append((obs, player, alt_action, black_model, white_model))
                 rollout_metadata.append((cand_idx, False, alt_action))
 
     # Phase 3: Execute all rollouts in batch
-    rollout_results = play_cler_rollouts_batched(
+    rollout_results = play_offpolicy_rollouts_batched(
         rollout_configs,
-        CF_ROLLOUT_TEMP,
+        OPR_ROLLOUT_TEMP,
         device,
         batch_size=BATCH_INFERENCE_SIZE,
         select_action_fn=select_action_batch_eval
@@ -512,7 +512,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
             candidate_results[cand_idx]['alts'][action]['wins'] += int(won)
             candidate_results[cand_idx]['alts'][action]['count'] += 1
 
-    # Phase 5: Create CLER samples for candidates that pass the threshold
+    # Phase 5: Create off-policy rollout samples for candidates that pass the threshold
     for cand_idx, (traj_idx, t_star, obs, mask, player, original_action, alt_actions, _, _, selected_entropy) in enumerate(candidate_info):
         if cand_idx not in candidate_results:
             continue
@@ -531,17 +531,17 @@ def generate_cler_samples(trajectories: List[Trajectory],
 
         # Check if best alternative exceeds original by margin
         margin = best_winrate - original_winrate
-        if margin >= CF_WIN_MARGIN and best_action is not None:
+        if margin >= OPR_WIN_MARGIN and best_action is not None:
             # Compute weight
             traj = trajectories[traj_idx]
             current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
             step_weight = (1.0 / (current_steps ** EPISODE_WEIGHT_ALPHA)) / 8.0
 
-            cler_samples.append({
+            opr_samples.append({
                 'obs': obs,
                 'action': best_action,
                 'mask': mask,
-                'strength': margin * CF_ADVANTAGE,
+                'strength': margin * OPR_ADVANTAGE,
                 'weight': step_weight,
             })
 
@@ -552,7 +552,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
 
     current_policy.train()
 
-    return cler_samples, stats
+    return opr_samples, stats
 
 
 # ============================================================================

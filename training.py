@@ -378,11 +378,11 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     for _ in range(num_tactical_synthetic):
         sample_to_traj.append((-1, -1))  # Mark as synthetic
 
-    # Track CLER sample advantages
-    cler_advantages = []
+    # Track off-policy rollout sample advantages
+    opr_advantages = []
 
-    # Add CLER samples
-    num_cler_samples = 0
+    # Add off-policy rollout samples
+    num_opr_samples = 0
     if cler_samples:
         for sample in cler_samples:
             all_obs.append(sample['obs'])
@@ -391,12 +391,12 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             all_returns.append(sample['strength'])
             all_value_targets.append(0.0)
             all_is_synthetic.append(True)
-            cler_advantages.append(sample['strength'])  # Track for later
+            opr_advantages.append(sample['strength'])  # Track for later
             all_weights.append(sample['weight'])
             all_next_obs.append(np.zeros_like(sample['obs']))
             all_is_terminal.append(True)
             sample_to_traj.append((-1, -1))  # Mark as synthetic
-            num_cler_samples += 1
+            num_opr_samples += 1
 
     # Convert to GPU tensors
     obs_tensor = obs_batch_to_tensor(all_obs, device)
@@ -484,10 +484,10 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):
             final_advantages[num_samples_before_tactical + i] = advantage_value
 
-        # CLER synthetic samples: use their strength values
-        cler_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
-        for i, advantage_value in enumerate(cler_advantages):
-            final_advantages[cler_start_idx + i] = advantage_value
+        # Off-policy rollout synthetic samples: use their strength values
+        opr_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
+        for i, advantage_value in enumerate(opr_advantages):
+            final_advantages[opr_start_idx + i] = advantage_value
 
         advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
         aug_gae_advantages = advantages_tensor.repeat(8)
@@ -513,10 +513,10 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):
             final_advantages[num_samples_before_tactical + i] = advantage_value
 
-        # CLER synthetic samples
-        cler_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
-        for i, advantage_value in enumerate(cler_advantages):
-            final_advantages[cler_start_idx + i] = advantage_value
+        # Off-policy rollout synthetic samples
+        opr_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
+        for i, advantage_value in enumerate(opr_advantages):
+            final_advantages[opr_start_idx + i] = advantage_value
 
         advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
         aug_gae_advantages = advantages_tensor.repeat(8)
@@ -709,18 +709,18 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
 
     for i, chunk in enumerate(chunks):
 
-        # Pass CLER samples only to first chunk to avoid duplicating them
-        chunk_cler_samples = cler_samples if i == 0 else None
+        # Pass off-policy rollout samples only to first chunk to avoid duplicating them
+        chunk_opr_samples = cler_samples if i == 0 else None
 
         (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
          tactical_stats, num_imitation_black, num_imitation_white,
-         num_cler, probe_data) = _train_on_batch_internal(
+         num_opr, probe_data) = _train_on_batch_internal(
             model, chunk, optimizer, device,
             num_accumulation_steps=num_chunks,
             update=update,
             win_boost=win_boost,
             block_boost=block_boost,
-            cler_samples=chunk_cler_samples,
+            cler_samples=chunk_opr_samples,
             ema_entropy=ema_entropy,
             win_rate=win_rate
         )

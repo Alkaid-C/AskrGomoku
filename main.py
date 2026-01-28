@@ -35,7 +35,7 @@ from gomoku import (
     BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
 )
 from enhancement import (
-    generate_cler_samples, compute_adaptive_boosts, update_miss_rate_ema,
+    generate_offpolicy_rollout_samples, compute_adaptive_boosts, update_miss_rate_ema,
     IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
 )
 from training import (
@@ -362,8 +362,8 @@ def main():
         'tactics_synthetic_wins_eq': [], 'tactics_synthetic_wins_missed': [],
         'tactics_synthetic_blocks': [], 'imitation_black': [], 'imitation_white': [],
         'win_miss_ema': [], 'block_miss_ema': [], 'win_boost': [], 'block_boost': [],
-        'cler_attempted': [], 'cler_candidates': [], 'cler_added': [],
-        'cler_winrate_sum': [], 'cler_orig_winrate_sum': [], 'cler_entropy_sum': []
+        'opr_attempted': [], 'opr_candidates': [], 'opr_added': [],
+        'opr_winrate_sum': [], 'opr_orig_winrate_sum': [], 'opr_entropy_sum': []
     }
 
     # Entropy EMA for adaptive entropy bonus
@@ -409,15 +409,15 @@ def main():
         # Compute adaptive boosts
         win_boost, block_boost = compute_adaptive_boosts(win_miss_ema, block_miss_ema)
 
-        # Generate CLER samples from lost games
-        cler_samples, cler_stats = generate_cler_samples(
+        # Generate off-policy rollout samples from lost games
+        opr_samples, opr_stats = generate_offpolicy_rollout_samples(
             trajectories, current_is_black, episode_opponents, current_policy, DEVICE, update
         )
 
         t0 = time.time()
         train_results = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
-            win_boost=win_boost, block_boost=block_boost, cler_samples=cler_samples, ema_entropy=ema_entropy,
+            win_boost=win_boost, block_boost=block_boost, cler_samples=opr_samples, ema_entropy=ema_entropy,
             win_rate=win_rate_ema
         )
         t_train = time.time() - t0
@@ -473,12 +473,12 @@ def main():
         metric_buffer['block_miss_ema'].append(block_miss_ema)
         metric_buffer['win_boost'].append(win_boost)
         metric_buffer['block_boost'].append(block_boost)
-        metric_buffer['cler_attempted'].append(cler_stats.attempted_episodes)
-        metric_buffer['cler_candidates'].append(cler_stats.candidates_total)
-        metric_buffer['cler_added'].append(cler_stats.samples_added)
-        metric_buffer['cler_winrate_sum'].append(cler_stats.best_winrate_sum)
-        metric_buffer['cler_orig_winrate_sum'].append(cler_stats.orig_winrate_sum)
-        metric_buffer['cler_entropy_sum'].append(cler_stats.entropy_selected_sum)
+        metric_buffer['opr_attempted'].append(opr_stats.attempted_episodes)
+        metric_buffer['opr_candidates'].append(opr_stats.candidates_total)
+        metric_buffer['opr_added'].append(opr_stats.samples_added)
+        metric_buffer['opr_winrate_sum'].append(opr_stats.best_winrate_sum)
+        metric_buffer['opr_orig_winrate_sum'].append(opr_stats.orig_winrate_sum)
+        metric_buffer['opr_entropy_sum'].append(opr_stats.entropy_selected_sum)
 
         if (update + 1) % PRINT_INTERVAL == 0:
             avg_loss = np.mean(metric_buffer['loss'])
@@ -509,17 +509,17 @@ def main():
             latest_win_boost = metric_buffer['win_boost'][-1] if metric_buffer['win_boost'] else 0.0
             latest_block_boost = metric_buffer['block_boost'][-1] if metric_buffer['block_boost'] else 0.0
 
-            # CLER metrics aggregation
-            total_cler_attempted = sum(metric_buffer['cler_attempted'])
-            total_cler_candidates = sum(metric_buffer['cler_candidates'])
-            total_cler_added = sum(metric_buffer['cler_added'])
-            total_cler_winrate_sum = sum(metric_buffer['cler_winrate_sum'])
-            total_cler_orig_winrate_sum = sum(metric_buffer['cler_orig_winrate_sum'])
-            total_cler_entropy_sum = sum(metric_buffer['cler_entropy_sum'])
-            avg_cler_candidates = total_cler_candidates / max(total_cler_attempted, 1)
-            avg_cler_winrate = total_cler_winrate_sum / max(total_cler_added, 1)
-            avg_cler_orig_winrate = total_cler_orig_winrate_sum / max(total_cler_added, 1)
-            avg_cler_entropy = total_cler_entropy_sum / max(total_cler_added, 1)
+            # Off-policy rollout metrics aggregation
+            total_opr_attempted = sum(metric_buffer['opr_attempted'])
+            total_opr_candidates = sum(metric_buffer['opr_candidates'])
+            total_opr_added = sum(metric_buffer['opr_added'])
+            total_opr_winrate_sum = sum(metric_buffer['opr_winrate_sum'])
+            total_opr_orig_winrate_sum = sum(metric_buffer['opr_orig_winrate_sum'])
+            total_opr_entropy_sum = sum(metric_buffer['opr_entropy_sum'])
+            avg_opr_candidates = total_opr_candidates / max(total_opr_attempted, 1)
+            avg_opr_winrate = total_opr_winrate_sum / max(total_opr_added, 1)
+            avg_opr_orig_winrate = total_opr_orig_winrate_sum / max(total_opr_added, 1)
+            avg_opr_entropy = total_opr_entropy_sum / max(total_opr_added, 1)
 
             elapsed_time = time.time() - training_start_time
             updates_done = update + 1
@@ -569,12 +569,12 @@ def main():
                 'block_miss_ema': latest_block_miss_ema,
                 'win_boost': latest_win_boost,
                 'block_boost': latest_block_boost,
-                'cf_attempted': total_cler_attempted,
-                'cf_candidates_avg': avg_cler_candidates,
-                'cf_added': total_cler_added,
-                'cf_winrate_avg': avg_cler_winrate,
-                'cf_orig_winrate_avg': avg_cler_orig_winrate,
-                'cf_entropy_avg': avg_cler_entropy,
+                'opr_attempted': total_opr_attempted,
+                'opr_candidates_avg': avg_opr_candidates,
+                'opr_added': total_opr_added,
+                'opr_winrate_avg': avg_opr_winrate,
+                'opr_orig_winrate_avg': avg_opr_orig_winrate,
+                'opr_entropy_avg': avg_opr_entropy,
                 'time_total': avg_time,
                 'time_selfplay': avg_selfplay_time,
                 'time_train': avg_train_time,

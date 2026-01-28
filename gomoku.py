@@ -445,7 +445,7 @@ class Trajectory:
         self.players = []       # List of Player enum values (absolute)
         self.legal_masks = []   # List of [15, 15] legal masks
         self.is_current_policy = []  # List of bools: True if current_policy moved
-        self.entropies = []     # List of policy entropies (nats) for CLER
+        self.entropies = []     # List of policy entropies (nats) for off-policy rollout
         self.outcome = None     # GameState enum
 
 
@@ -666,17 +666,17 @@ def play_eval_games(black_white_pairs: List[Tuple],
 
 
 # ============================================================================
-# CLER Batched Rollouts
+# Off-Policy Rollout Batched Rollouts
 # ============================================================================
 
-class CLERRolloutState:
-    """Minimal state for CLER rollout games."""
+class OffPolicyRolloutState:
+    """Minimal state for off-policy rollout games."""
     __slots__ = ['board', 'black_model', 'white_model', 'first_player', 'done', 'won']
 
     def __init__(self, obs: np.ndarray, next_player: Player, first_action: int,
                  black_model, white_model):
         """
-        Initialize a CLER rollout game with a forced first move.
+        Initialize an off-policy rollout game with a forced first move.
 
         Args:
             obs: Observation [3, 15, 15] at the decision point
@@ -705,11 +705,11 @@ class CLERRolloutState:
                            (outcome == GameState.WHITE_WIN and self.first_player == Player.WHITE)
 
 
-def play_cler_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, int, object, object]],
-                                temperature: float, device, batch_size: int,
-                                select_action_fn) -> List[bool]:
+def play_offpolicy_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, int, object, object]],
+                                    temperature: float, device, batch_size: int,
+                                    select_action_fn) -> List[bool]:
     """
-    Play CLER rollout games in batches.
+    Play off-policy rollout games in batches.
 
     Each rollout starts from a given position with a forced first move,
     then plays out using the specified models until game end.
@@ -725,7 +725,7 @@ def play_cler_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, i
         List of bool indicating if first_player won for each rollout
     """
     # Initialize all rollout games
-    games = [CLERRolloutState(obs, player, action, black_model, white_model)
+    games = [OffPolicyRolloutState(obs, player, action, black_model, white_model)
              for obs, player, action, black_model, white_model in rollout_configs]
 
     while True:
