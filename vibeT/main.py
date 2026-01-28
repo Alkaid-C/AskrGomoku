@@ -75,12 +75,12 @@ TRAINING_STATE_FILE = "training_state.json"
 # ============================================================================
 
 def save_training_state(output_dir: str, update: int, opponent_pool_updates: List[int],
-                        win_miss_ema: float = 1.0,
-                        block_miss_ema: float = 1.0,
-                        per_opponent_win_rates: Dict[str, float] = None,
-                        scan_event_counter: int = 0,
-                        evals_since_last_scan: int = 0,
-                        win_rate_ema: float = 0.5) -> None:
+                        win_miss_ema: float,
+                        block_miss_ema: float,
+                        per_opponent_win_rates: Dict[str, float],
+                        scan_event_counter: int,
+                        evals_since_last_scan: int,
+                        win_rate_ema: float) -> None:
     """Save training state to JSON for resume capability."""
     state = {
         'current_update': update,
@@ -88,7 +88,7 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
         'total_updates': TOTAL_UPDATES,
         'win_miss_ema': win_miss_ema,
         'block_miss_ema': block_miss_ema,
-        'per_opponent_win_rates': per_opponent_win_rates if per_opponent_win_rates is not None else {},
+        'per_opponent_win_rates': per_opponent_win_rates,
         'scan_event_counter': scan_event_counter,
         'evals_since_last_scan': evals_since_last_scan,
         'win_rate_ema': win_rate_ema
@@ -325,7 +325,7 @@ def main():
         for i in range(OPPONENT_POOL_SIZE):
             opponent_pool.append(create_random_policy(DEVICE))
             opponent_pool[-1].eval()
-            opponent_pool_updates.append(0)
+            opponent_pool_updates.append(-OPPONENT_POOL_SIZE + i)
         print(f"Opponent pool initialized with {len(opponent_pool)} models")
         print()
 

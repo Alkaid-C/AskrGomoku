@@ -99,7 +99,7 @@ def get_eval_interval(update: int) -> int:
 
 def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
                     device: torch.device,
-                    opponent_pool_updates: List[int] = None,
+                    opponent_pool_updates: List[int],
                     num_rounds: int = None) -> Tuple[float, Dict[str, Dict[str, float]]]:
     """
     Evaluate current policy against opponents from the pool.
@@ -161,7 +161,7 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
 
     per_opponent_stats = {}
     for opp_idx in range(num_opponents):
-        if opponent_pool_updates is not None and opp_idx < len(opponent_pool_updates):
+        if opp_idx < len(opponent_pool_updates):
             key = str(opponent_pool_updates[opp_idx])
         else:
             key = str(opp_idx)
@@ -297,7 +297,7 @@ def sample_opponent_weighted(opponent_pool: deque, opponent_pool_updates: List[i
 # Historical Exploiter Scanning
 # ============================================================================
 
-def discover_historical_checkpoints(output_dir: str, min_update: int = None) -> List[int]:
+def discover_historical_checkpoints(output_dir: str, min_update: Optional[int]) -> List[int]:
     """Discover all checkpoint files and return their update numbers."""
     if min_update is None:
         min_update = SCAN_START_UPDATE

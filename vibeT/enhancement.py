@@ -689,7 +689,7 @@ def compute_adaptive_boosts(win_miss_ema: float, block_miss_ema: float) -> Tuple
     return win_boost, block_boost
 
 
-def update_miss_rate_ema(this_miss_rate: float, ema: float, ema_window: int = 128) -> float:
+def update_miss_rate_ema(this_miss_rate: float, ema: float, ema_window: int) -> float:
     """Update EMA for miss rate tracking."""
     alpha = 1.0 / ema_window
     return alpha * this_miss_rate + (1.0 - alpha) * ema

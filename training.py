@@ -292,13 +292,13 @@ def probe_gradient_conflict_chunked(
 def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              optimizer: torch.optim.Optimizer,
                              device: torch.device,
-                             num_accumulation_steps: int = 1,
-                             update: int = 0,
-                             win_boost: float = 0.0,
-                             block_boost: float = 0.0,
-                             opr_samples: List[dict] = None,
-                             ema_entropy: float = None,
-                             win_rate: float = 0.5) -> Tuple[float, float, float, float, float, TacticalStats, int, int, int, Optional[dict]]:
+                             num_accumulation_steps: int,
+                             update: int,
+                             win_boost: float,
+                             block_boost: float,
+                             opr_samples: List[dict],
+                             ema_entropy: float,
+                             win_rate: float) -> Tuple[float, float, float, float, float, TacticalStats, int, int, int, Optional[dict]]:
     """
     Internal training function - processes a batch of trajectories.
 
@@ -694,13 +694,13 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    optimizer: torch.optim.Optimizer,
                    device: torch.device,
-                   chunk_size: int = EPISODES_CHUNK_SIZE,
-                   update: int = 0,
-                   win_boost: float = 0.0,
-                   block_boost: float = 0.0,
-                   opr_samples: List[dict] = None,
-                   ema_entropy: float = None,
-                   win_rate: float = 0.5) -> dict:
+                   chunk_size: int,
+                   update: int,
+                   win_boost: float,
+                   block_boost: float,
+                   opr_samples: List[dict],
+                   ema_entropy: float,
+                   win_rate: float) -> dict:
     """
     Train on a batch of trajectories with gradient accumulation.
 

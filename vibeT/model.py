@@ -40,7 +40,7 @@ class GomokuPolicyNet(nn.Module):
     - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
     """
 
-    def __init__(self, n_blocks: int = N_BLOCKS):
+    def __init__(self, n_blocks: int):
         super().__init__()
 
         # === Stem: simple 3x3 convolution ===

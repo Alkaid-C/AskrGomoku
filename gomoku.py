@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
 import random
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from enum import Enum
 
 
@@ -307,14 +307,14 @@ def board_from_observation(obs: np.ndarray, next_player: Player) -> GomokuBoard:
     return board
 
 
-def get_local_candidate_moves(obs: np.ndarray, legal_mask: np.ndarray, radius: int = 2) -> List[int]:
+def get_local_candidate_moves(obs: np.ndarray, legal_mask: np.ndarray, radius: int) -> List[int]:
     """
-    Get legal moves within Manhattan distance of existing stones.
+    Get legal moves within Chebyshev distance of existing stones.
 
     Args:
         obs: Observation [3, 15, 15]
         legal_mask: Legal moves mask [15, 15]
-        radius: Manhattan distance radius
+        radius: Chebyshev distance radius
 
     Returns:
         List of flat action indices for local candidate moves
@@ -333,7 +333,7 @@ def get_local_candidate_moves(obs: np.ndarray, legal_mask: np.ndarray, radius: i
             if found_neighbor:
                 break
             for dc in range(-radius, radius + 1):
-                if abs(dr) + abs(dc) > radius:
+                if max(abs(dr), abs(dc)) > radius:
                     continue
                 nr, nc = r + dr, c + dc
                 if 0 <= nr < 15 and 0 <= nc < 15 and occupied[nr, nc]:
@@ -365,7 +365,7 @@ def mask_batch_to_tensor(mask_list: List[np.ndarray], device: torch.device) -> t
 def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
                         mask_list: List[np.ndarray],
                         temperature: float, device: torch.device,
-                        deterministic: bool = False) -> Tuple[List[int], List[float]]:
+                        deterministic: bool) -> Tuple[List[int], List[float]]:
     """
     Select actions for a batch of positions using the policy network.
 
@@ -453,7 +453,7 @@ class GameState_InProgress:
     """Tracks state of a game in progress."""
 
     def __init__(self, game_id: int, black_model, white_model,
-                 current_is_black: bool, opening_id: int = -1):
+                 current_is_black: bool, opening_id: int):
         self.board = GomokuBoard(opening_id=opening_id)
         self.black_model = black_model
         self.white_model = white_model
@@ -467,8 +467,8 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
                           temperature: float, device: torch.device,
                           batch_size: int,
                           select_action_batch_fn,
-                          deterministic: bool = False,
-                          opening_ids: List[int] = None) -> List[Trajectory]:
+                          opening_ids: Optional[List[int]],
+                          deterministic: bool = False) -> List[Trajectory]:
     """
     Play multiple episodes with batched inference.
 
@@ -479,9 +479,9 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
         device: torch device
         batch_size: Maximum batch size for inference
         select_action_batch_fn: Function to select actions for a batch
-        deterministic: If True, use argmax
         opening_ids: List of opening IDs for each game (-1 for empty board,
                      >= 0 for Renju opening). If None, all games start empty.
+        deterministic: If True, use argmax
 
     Returns:
         List of trajectories

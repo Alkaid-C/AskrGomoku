@@ -1185,7 +1185,7 @@ def get_legal_mask(black_pieces, white_pieces):
     return legal_mask
 
 
-def run_inference(black_pieces, white_pieces, current_player, temperature=1.0):
+def run_inference(black_pieces, white_pieces, current_player, temperature):
     """
     Run model inference on current board state.
 

@@ -24,6 +24,7 @@ STEM_DIRECTIONAL_7X7_CHANNELS = 3 * 6  # Directional 7x7 (4-line kernel via dila
 STEM_FULL_7X7_CHANNELS = 1 * 6     # Full 7x7 convolution channels in stem
 STEM_1x1_CHANNELS = 1 * 6
 GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
+SE_REDUCTION = 4                  # Squeeze-and-Excitation channel reduction ratio
 
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
 TRUNK_DILATION2_SCHEDULE = [
@@ -75,7 +76,7 @@ class GomokuPolicyNet(nn.Module):
     - Value head: 2x 3x3 valid convs (15->11) + 1x1 reduction + 2-layer MLP
     """
 
-    def __init__(self, n_blocks: int = N_BLOCKS):
+    def __init__(self, n_blocks: int):
         super().__init__()
 
         # === Stem: line-aware multi-scale design ===
@@ -241,9 +242,9 @@ class GomokuPolicyNet(nn.Module):
 class SEBlock(nn.Module):
     """Squeeze-and-Excitation block for channel attention."""
 
-    def __init__(self, channels: int, r: int = 4):
+    def __init__(self, channels: int):
         super().__init__()
-        hidden = channels // r
+        hidden = channels // SE_REDUCTION
         self.fc1 = nn.Linear(channels, hidden)
         self.fc2 = nn.Linear(hidden, channels)
 
@@ -258,7 +259,7 @@ class SEBlock(nn.Module):
 class ResidualBlock(nn.Module):
     """Pre-activation residual block with configurable dilation and optional SE."""
 
-    def __init__(self, channels: int, dilation2: int = 2, use_se: bool = False):
+    def __init__(self, channels: int, dilation2: int, use_se: bool):
         super().__init__()
         self.norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
