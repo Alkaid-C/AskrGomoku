@@ -406,7 +406,7 @@ def main():
         t0 = time.time()
         train_results = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
-            win_boost=win_boost, block_boost=block_boost, cler_samples=opr_samples, ema_entropy=ema_entropy,
+            win_boost=win_boost, block_boost=block_boost, opr_samples=opr_samples, ema_entropy=ema_entropy,
             win_rate=win_rate_ema
         )
         t_train = time.time() - t0

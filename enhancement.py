@@ -349,7 +349,7 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
 
     # Skip if before start update
     if update < OPR_START_UPDATE:
-        return cler_samples, stats
+        return opr_samples, stats
 
     current_policy.eval()
 

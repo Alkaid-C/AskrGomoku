@@ -41,7 +41,7 @@ class CSVLogger:
                     'tactics_synth_wins_missed', 'tactics_synth_blocks',
                     'imitation_black', 'imitation_white',
                     'win_miss_ema', 'block_miss_ema', 'win_boost', 'block_boost',
-                    'cf_attempted', 'cf_candidates_avg', 'cf_added', 'cf_winrate_avg', 'cf_orig_winrate_avg', 'cf_entropy_avg',
+                    'opr_attempted', 'opr_candidates_avg', 'opr_added', 'opr_winrate_avg', 'opr_orig_winrate_avg', 'opr_entropy_avg',
                     'time_total', 'time_selfplay', 'time_train', 'learning_rate'
                 ])
 
@@ -100,8 +100,8 @@ class CSVLogger:
                 metrics['tactics_synth_wins_missed'], metrics['tactics_synth_blocks'],
                 metrics['imitation_black'], metrics['imitation_white'],
                 metrics['win_miss_ema'], metrics['block_miss_ema'], metrics['win_boost'], metrics['block_boost'],
-                metrics.get('cf_attempted', 0), metrics.get('cf_candidates_avg', 0.0),
-                metrics.get('cf_added', 0), metrics.get('cf_winrate_avg', 0.0), metrics.get('cf_orig_winrate_avg', 0.0), metrics.get('cf_entropy_avg', 0.0),
+                metrics.get('opr_attempted', 0), metrics.get('opr_candidates_avg', 0.0),
+                metrics.get('opr_added', 0), metrics.get('opr_winrate_avg', 0.0), metrics.get('opr_orig_winrate_avg', 0.0), metrics.get('opr_entropy_avg', 0.0),
                 metrics['time_total'], metrics['time_selfplay'], metrics['time_train'], metrics['learning_rate']
             ])
 

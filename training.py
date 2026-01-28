@@ -296,7 +296,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              update: int = 0,
                              win_boost: float = 0.0,
                              block_boost: float = 0.0,
-                             cler_samples: List[dict] = None,
+                             opr_samples: List[dict] = None,
                              ema_entropy: float = None,
                              win_rate: float = 0.5) -> Tuple[float, float, float, float, float, TacticalStats, int, int, int, Optional[dict]]:
     """
@@ -305,7 +305,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     Returns:
         Tuple of (loss, mean_return, entropy, value_loss, raw_value_mse,
                   tactical_stats, num_imitation_black, num_imitation_white,
-                  num_cler_samples, probe_data)
+                  num_opr_samples, probe_data)
         probe_data is a dict with chunked tensors for gradient probing, or None
     """
     use_value_baseline = (update >= VALUE_BASELINE_START)
@@ -407,8 +407,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     # Add off-policy rollout samples
     num_opr_samples = 0
-    if cler_samples:
-        for sample in cler_samples:
+    if opr_samples:
+        for sample in opr_samples:
             all_obs.append(sample['obs'])
             all_actions.append(sample['action'])
             all_masks.append(sample['mask'])
@@ -688,7 +688,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     return (total_loss_scalar, mean_return, total_entropy_scalar, total_value_loss_scalar,
             raw_value_mse, tactical_stats, num_imitation_black, num_imitation_white,
-            num_cler_samples, probe_data)
+            num_opr_samples, probe_data)
 
 
 def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
@@ -698,7 +698,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    update: int = 0,
                    win_boost: float = 0.0,
                    block_boost: float = 0.0,
-                   cler_samples: List[dict] = None,
+                   opr_samples: List[dict] = None,
                    ema_entropy: float = None,
                    win_rate: float = 0.5) -> dict:
     """
@@ -720,7 +720,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     total_tactical_stats = TacticalStats()
     total_imitation_black = 0
     total_imitation_white = 0
-    total_cler_samples = 0
+    total_opr_samples = 0
     num_chunks_processed = 0
     collected_probe_metrics = None
 
@@ -731,7 +731,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     for i, chunk in enumerate(chunks):
 
         # Pass off-policy rollout samples only to first chunk to avoid duplicating them
-        chunk_opr_samples = cler_samples if i == 0 else None
+        chunk_opr_samples = opr_samples if i == 0 else None
 
         (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
          tactical_stats, num_imitation_black, num_imitation_white,
@@ -741,7 +741,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             update=update,
             win_boost=win_boost,
             block_boost=block_boost,
-            cler_samples=chunk_opr_samples,
+            opr_samples=chunk_opr_samples,
             ema_entropy=ema_entropy,
             win_rate=win_rate
         )
@@ -768,7 +768,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
 
         total_imitation_black += num_imitation_black
         total_imitation_white += num_imitation_white
-        total_cler_samples += num_cler
+        total_opr_samples += num_opr
         num_chunks_processed += 1
 
         for traj in chunk:
@@ -846,6 +846,6 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
         'tactical_stats': total_tactical_stats,
         'imitation_black': total_imitation_black,
         'imitation_white': total_imitation_white,
-        'cler_samples': total_cler_samples,
+        'opr_samples': total_opr_samples,
         'probe_metrics': collected_probe_metrics
     }
