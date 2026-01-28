@@ -66,8 +66,7 @@ DEVICE = torch.device("cuda")
 torch.backends.cudnn.conv.fp32_precision = 'tf32'
 torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
-# Memory management
-CACHE_CLEAR_INTERVAL = 8  # Clear CUDA cache every N updates to prevent fragmentation (0 = disable)
+# Memory management: CUDA cache is cleared after eval, probing, and mining
 
 
 # ============================================================================
@@ -422,10 +421,6 @@ def main():
         )
         t_train = time.time() - t0
 
-        # Clear CUDA cache periodically to prevent fragmentation
-        if CACHE_CLEAR_INTERVAL > 0 and (update + 1) % CACHE_CLEAR_INTERVAL == 0:
-            torch.cuda.empty_cache()
-
         # Update entropy EMA
         ema_alpha = 1.0 / EMA_WINDOW
         ema_entropy = ema_alpha * train_results['entropy'] + (1.0 - ema_alpha) * ema_entropy
@@ -435,6 +430,7 @@ def main():
             csv_logger.log_gradient_probe(update + 1, train_results['probe_metrics'])
             print(f"  [Probe] Overall cos_sim={train_results['probe_metrics']['overall_cos_sim']:+.3f} | "
                   f"Stem={train_results['probe_metrics']['stem_cos_sim']:+.3f}")
+            torch.cuda.empty_cache()
 
         # Update miss rate EMAs
         tactical_stats = train_results['tactical_stats']
@@ -722,6 +718,7 @@ def main():
 
                 scan_event_counter += 1
                 evals_since_last_scan = 0
+                torch.cuda.empty_cache()
 
             # Save training state
             save_training_state(
