@@ -33,7 +33,7 @@ from enhancement import (
     IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
 )
 from training import (
-    train_on_batch,
+    train_on_batch, compute_entropy_schedule,
     TOTAL_UPDATES, LEARNING_RATE, MIN_LR, LR_DECAY_MIDPOINT_PERCENTAGE, LR_DECAY_STEEPNESS, WEIGHT_DECAY,
     EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE,
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
@@ -394,9 +394,13 @@ def main():
         # Compute adaptive boosts
         win_boost, block_boost = compute_adaptive_boosts(win_miss_ema, block_miss_ema)
 
+        # Compute scheduled entropy value for OPR threshold
+        entropy_schedule = compute_entropy_schedule(update)
+
         # Generate off-policy rollout samples from lost games
         opr_samples, opr_stats = generate_offpolicy_rollout_samples(
-            trajectories, current_is_black, episode_opponents, current_policy, DEVICE, update
+            trajectories, current_is_black, episode_opponents, current_policy, DEVICE, update,
+            entropy_schedule=entropy_schedule
         )
 
         t0 = time.time()

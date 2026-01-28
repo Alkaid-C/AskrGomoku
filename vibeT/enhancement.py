@@ -23,10 +23,6 @@ from gomoku import (
     play_offpolicy_rollouts_batched, select_action_batch_eval,
     BATCH_INFERENCE_SIZE
 )
-from training import (
-    TOTAL_UPDATES, ENTROPY_TARGET_START, ENTROPY_TARGET_END,
-    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS
-)
 
 
 # ============================================================================
@@ -54,7 +50,7 @@ OPR_START_UPDATE = 128          # Update at which to enable off-policy rollout
 OPR_TRIGGER_PROB = 0.25         # Probability of triggering off-policy rollout on a lost game
 OPR_ADVANTAGE = 1.25            # Strength multiplier for off-policy rollout samples
 OPR_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
-OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = target_entropy * multiplier)
+OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = entropy_schedule * multiplier)
 OPR_RADIUS = 2                  # Manhattan distance for local candidate moves
 OPR_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
 OPR_NUM_ROLLOUTS = 8            # Rollouts per alternative action
@@ -325,7 +321,8 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
                                        opponents: List[nn.Module],
                                        current_policy: nn.Module,
                                        device: torch.device,
-                                       update: int = 0) -> Tuple[List[dict], OffPolicyRolloutStats]:
+                                       update: int,
+                                       entropy_schedule: float) -> Tuple[List[dict], OffPolicyRolloutStats]:
     """
     Generate off-policy rollout samples from lost games.
 
@@ -340,6 +337,7 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
         current_policy: Current policy network
         device: Torch device
         update: Current update number
+        entropy_schedule: Scheduled entropy value used to compute OPR threshold
 
     Returns:
         Tuple of (opr_samples, stats) where:
@@ -352,12 +350,6 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
     # Skip if before start update
     if update < OPR_START_UPDATE:
         return cler_samples, stats
-
-    # Compute target entropy for adaptive threshold
-    midpoint = TOTAL_UPDATES * ENTROPY_DECAY_MIDPOINT_PERCENTAGE
-    steepness_k = 3.0 / (TOTAL_UPDATES * ENTROPY_DECAY_STEEPNESS)
-    sigmoid_factor = (1.0 - np.tanh(steepness_k * (update - midpoint))) / 2.0
-    target_entropy = ENTROPY_TARGET_END + (ENTROPY_TARGET_START - ENTROPY_TARGET_END) * sigmoid_factor
 
     current_policy.eval()
 
@@ -390,7 +382,7 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
         candidates = []
 
         # Compute adaptive entropy threshold
-        entropy_threshold = target_entropy * OPR_ENTROPY_TH_MULTIPLIER
+        entropy_threshold = entropy_schedule * OPR_ENTROPY_TH_MULTIPLIER
 
         for t in range(T):
             # Check if current policy's turn

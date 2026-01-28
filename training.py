@@ -70,6 +70,30 @@ PROBE_INTERVAL = 64            # Probe gradient conflict every N updates (0 = di
 
 
 # ============================================================================
+# Entropy Target Helper
+# ============================================================================
+
+def compute_entropy_schedule(update: int) -> float:
+    """
+    Compute entropy schedule value with sigmoid decay.
+
+    Used by both training loop (for entropy bonus scaling) and enhancement module
+    (for off-policy rollout entropy threshold).
+
+    Args:
+        update: Current training update number
+
+    Returns:
+        Scheduled entropy value (in nats)
+    """
+    midpoint = TOTAL_UPDATES * ENTROPY_DECAY_MIDPOINT_PERCENTAGE
+    steepness_k = 3.0 / (TOTAL_UPDATES * ENTROPY_DECAY_STEEPNESS)
+    sigmoid_factor = (1.0 - np.tanh(steepness_k * (update - midpoint))) / 2.0
+    entropy_schedule = ENTROPY_TARGET_END + (ENTROPY_TARGET_START - ENTROPY_TARGET_END) * sigmoid_factor
+    return float(entropy_schedule)
+
+
+# ============================================================================
 # Gradient Conflict Probing
 # ============================================================================
 
@@ -526,11 +550,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     value_loss_mask_global = ~aug_is_synthetic
     global_value_normalizer = (aug_weights * value_loss_mask_global.float()).sum().item()
 
-    # Target entropy with sigmoid decay
-    midpoint = TOTAL_UPDATES * ENTROPY_DECAY_MIDPOINT_PERCENTAGE
-    steepness_k = 3.0 / (TOTAL_UPDATES * ENTROPY_DECAY_STEEPNESS)
-    sigmoid_factor = (1.0 - torch.tanh(torch.tensor(steepness_k * (update - midpoint)))) / 2.0
-    target_entropy = ENTROPY_TARGET_END + (ENTROPY_TARGET_START - ENTROPY_TARGET_END) * sigmoid_factor.item()
+    # Scheduled entropy value with sigmoid decay
+    entropy_schedule = compute_entropy_schedule(update)
 
     accumulated_loss = 0.0
     accumulated_value_loss = 0.0
@@ -624,8 +645,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         policy_loss_mb = -(batch_weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
 
-        # Adaptive entropy bonus (ratio-based: target / current)
-        entropy_bonus_scale = target_entropy / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
+        # Adaptive entropy bonus (ratio-based: schedule / current)
+        entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
