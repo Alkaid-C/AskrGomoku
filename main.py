@@ -25,8 +25,8 @@ from typing import Optional, Tuple, Dict, List
 
 from model import GomokuPolicyNet, N_BLOCKS, zero_center_taps, WIDTH
 from model import (
-    STEM_3X3_CHANNELS, STEM_SPARSE_5X5_CHANNELS, STEM_DENSE_5X5_CHANNELS,
-    STEM_SPARSE_7X7_CHANNELS, STEM_DENSE_7X7_CHANNELS,
+    STEM_3X3_CHANNELS, STEM_DIRECTIONAL_5X5_CHANNELS, STEM_FULL_5X5_CHANNELS,
+    STEM_DIRECTIONAL_7X7_CHANNELS, STEM_FULL_7X7_CHANNELS,
     TRUNK_DILATION2_SCHEDULE, SE_SCHEDULE,
     POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN
 )
@@ -255,8 +255,8 @@ def main():
     print(f"Model architecture:")
     print(f"  Stem (dilated design):")
     print(f"    - 3x3: {STEM_3X3_CHANNELS}ch")
-    print(f"    - 5x5 sparse (d1+d2): {STEM_SPARSE_5X5_CHANNELS}ch, 5x5 dense: {STEM_DENSE_5X5_CHANNELS}ch")
-    print(f"    - 7x7 sparse (d1+d2+d3): {STEM_SPARSE_7X7_CHANNELS}ch, 7x7 dense: {STEM_DENSE_7X7_CHANNELS}ch")
+    print(f"    - 5x5 directional (d1+d2): {STEM_DIRECTIONAL_5X5_CHANNELS}ch, 5x5 full: {STEM_FULL_5X5_CHANNELS}ch")
+    print(f"    - 7x7 directional (d1+d2+d3): {STEM_DIRECTIONAL_7X7_CHANNELS}ch, 7x7 full: {STEM_FULL_7X7_CHANNELS}ch")
     print(f"    - Total: {WIDTH} channels (center taps zeroed for d>1)")
     print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels")
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")

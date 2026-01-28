@@ -214,8 +214,8 @@ def probe_gradient_conflict_chunked(
     all_trunk_stem_params = []
 
     for name in policy_grads.keys():
-        if any(x in name for x in ['conv_3x3', 'conv_sparse5', 'conv_dense_5x5',
-                                     'conv_sparse7', 'conv_dense_7x7', 'conv_1x1',
+        if any(x in name for x in ['conv_3x3', 'conv_directional5', 'conv_full5',
+                                     'conv_directional7', 'conv_full7', 'conv_1x1',
                                      'stem_norm']):
             stem_params.append(name)
             all_trunk_stem_params.append(name)

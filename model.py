@@ -18,10 +18,10 @@ from typing import Tuple
 N_BLOCKS = 16                     # Number of residual blocks
 WIDTH = 96                        # Residual block width (must equal sum of all stem channels)
 STEM_3X3_CHANNELS = 6 * 6         # 3x3 convolution channels in stem
-STEM_SPARSE_5X5_CHANNELS = 3 * 6  # Sparse 5x5 (dilated 3x3 sum) channels in stem
-STEM_DENSE_5X5_CHANNELS = 2 * 6   # Dense 5x5 convolution channels in stem
-STEM_SPARSE_7X7_CHANNELS = 3 * 6  # Sparse 7x7 (dilated 3x3 sum) channels in stem
-STEM_DENSE_7X7_CHANNELS = 1 * 6   # Dense 7x7 convolution channels in stem
+STEM_DIRECTIONAL_5X5_CHANNELS = 3 * 6  # Directional 5x5 (4-line kernel via dilated 3x3 sum) channels in stem
+STEM_FULL_5X5_CHANNELS = 2 * 6     # Full 5x5 convolution channels in stem
+STEM_DIRECTIONAL_7X7_CHANNELS = 3 * 6  # Directional 7x7 (4-line kernel via dilated 3x3 sum) channels in stem
+STEM_FULL_7X7_CHANNELS = 1 * 6     # Full 7x7 convolution channels in stem
 STEM_1x1_CHANNELS = 1 * 6
 GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
 
@@ -53,7 +53,12 @@ VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
 # ============================================================================
 
 def _zero_center_tap_hook(grad: torch.Tensor) -> torch.Tensor:
-    """Backward hook to zero gradients at center tap position (1,1) of 3x3 kernels."""
+    """Zero gradients at center tap (1,1) of dilated 3x3 kernels.
+
+    In the directional branches, the d1 conv already covers the center position.
+    Higher-dilation convs (d2, d3) must have their center weight permanently zeroed
+    to avoid double-counting. This hook prevents the optimizer from reintroducing it.
+    """
     grad = grad.clone()
     grad[:, :, 1, 1] = 0
     return grad
@@ -73,26 +78,38 @@ class GomokuPolicyNet(nn.Module):
     def __init__(self, n_blocks: int = N_BLOCKS):
         super().__init__()
 
-        # === Stem: dilated design ===
+        # === Stem: line-aware multi-scale design ===
+        # Gomoku threats are strictly along 4 directions (horizontal, vertical,
+        # diagonal, anti-diagonal). The "directional" branches use sums of dilated
+        # 3x3 convolutions to build kernels that cover exactly these 4 line
+        # directions at range 5 or 7 — an efficient substitute for non-standard
+        # 1xN / diagonal kernels that PyTorch doesn't natively optimize.
+        # The "full" branches use standard NxN kernels for complete spatial coverage.
         # Input channels: 3 (current player pieces, opponent pieces, board mask)
+
         self.conv_3x3 = nn.Conv2d(3, STEM_3X3_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
 
-        self.conv_sparse5_d1 = nn.Conv2d(3, STEM_SPARSE_5X5_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
-        self.conv_sparse5_d2 = nn.Conv2d(3, STEM_SPARSE_5X5_CHANNELS, kernel_size=3, stride=1, padding=2, dilation=2)
+        # Directional 5x5: d1 covers inner 3x3, d2 extends to range-2 along 4 directions
+        self.conv_directional5_d1 = nn.Conv2d(3, STEM_DIRECTIONAL_5X5_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.conv_directional5_d2 = nn.Conv2d(3, STEM_DIRECTIONAL_5X5_CHANNELS, kernel_size=3, stride=1, padding=2, dilation=2)
 
-        self.conv_dense_5x5 = nn.Conv2d(3, STEM_DENSE_5X5_CHANNELS, kernel_size=5, stride=1, padding=2, dilation=1)
+        # Full 5x5: standard convolution for complete 5x5 spatial coverage
+        self.conv_full5 = nn.Conv2d(3, STEM_FULL_5X5_CHANNELS, kernel_size=5, stride=1, padding=2, dilation=1)
 
-        self.conv_sparse7_d1 = nn.Conv2d(3, STEM_SPARSE_7X7_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
-        self.conv_sparse7_d2 = nn.Conv2d(3, STEM_SPARSE_7X7_CHANNELS, kernel_size=3, stride=1, padding=2, dilation=2)
-        self.conv_sparse7_d3 = nn.Conv2d(3, STEM_SPARSE_7X7_CHANNELS, kernel_size=3, stride=1, padding=3, dilation=3)
+        # Directional 7x7: d1 + d2 + d3 cover 4 directions out to range 3
+        self.conv_directional7_d1 = nn.Conv2d(3, STEM_DIRECTIONAL_7X7_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
+        self.conv_directional7_d2 = nn.Conv2d(3, STEM_DIRECTIONAL_7X7_CHANNELS, kernel_size=3, stride=1, padding=2, dilation=2)
+        self.conv_directional7_d3 = nn.Conv2d(3, STEM_DIRECTIONAL_7X7_CHANNELS, kernel_size=3, stride=1, padding=3, dilation=3)
 
-        self.conv_dense_7x7 = nn.Conv2d(3, STEM_DENSE_7X7_CHANNELS, kernel_size=7, stride=1, padding=3, dilation=1)
+        # Full 7x7: standard convolution for complete 7x7 spatial coverage
+        self.conv_full7 = nn.Conv2d(3, STEM_FULL_7X7_CHANNELS, kernel_size=7, stride=1, padding=3, dilation=1)
         self.conv_1x1 = nn.Conv2d(3, STEM_1x1_CHANNELS, kernel_size=1, bias=False)
 
-        # Register hooks to zero center tap gradients (prevents optimizer from updating them)
-        self.conv_sparse5_d2.weight.register_hook(_zero_center_tap_hook)
-        self.conv_sparse7_d2.weight.register_hook(_zero_center_tap_hook)
-        self.conv_sparse7_d3.weight.register_hook(_zero_center_tap_hook)
+        # Zero center tap gradients for d>1 convs: the center position is already
+        # covered by d1, so higher dilations must not duplicate it.
+        self.conv_directional5_d2.weight.register_hook(_zero_center_tap_hook)
+        self.conv_directional7_d2.weight.register_hook(_zero_center_tap_hook)
+        self.conv_directional7_d3.weight.register_hook(_zero_center_tap_hook)
 
         self.stem_norm = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 
@@ -164,13 +181,13 @@ class GomokuPolicyNet(nn.Module):
             - Modulated features: H' = γ ⊙ H + β
         """
         branch_3x3 = self.conv_3x3(x)
-        branch_sparse_5x5 = self.conv_sparse5_d1(x) + self.conv_sparse5_d2(x)
-        branch_dense_5x5 = self.conv_dense_5x5(x)
-        branch_sparse_7x7 = self.conv_sparse7_d1(x) + self.conv_sparse7_d2(x) + self.conv_sparse7_d3(x)
-        branch_dense_7x7 = self.conv_dense_7x7(x)
+        branch_directional_5x5 = self.conv_directional5_d1(x) + self.conv_directional5_d2(x)
+        branch_full_5x5 = self.conv_full5(x)
+        branch_directional_7x7 = self.conv_directional7_d1(x) + self.conv_directional7_d2(x) + self.conv_directional7_d3(x)
+        branch_full_7x7 = self.conv_full7(x)
         branch_1x1 = self.conv_1x1(x)
 
-        x = torch.cat([branch_3x3, branch_dense_5x5, branch_sparse_5x5, branch_dense_7x7, branch_sparse_7x7, branch_1x1], dim=1)
+        x = torch.cat([branch_3x3, branch_full_5x5, branch_directional_5x5, branch_full_7x7, branch_directional_7x7, branch_1x1], dim=1)
         x = F.silu(x)
         x = self.stem_norm(x)
 
@@ -261,12 +278,13 @@ class ResidualBlock(nn.Module):
 
 def zero_center_taps(model: nn.Module) -> None:
     """
-    Zero out center taps in dilated stem convolutions to prevent redundant center contributions.
+    Zero out center taps in directional stem convolutions (d>1).
 
-    Should be called once after model initialization. Gradient hooks registered in the model
-    __init__ prevent optimizer updates to these positions, so no need to call after optimizer.step().
+    The center position is already covered by d1; higher-dilation convs must not
+    duplicate it. Called once after model init. Gradient hooks in __init__ keep
+    these weights at zero during training, so no need to call after optimizer.step().
     """
     with torch.no_grad():
-        model.conv_sparse5_d2.weight[:, :, 1, 1] = 0
-        model.conv_sparse7_d2.weight[:, :, 1, 1] = 0
-        model.conv_sparse7_d3.weight[:, :, 1, 1] = 0
+        model.conv_directional5_d2.weight[:, :, 1, 1] = 0
+        model.conv_directional7_d2.weight[:, :, 1, 1] = 0
+        model.conv_directional7_d3.weight[:, :, 1, 1] = 0
