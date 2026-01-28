@@ -23,6 +23,10 @@ from gomoku import (
     play_cler_rollouts_batched, select_action_batch_eval,
     BATCH_INFERENCE_SIZE
 )
+from training import (
+    TOTAL_UPDATES, ENTROPY_TARGET_START, ENTROPY_TARGET_END,
+    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS
+)
 
 
 # ============================================================================
@@ -50,7 +54,7 @@ CF_START_UPDATE = 128          # Update at which to enable CLER
 CF_TRIGGER_PROB = 0.25         # Probability of triggering CLER on a lost game
 CF_ADVANTAGE = 1.25            # Strength multiplier for CLER samples
 CF_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
-CF_ENTROPY_TH = 0.5            # Entropy threshold (nats) - below this is "overconfident"
+CF_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = target_entropy * multiplier)
 CF_RADIUS = 2                  # Manhattan distance for local candidate moves
 CF_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
 CF_NUM_ROLLOUTS = 8            # Rollouts per alternative action
@@ -349,6 +353,12 @@ def generate_cler_samples(trajectories: List[Trajectory],
     if update < CF_START_UPDATE:
         return cler_samples, stats
 
+    # Compute target entropy for adaptive threshold
+    midpoint = TOTAL_UPDATES * ENTROPY_DECAY_MIDPOINT_PERCENTAGE
+    steepness_k = 3.0 / (TOTAL_UPDATES * ENTROPY_DECAY_STEEPNESS)
+    sigmoid_factor = (1.0 - np.tanh(steepness_k * (update - midpoint))) / 2.0
+    target_entropy = ENTROPY_TARGET_END + (ENTROPY_TARGET_START - ENTROPY_TARGET_END) * sigmoid_factor
+
     current_policy.eval()
 
     # Phase 1: Collect all candidate (trajectory, step) pairs from lost games
@@ -379,6 +389,9 @@ def generate_cler_samples(trajectories: List[Trajectory],
         T = len(traj.observations)
         candidates = []
 
+        # Compute adaptive entropy threshold
+        entropy_threshold = target_entropy * CF_ENTROPY_TH_MULTIPLIER
+
         for t in range(T):
             # Check if current policy's turn
             if not traj.is_current_policy[t]:
@@ -389,9 +402,9 @@ def generate_cler_samples(trajectories: List[Trajectory],
             if steps_to_end < CF_MIN_STEPS_TO_END:
                 continue
 
-            # Check entropy threshold
+            # Check entropy threshold (adaptive based on target entropy)
             entropy = traj.entropies[t]
-            if entropy >= CF_ENTROPY_TH:
+            if entropy >= entropy_threshold:
                 continue
 
             # Skip if tactical position (already handled by tactical bonuses)
@@ -403,7 +416,7 @@ def generate_cler_samples(trajectories: List[Trajectory],
                 continue
 
             # Weight: lower entropy = higher weight
-            weight = CF_ENTROPY_TH - entropy
+            weight = entropy_threshold - entropy
             candidates.append((t, weight, entropy))
 
         stats.candidates_total += len(candidates)
