@@ -51,7 +51,7 @@ OPR_TRIGGER_PROB = 0.25         # Probability of triggering off-policy rollout o
 OPR_ADVANTAGE = 1.25            # Strength multiplier for off-policy rollout samples
 OPR_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
 OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = entropy_schedule * multiplier)
-OPR_RADIUS = 2                  # Manhattan distance for local candidate moves
+OPR_RADIUS = 1                  # Chebyshev distance for local candidate moves
 OPR_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
 OPR_NUM_ROLLOUTS = 8            # Rollouts per alternative action
 OPR_WIN_MARGIN = 0.375          # Minimum margin over original action's winrate

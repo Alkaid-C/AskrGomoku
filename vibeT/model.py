@@ -57,13 +57,11 @@ class GomokuPolicyNet(nn.Module):
         # === Policy head: classic design ===
         # Conv1x1 to POLICY_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to 225
         self.policy_conv = nn.Conv2d(WIDTH, POLICY_HEAD_CHANNELS, kernel_size=1)
-        self.policy_norm = nn.GroupNorm(num_groups=POLICY_HEAD_CHANNELS, num_channels=POLICY_HEAD_CHANNELS)
         self.policy_fc = nn.Linear(POLICY_HEAD_CHANNELS * 15 * 15, 225)
 
         # === Value head: classic design ===
         # Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
         self.value_conv = nn.Conv2d(WIDTH, VALUE_HEAD_CHANNELS, kernel_size=1)
-        self.value_norm = nn.GroupNorm(num_groups=VALUE_HEAD_CHANNELS, num_channels=VALUE_HEAD_CHANNELS)
         self.value_fc1 = nn.Linear(VALUE_HEAD_CHANNELS * 15 * 15, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
@@ -94,7 +92,6 @@ class GomokuPolicyNet(nn.Module):
 
         # Policy head: Conv1x1 → GroupNorm → SiLU → flatten → FC → reshape
         policy_features = self.policy_conv(trunk_features)  # [B, POLICY_HEAD_CHANNELS, 15, 15]
-        policy_features = self.policy_norm(policy_features)
         policy_features = F.silu(policy_features)
         policy_features = policy_features.view(batch_size, -1)  # [B, POLICY_HEAD_CHANNELS*15*15]
         logits_flat = self.policy_fc(policy_features)  # [B, 225]
@@ -102,7 +99,6 @@ class GomokuPolicyNet(nn.Module):
 
         # Value head: Conv1x1 → GroupNorm → SiLU → flatten → FC → SiLU → FC → tanh
         value_features = self.value_conv(trunk_features)  # [B, VALUE_HEAD_CHANNELS, 15, 15]
-        value_features = self.value_norm(value_features)
         value_features = F.silu(value_features)
         value_features = value_features.view(batch_size, -1)  # [B, VALUE_HEAD_CHANNELS*15*15]
         value = F.silu(self.value_fc1(value_features))  # [B, VALUE_HEAD_HIDDEN]
