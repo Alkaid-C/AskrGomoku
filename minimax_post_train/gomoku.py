@@ -905,9 +905,9 @@ from dataclasses import dataclass
 class SearchSample:
     """Training sample generated from negamax search."""
     obs: np.ndarray               # [3, 15, 15] canonical observation
-    sorted_candidates: List[int]  # [c1, c2, c3, c4] sorted by Q descending (top 4 only)
+    sorted_candidates: List[int]  # [c1, c2, c3, c4, c5] sorted by Q descending (top 5)
     all_candidates: List[int]     # All 6 candidates
-    Q_values: List[float]         # Q values for sorted_candidates [Q(c1), Q(c2), Q(c3), Q(c4)]
+    Q_values: List[float]         # Q values for sorted_candidates [Q(c1), ..., Q(c5)]
     legal_mask: np.ndarray        # [15, 15]
     V_target: float               # max Q_search value (search backup target)
 
@@ -1169,12 +1169,12 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
     # For depth >= 2, we need to expand further
     # Build tree level by level
 
-    # Level 0: root
-    # Level 1: children of root (6 nodes)
-    # Level 2: children of level 1 (6 * 5 = 30 nodes)
-    # Level 3: leaves (6 * 5 * 5 = 150 nodes) for depth=3
-
-    # We'll collect all nodes at each level, then process
+    # Tree structure for depth=3:
+    # - Level 0: root (not stored)
+    # - Level 1: children of root (6 nodes) - after root's move
+    # - Level 2: children of level 1 (6 * 5 = 30 nodes) - after opponent's move
+    # - Level 3: leaves (6 * 5 * 5 = 150 nodes) - evaluated by value network
+    # Total: 3 plies of search
 
     # Tree node: (obs, mask, player, parent_idx, action_from_parent, terminal_value or None)
     levels = []
@@ -1195,6 +1195,9 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
                 value = 1.0
             else:
                 value = -1.0
+            # Store from opponent's perspective (level 1 is one ply from root)
+            # This will be negated during backup to get root's perspective
+            value = -value
             level_1_nodes.append({
                 'obs': None, 'mask': None, 'player': None,
                 'parent_idx': -1, 'action': action, 'terminal_value': value, 'root_action': action
@@ -1211,7 +1214,9 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
     levels.append(level_1_nodes)
 
     # Expand deeper levels
-    for d in range(1, depth - 1):
+    # d represents current level being expanded (1 = expand level 1 to level 2, etc.)
+    # Loop until d = depth - 1 to get 'depth' total plies
+    for d in range(1, depth):
         current_level = levels[-1]
         next_level = []
 
@@ -1493,14 +1498,14 @@ def play_episodes_with_search(num_episodes: int,
                 # Sort candidates by Q
                 sorted_cands = sorted(candidates, key=lambda a: Q_search.get(a, -float('inf')), reverse=True)
 
-                # Record sample (top 4 for ranking loss)
+                # Record sample (top 5 for ranking loss)
                 V_target = max(Q_search.values())
-                Q_values_top4 = [Q_search.get(a, 0.0) for a in sorted_cands[:4]]
+                Q_values_top5 = [Q_search.get(a, 0.0) for a in sorted_cands[:5]]
                 sample = SearchSample(
                     obs=obs.copy(),
-                    sorted_candidates=sorted_cands[:4],
+                    sorted_candidates=sorted_cands[:5],
                     all_candidates=candidates,
-                    Q_values=Q_values_top4,
+                    Q_values=Q_values_top5,
                     legal_mask=legal_mask.copy(),
                     V_target=V_target
                 )
@@ -1509,11 +1514,15 @@ def play_episodes_with_search(num_episodes: int,
                 # Sample move
                 action = sample_move_from_q(candidates, Q_search, tau)
             else:
-                # Opponent's turn - use simple policy sampling (no search)
-                opponent_model = game.black_model if next_player == Player.BLACK else game.white_model
-                actions, _ = select_action_batch(opponent_model, [obs], [legal_mask],
-                                                  TEMPERATURE_TRAIN, device, deterministic=False)
-                action = actions[0]
+                # Opponent's turn - also use search for equally smart moves
+                opp_model = game.black_model if next_player == Player.BLACK else game.white_model
+                # From opponent's perspective: opp_model is "current", current_policy is "opponent"
+                opp_candidates, opp_Q_search = negamax_batched(
+                    obs, legal_mask, next_player,
+                    opp_model, current_policy, device, depth
+                )
+                # Sample move using same mechanism
+                action = sample_move_from_q(opp_candidates, opp_Q_search, tau)
 
             # Apply move
             row, col = idx_to_pos(action)

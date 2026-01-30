@@ -894,14 +894,14 @@ def compute_ranking_inside_loss(logits_flat: torch.Tensor,
                                 sorted_candidates: torch.Tensor,
                                 Q_norms: torch.Tensor) -> torch.Tensor:
     """
-    Margin-based ranking loss for c1-c4.
+    Margin-based ranking loss for c1-c5.
 
     Uses dynamic margin: margin(i,j) = min(m_rank, Q_norm[ci] - Q_norm[cj])
 
     Args:
         logits_flat: [B, 225] policy logits
-        sorted_candidates: [B, 4] candidates sorted by Q descending (c1, c2, c3, c4)
-        Q_norms: [B, 4] normalized Q values for c1-c4 (in [0, 1])
+        sorted_candidates: [B, 5] candidates sorted by Q descending (c1, c2, c3, c4, c5)
+        Q_norms: [B, 5] normalized Q values for c1-c5 (in [0, 1])
 
     Returns:
         Scalar ranking inside loss
@@ -909,13 +909,13 @@ def compute_ranking_inside_loss(logits_flat: torch.Tensor,
     B = logits_flat.size(0)
     device = logits_flat.device
 
-    # Gather logits for c1, c2, c3, c4
-    L = logits_flat.gather(1, sorted_candidates)  # [B, 4]
+    # Gather logits for c1, c2, c3, c4, c5
+    L = logits_flat.gather(1, sorted_candidates)  # [B, 5]
 
     total_loss = torch.zeros(1, device=device)
 
-    # ReLU(L(c2) - L(c1) + margin(1,2)) + ReLU(L(c3) - L(c2) + margin(2,3)) + ReLU(L(c4) - L(c3) + margin(3,4))
-    for i in range(3):  # i = 0, 1, 2 -> pairs (1,2), (2,3), (3,4)
+    # Pairs: (c1,c2), (c2,c3), (c3,c4), (c4,c5)
+    for i in range(4):  # i = 0, 1, 2, 3 -> pairs (1,2), (2,3), (3,4), (4,5)
         L_lower = L[:, i + 1]  # L(c_{i+2})
         L_higher = L[:, i]     # L(c_{i+1})
         Q_diff = Q_norms[:, i] - Q_norms[:, i + 1]
@@ -942,7 +942,7 @@ def compute_separation_outside_loss(logits_flat: torch.Tensor,
         legal_masks_flat: [B, 225] legal mask
 
     Returns:
-        Scalar separation outside loss (mean over all non-candidates)
+        Scalar separation outside loss (per-sample mean, then averaged across samples)
     """
     B = logits_flat.size(0)
     device = logits_flat.device
@@ -963,14 +963,16 @@ def compute_separation_outside_loss(logits_flat: torch.Tensor,
     L_diff = logits_flat - L_c4.unsqueeze(1) + M_SEP  # [B, 225]
     loss_per_pos = F.relu(L_diff)  # [B, 225]
 
-    # Apply mask and compute mean
+    # Apply mask
     masked_loss = loss_per_pos * non_candidate_mask.float()
-    num_non_candidates = non_candidate_mask.sum()
 
-    if num_non_candidates > 0:
-        return masked_loss.sum() / num_non_candidates
-    else:
-        return torch.zeros(1, device=device)
+    # Per-sample mean, then average across samples
+    num_non_candidates_per_sample = non_candidate_mask.sum(dim=1).float()  # [B]
+    # Avoid division by zero (shouldn't happen in practice)
+    num_non_candidates_per_sample = torch.clamp(num_non_candidates_per_sample, min=1.0)
+    per_sample_loss = masked_loss.sum(dim=1) / num_non_candidates_per_sample  # [B]
+
+    return per_sample_loss.mean()
 
 
 def compute_search_value_loss(V_pred: torch.Tensor, V_target: torch.Tensor) -> torch.Tensor:
@@ -1051,9 +1053,9 @@ def train_on_search_samples(model: nn.Module,
 
     # Convert to tensors
     obs_list = [s.obs for s in all_samples]
-    sorted_cands_list = [s.sorted_candidates for s in all_samples]  # top 4
+    sorted_cands_list = [s.sorted_candidates for s in all_samples]  # top 5
     all_cands_list = [s.all_candidates for s in all_samples]  # all 6
-    Q_values_list = [s.Q_values for s in all_samples]  # Q values for top 4
+    Q_values_list = [s.Q_values for s in all_samples]  # Q values for top 5
     mask_list = [s.legal_mask for s in all_samples]
     V_targets = [s.V_target for s in all_samples]
 
@@ -1075,7 +1077,7 @@ def train_on_search_samples(model: nn.Module,
 
     for sym_id in range(8):
         for sample_idx in range(B):
-            # Transform sorted candidates (top 4)
+            # Transform sorted candidates (top 5)
             sorted_cands = sorted_cands_list[sample_idx]
             aug_sorted = augment_candidates_8fold(sorted_cands, sym_id)
             aug_sorted_cands.append(aug_sorted)
@@ -1085,7 +1087,7 @@ def train_on_search_samples(model: nn.Module,
             aug_all = augment_candidates_8fold(all_cands, sym_id)
             aug_all_cands.append(aug_all)
 
-    aug_sorted_cands_tensor = torch.tensor(aug_sorted_cands, dtype=torch.long, device=device)  # [B*8, 4]
+    aug_sorted_cands_tensor = torch.tensor(aug_sorted_cands, dtype=torch.long, device=device)  # [B*8, 5]
     aug_all_cands_tensor = torch.tensor(aug_all_cands, dtype=torch.long, device=device)  # [B*8, 6]
 
     # Compute Q_norm for each sample using actual Q values
@@ -1099,7 +1101,7 @@ def train_on_search_samples(model: nn.Module,
         Q_norms_list.append(Q_norm)
 
     Q_norms_tensor = torch.tensor(Q_norms_list, dtype=torch.float32, device=device)
-    aug_Q_norms = Q_norms_tensor.repeat(8, 1)  # [B*8, 4]
+    aug_Q_norms = Q_norms_tensor.repeat(8, 1)  # [B*8, 5]
 
     # Training loop
     optimizer.zero_grad()

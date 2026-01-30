@@ -32,17 +32,21 @@ from model import (
 )
 from gomoku import (
     play_episodes_batched, select_action_batch, compute_outcome_stats,
-    BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
+    play_episodes_with_search, GameState,
+    BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES,
+    SEARCH_DEPTH, ROOT_TOP_K, ROOT_RANDOM_K, INTERNAL_TOP_K, INTERNAL_RANDOM_K, SAMPLING_TAU
 )
 from enhancement import probe_tactical_accuracy, TacticalStats
 from training import (
     train_on_batch, compute_entropy_schedule,
+    train_on_search_samples, apply_freeze_schedule, create_optimizer_for_unfrozen, maybe_update_optimizer,
     TOTAL_UPDATES, LEARNING_RATE, MIN_LR, LR_DECAY_MIDPOINT_PERCENTAGE, LR_DECAY_STEEPNESS, WEIGHT_DECAY,
     EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE,
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
     ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
     VALUE_LOSS_COEFF, GAE_LAMBDA, VALUE_BASELINE_START,
-    PRINT_INTERVAL, PROBE_INTERVAL
+    PRINT_INTERVAL, PROBE_INTERVAL,
+    HEADS_ONLY_UPDATES, BLOCK_UNFREEZE_INTERVAL, M_RANK, M_SEP, ALPHA_SEP, LAMBDA_V
 )
 from eval import (
     create_random_policy, load_checkpoint_model,
@@ -256,18 +260,22 @@ def main():
     print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
     num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
 
-    print(f"Training configuration:")
+    print(f"Training configuration (POST-TRAINING MODE - Search Supervision):")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
-    print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
-    print(f"    Target entropy: {ENTROPY_TARGET_START} -> {ENTROPY_TARGET_END} nats (sigmoid: mid={ENTROPY_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={ENTROPY_DECAY_STEEPNESS:.0%})")
-    print(f"    Bonus: coeff={ENTROPY_BONUS_COEFF}")
+    print(f"  Search parameters:")
+    print(f"    - Depth: {SEARCH_DEPTH}")
+    print(f"    - Root candidates: {ROOT_TOP_K} top + {ROOT_RANDOM_K} random = {ROOT_TOP_K + ROOT_RANDOM_K}")
+    print(f"    - Internal candidates: {INTERNAL_TOP_K} top + {INTERNAL_RANDOM_K} random = {INTERNAL_TOP_K + INTERNAL_RANDOM_K}")
+    print(f"    - Sampling temperature: {SAMPLING_TAU}")
+    print(f"  Loss weights: ranking margin={M_RANK}, separation margin={M_SEP}, alpha_sep={ALPHA_SEP}, lambda_v={LAMBDA_V}")
+    print(f"  Progressive unfreezing:")
+    print(f"    - Heads only: updates [0, {HEADS_ONLY_UPDATES})")
+    print(f"    - Unfreeze blocks: every {BLOCK_UNFREEZE_INTERVAL} updates (15→0)")
+    print(f"    - Stem unfreezes after all blocks")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
-    print(f"  Episodes per update: {EPISODES_PER_UPDATE} (chunks: {effective_chunk_size} x {num_accumulation_steps} accumulation steps)")
-    print(f"  Batch inference size (self-play): {BATCH_INFERENCE_SIZE}")
+    print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
     print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
-    print(f"  Value head: ENABLED (weight: {VALUE_LOSS_COEFF}, targets: TD(0))")
-    print(f"  GAE: lambda={GAE_LAMBDA} ({'TD(0)' if GAE_LAMBDA == 0 else 'MC' if GAE_LAMBDA == 1 else 'blend'})")
-    print(f"  Tactical probe: every {PROBE_INTERVAL} updates (metrics only, no training modification)")
+    print(f"  Tactical probe: every {PROBE_INTERVAL} updates (metrics only)")
     print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")
     print(f"  Eval interval: {get_eval_interval(0)} (early) -> {get_eval_interval(512)} (mid) -> {get_eval_interval(8192)} (late)")
@@ -303,12 +311,12 @@ def main():
         current_policy.train()
         zero_center_taps(current_policy)
 
-        optimizer = torch.optim.AdamW(
-            current_policy.parameters(),
-            lr=LEARNING_RATE,
-            weight_decay=WEIGHT_DECAY,
-            fused=True
-        )
+        # Apply initial freeze schedule (heads only at start)
+        unfrozen_blocks = apply_freeze_schedule(current_policy, update=0)
+        print(f"Initial freeze: {unfrozen_blocks} blocks unfrozen (heads only)")
+
+        # Create optimizer for unfrozen parameters only
+        optimizer = create_optimizer_for_unfrozen(current_policy, update=0, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
         def lr_lambda(epoch):
             # Tanh-based decay from LEARNING_RATE to MIN_LR
@@ -337,19 +345,24 @@ def main():
         evals_since_last_scan = 0
         win_rate_ema = 0.5
 
-    # Metrics tracking
+    # Metrics tracking for search-based training
     metric_buffer = {
-        'loss': [], 'win_rate': [], 'win_rate_as_black': [], 'win_rate_as_white': [],
-        'wins': [], 'losses': [], 'draws': [], 'entropy': [], 'value_loss': [],
-        'raw_value_mse': [], 'avg_length': [], 'time': [], 'selfplay_time': [],
-        'train_time': []
+        'loss': [], 'policy_loss': [], 'ranking_inside_loss': [], 'separation_outside_loss': [],
+        'value_loss': [], 'top1_acc': [], 'top3_acc': [], 'value_mse': [],
+        'win_rate': [], 'win_rate_as_black': [], 'win_rate_as_white': [],
+        'wins': [], 'losses': [], 'draws': [], 'avg_length': [],
+        'time': [], 'selfplay_time': [], 'train_time': []
     }
 
     # Tactical probe metrics (periodic, not per-update)
     tactical_probe_stats = TacticalStats()
 
-    # Entropy EMA for adaptive entropy bonus
-    ema_entropy = np.log(225)
+    # Track unfrozen blocks for progressive unfreezing
+    if resume_result is None:
+        unfrozen_blocks = 0  # Fresh start: heads only
+    else:
+        # For resume, we need to recompute based on update
+        unfrozen_blocks = apply_freeze_schedule(current_policy, start_update + 1)
 
     training_start_time = time.time()
 
@@ -357,19 +370,28 @@ def main():
     for update in range(start_update + 1, TOTAL_UPDATES):
         t_start = time.time()
 
-        pairs = []
+        # Check if we need to update optimizer due to unfreezing schedule change
+        current_lr = optimizer.param_groups[0]['lr']
+        optimizer, unfrozen_blocks = maybe_update_optimizer(
+            current_policy, optimizer, update, unfrozen_blocks,
+            lr=current_lr, weight_decay=WEIGHT_DECAY
+        )
+
+        # Prepare episode setup
         current_is_black = []
         opening_ids = []
-        episode_opponents = []
+        opponent_indices = []
+        opponents_list = list(opponent_pool)
         num_openings = len(RENJU_OPENING_SEQUENCES)
+
         for _ in range(EPISODES_PER_UPDATE):
-            opponent = sample_opponent_weighted(opponent_pool, opponent_pool_updates, per_opponent_win_rates)
-            episode_opponents.append(opponent)
+            # Sample opponent index
+            opponent_idx = random.randint(0, len(opponents_list) - 1)
+            opponent_indices.append(opponent_idx)
+
             if random.random() < 0.5:
-                pairs.append((current_policy, opponent))
                 current_is_black.append(True)
             else:
-                pairs.append((opponent, current_policy))
                 current_is_black.append(False)
 
             if random.random() < SEED_PROBABILITY:
@@ -378,48 +400,73 @@ def main():
                 opening_ids.append(-1)
 
         t0 = time.time()
-        trajectories = play_episodes_batched(
-            pairs, current_is_black, TEMPERATURE_TRAIN, DEVICE,
-            batch_size=BATCH_INFERENCE_SIZE,
-            select_action_batch_fn=select_action_batch,
-            opening_ids=opening_ids
+        # Use search-based self-play
+        search_samples, outcomes = play_episodes_with_search(
+            num_episodes=EPISODES_PER_UPDATE,
+            current_policy=current_policy,
+            opponents=opponents_list,
+            opponent_indices=opponent_indices,
+            current_is_black=current_is_black,
+            device=DEVICE,
+            depth=SEARCH_DEPTH,
+            opening_ids=opening_ids,
+            tau=SAMPLING_TAU
         )
         t_selfplay = time.time() - t0
 
-        stats = compute_outcome_stats(trajectories, current_is_black)
+        # Compute outcome stats
+        wins, losses, draws = 0, 0, 0
+        wins_as_black, wins_as_white = 0, 0
+        games_as_black, games_as_white = 0, 0
+        game_lengths = []
+
+        for outcome, is_black, samples in zip(outcomes, current_is_black, search_samples):
+            game_lengths.append(len(samples) * 2)  # Approximate: samples are only for current policy's turns
+
+            if is_black:
+                games_as_black += 1
+            else:
+                games_as_white += 1
+
+            if outcome == GameState.DRAW:
+                draws += 1
+            elif outcome == GameState.BLACK_WIN:
+                if is_black:
+                    wins += 1
+                    wins_as_black += 1
+                else:
+                    losses += 1
+            elif outcome == GameState.WHITE_WIN:
+                if not is_black:
+                    wins += 1
+                    wins_as_white += 1
+                else:
+                    losses += 1
+
+        total_games = len(outcomes)
+        win_rate = wins / total_games if total_games > 0 else 0
+        win_rate_as_black = wins_as_black / games_as_black if games_as_black > 0 else 0
+        win_rate_as_white = wins_as_white / games_as_white if games_as_white > 0 else 0
+        avg_length = np.mean(game_lengths) if game_lengths else 0
+
+        stats = {
+            'wins': wins, 'losses': losses, 'draws': draws,
+            'win_rate': win_rate, 'win_rate_as_black': win_rate_as_black,
+            'win_rate_as_white': win_rate_as_white, 'avg_length': avg_length
+        }
 
         t0 = time.time()
-        train_results = train_on_batch(
-            current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
-            ema_entropy=ema_entropy
+        # Use search-based training
+        train_results = train_on_search_samples(
+            current_policy, search_samples, optimizer, DEVICE
         )
         t_train = time.time() - t0
 
-        # Update entropy EMA
-        ema_alpha = 1.0 / EMA_WINDOW
-        ema_entropy = ema_alpha * train_results['entropy'] + (1.0 - ema_alpha) * ema_entropy
-
-        # Log gradient probe if metrics collected
-        if train_results['probe_metrics'] is not None:
-            csv_logger.log_gradient_probe(update + 1, train_results['probe_metrics'])
-            print(f"  [Probe] Overall cos_sim={train_results['probe_metrics']['overall_cos_sim']:+.3f} | "
-                  f"Stem={train_results['probe_metrics']['stem_cos_sim']:+.3f}")
-
-            # Also run tactical probe at the same interval
-            tactical_probe_stats = probe_tactical_accuracy(trajectories, current_is_black)
-            csv_logger.log_tactical_probe(update + 1, {
-                'win_opportunities': tactical_probe_stats.win_opportunities,
-                'win_hits': tactical_probe_stats.win_hits,
-                'win_misses': tactical_probe_stats.win_misses,
-                'block_opportunities': tactical_probe_stats.block_opportunities,
-                'block_hits': tactical_probe_stats.block_hits,
-                'block_misses': tactical_probe_stats.block_misses,
-                'win_accuracy': tactical_probe_stats.win_accuracy,
-                'block_accuracy': tactical_probe_stats.block_accuracy
-            })
-            print(f"  [Tactical] Win: {tactical_probe_stats.win_accuracy:.1%} ({tactical_probe_stats.win_hits}/{tactical_probe_stats.win_opportunities}) | "
-                  f"Block: {tactical_probe_stats.block_accuracy:.1%} ({tactical_probe_stats.block_hits}/{tactical_probe_stats.block_opportunities})")
-
+        # No gradient probe for search training (different loss structure)
+        # Run tactical probe at the same interval as before
+        if PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0:
+            # For tactical probe, we need trajectories - skip for now since we use search samples
+            # TODO: Could reconstruct trajectories from search samples if needed
             torch.cuda.empty_cache()
 
         t_total = time.time() - t_start
@@ -428,15 +475,19 @@ def main():
         current_lr = optimizer.param_groups[0]['lr']
 
         metric_buffer['loss'].append(train_results['loss'])
+        metric_buffer['policy_loss'].append(train_results['policy_loss'])
+        metric_buffer['ranking_inside_loss'].append(train_results['ranking_inside_loss'])
+        metric_buffer['separation_outside_loss'].append(train_results['separation_outside_loss'])
+        metric_buffer['value_loss'].append(train_results['value_loss'])
+        metric_buffer['top1_acc'].append(train_results['top1_acc'])
+        metric_buffer['top3_acc'].append(train_results['top3_acc'])
+        metric_buffer['value_mse'].append(train_results['value_mse'])
         metric_buffer['win_rate'].append(stats['win_rate'])
         metric_buffer['win_rate_as_black'].append(stats['win_rate_as_black'])
         metric_buffer['win_rate_as_white'].append(stats['win_rate_as_white'])
         metric_buffer['wins'].append(stats['wins'])
         metric_buffer['losses'].append(stats['losses'])
         metric_buffer['draws'].append(stats['draws'])
-        metric_buffer['entropy'].append(train_results['entropy'])
-        metric_buffer['value_loss'].append(train_results['value_loss'])
-        metric_buffer['raw_value_mse'].append(train_results['raw_value_mse'])
         metric_buffer['avg_length'].append(stats['avg_length'])
         metric_buffer['time'].append(t_total)
         metric_buffer['selfplay_time'].append(t_selfplay)
@@ -444,15 +495,19 @@ def main():
 
         if (update + 1) % PRINT_INTERVAL == 0:
             avg_loss = np.mean(metric_buffer['loss'])
+            avg_policy_loss = np.mean(metric_buffer['policy_loss'])
+            avg_ranking_inside = np.mean(metric_buffer['ranking_inside_loss'])
+            avg_separation_outside = np.mean(metric_buffer['separation_outside_loss'])
+            avg_value_loss = np.mean(metric_buffer['value_loss'])
+            avg_top1_acc = np.mean(metric_buffer['top1_acc'])
+            avg_top3_acc = np.mean(metric_buffer['top3_acc'])
+            avg_value_mse = np.mean(metric_buffer['value_mse'])
             avg_win_rate = np.mean(metric_buffer['win_rate'])
             avg_win_rate_black = np.mean(metric_buffer['win_rate_as_black'])
             avg_win_rate_white = np.mean(metric_buffer['win_rate_as_white'])
             total_wins = sum(metric_buffer['wins'])
             total_losses = sum(metric_buffer['losses'])
             total_draws = sum(metric_buffer['draws'])
-            avg_entropy = np.mean(metric_buffer['entropy'])
-            avg_value_loss = np.mean(metric_buffer['value_loss'])
-            avg_raw_value_mse = np.mean(metric_buffer['raw_value_mse'])
             avg_length = np.mean(metric_buffer['avg_length'])
             avg_time = np.mean(metric_buffer['time'])
             avg_selfplay_time = np.mean(metric_buffer['selfplay_time'])
@@ -479,21 +534,39 @@ def main():
             eta_str = format_time(eta_seconds)
 
             print(f"Update {update + 1:5d}/{TOTAL_UPDATES} | "
-                  f"WinRate: {avg_win_rate:.0%}(W{avg_win_rate_white:.0%}-B{avg_win_rate_black:.0%}) | "
-                  f"AvgLen: {avg_length:.1f} | "
-                  f"Entropy: {avg_entropy:.3f} | "
-                  f"{avg_time:.2f}s/upd | "
-                  f"Elapsed: {elapsed_str} | ETA: {eta_str}")
+                  f"Top1: {avg_top1_acc:.1%} Top3: {avg_top3_acc:.1%} | "
+                  f"ValMSE: {avg_value_mse:.4f} | "
+                  f"WR: {avg_win_rate:.0%} | "
+                  f"Blk: {unfrozen_blocks} | "
+                  f"{avg_time:.2f}s | "
+                  f"ETA: {eta_str}")
 
+            # Log to search_training.csv
+            csv_logger.log_search_training(update + 1, {
+                'policy_loss': avg_policy_loss,
+                'ranking_inside_loss': avg_ranking_inside,
+                'separation_outside_loss': avg_separation_outside,
+                'value_loss': avg_value_loss,
+                'top1_acc': avg_top1_acc,
+                'top3_acc': avg_top3_acc,
+                'value_mse': avg_value_mse,
+                'unfrozen_blocks': unfrozen_blocks,
+                'learning_rate': current_lr,
+                'time_total': avg_time,
+                'time_selfplay': avg_selfplay_time,
+                'time_train': avg_train_time
+            })
+
+            # Also log to legacy training_updates.csv for compatibility
             csv_logger.log_training_update(update + 1, {
                 'loss': avg_loss,
                 'win_rate': avg_win_rate,
                 'win_rate_black': avg_win_rate_black,
                 'win_rate_white': avg_win_rate_white,
                 'avg_game_length': avg_length,
-                'entropy': avg_entropy,
+                'entropy': 0.0,  # No entropy in search training
                 'value_loss': avg_value_loss,
-                'raw_value_mse': avg_raw_value_mse,
+                'raw_value_mse': avg_value_mse,
                 'time_total': avg_time,
                 'time_selfplay': avg_selfplay_time,
                 'time_train': avg_train_time,
