@@ -42,7 +42,7 @@ MAX_SYNTHETIC_BLOCKS = 256     # Max synthetic blocking examples per batch
 
 # --- Imitation Learning ---
 IMITATION_MAX_WEIGHT = 1.5      # Maximum weight for imitation learning (at 0% win rate)
-IMITATION_MIN_WEIGHT = 0.5      # Minimum weight for imitation learning (at 100% win rate)
+IMITATION_MIN_WEIGHT = 0.0      # Minimum weight for imitation learning (at 100% win rate)
 IMITATION_START_UPDATE = 128    # Update at which to enable imitation learning
 
 # --- Off-Policy Rollout ---

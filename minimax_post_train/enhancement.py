@@ -12,7 +12,7 @@ import numpy as np
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 
-from gomoku import Trajectory, GameState
+from gomoku import Trajectory, GameState, SearchSample
 
 
 # ============================================================================
@@ -233,6 +233,49 @@ def probe_tactical_accuracy(trajectories: List[Trajectory],
                 if blocking_moves is not None:
                     stats.block_opportunities += 1
                     if action in blocking_moves:
+                        stats.block_hits += 1
+                    else:
+                        stats.block_misses += 1
+
+    return stats
+
+
+def probe_tactical_accuracy_search(search_samples: List[List[SearchSample]]) -> TacticalStats:
+    """
+    Probe tactical accuracy from search samples.
+
+    For each position in search samples, checks:
+    - If there's a win-in-1 opportunity, is it ranked as c1?
+    - If there's a blocking opportunity (no win), is it ranked as c1?
+
+    Args:
+        search_samples: List of SearchSample lists (one list per game)
+
+    Returns:
+        TacticalStats with accuracy metrics
+    """
+    stats = TacticalStats()
+
+    for game_samples in search_samples:
+        for sample in game_samples:
+            obs = sample.obs
+            mask = sample.legal_mask
+            c1 = sample.sorted_candidates[0]  # Top-ranked candidate
+
+            # Check win-in-1
+            winning_moves = find_all_win_in_1(obs, mask)
+            if winning_moves:
+                stats.win_opportunities += 1
+                if c1 in winning_moves:
+                    stats.win_hits += 1
+                else:
+                    stats.win_misses += 1
+            else:
+                # Only check blocking if no win opportunity
+                blocking_moves = find_blocking_moves(obs, mask)
+                if blocking_moves is not None:
+                    stats.block_opportunities += 1
+                    if c1 in blocking_moves:
                         stats.block_hits += 1
                     else:
                         stats.block_misses += 1

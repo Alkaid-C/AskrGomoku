@@ -36,7 +36,7 @@ from gomoku import (
     BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES,
     SEARCH_DEPTH, ROOT_TOP_K, ROOT_RANDOM_K, INTERNAL_TOP_K, INTERNAL_RANDOM_K, SAMPLING_TAU
 )
-from enhancement import probe_tactical_accuracy, TacticalStats
+from enhancement import probe_tactical_accuracy, probe_tactical_accuracy_search
 from training import (
     train_on_batch, compute_entropy_schedule,
     train_on_search_samples, apply_freeze_schedule, create_optimizer_for_unfrozen, maybe_update_optimizer,
@@ -85,7 +85,8 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
                         per_opponent_win_rates: Dict[str, float],
                         scan_event_counter: int,
                         evals_since_last_scan: int,
-                        win_rate_ema: float) -> None:
+                        win_rate_ema: float,
+                        unfrozen_blocks: int) -> None:
     """Save training state to JSON for resume capability."""
     state = {
         'current_update': update,
@@ -94,7 +95,8 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
         'per_opponent_win_rates': per_opponent_win_rates,
         'scan_event_counter': scan_event_counter,
         'evals_since_last_scan': evals_since_last_scan,
-        'win_rate_ema': win_rate_ema
+        'win_rate_ema': win_rate_ema,
+        'unfrozen_blocks': unfrozen_blocks
     }
 
     training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
@@ -111,8 +113,11 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     Returns:
         Tuple of (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
                   next_eval_update, per_opponent_win_rates,
-                  scan_event_counter, evals_since_last_scan, win_rate_ema) or None if loading fails
-        Note: opponent_pool_updates is filtered to only include successfully loaded opponents
+                  scan_event_counter, evals_since_last_scan, win_rate_ema, unfrozen_blocks) or None if no state exists
+        Note: unfrozen_blocks may be None if resuming from old state (will be recalculated)
+
+    Raises:
+        Exception if training state file exists but is corrupted or checkpoints are missing
     """
     training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
     if not os.path.exists(training_state_file):
@@ -121,12 +126,9 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
     print(f"Found training state file: {training_state_file}")
 
-    try:
-        with open(training_state_file, 'r') as f:
-            state = json.load(f)
-    except Exception as e:
-        print(f"Error loading training state JSON: {e}")
-        return None
+    # Let JSON errors propagate - corrupted state file should crash
+    with open(training_state_file, 'r') as f:
+        state = json.load(f)
 
     current_update = state['current_update']
     opponent_pool_updates = state['opponent_pool_updates']
@@ -135,6 +137,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     scan_event_counter = state.get('scan_event_counter', 0)
     evals_since_last_scan = state.get('evals_since_last_scan', 0)
     win_rate_ema = state.get('win_rate_ema', 0.5)
+    unfrozen_blocks = state.get('unfrozen_blocks', None)  # None = recalculate from update
 
     print(f"Resuming from update {current_update}")
     print(f"Opponent pool has {len(opponent_pool_updates)} models: {opponent_pool_updates}")
@@ -145,28 +148,22 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
     checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{current_update}.pt")
     if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint not found: {checkpoint_path}")
-        return None
+        raise FileNotFoundError(f"Main checkpoint not found: {checkpoint_path}")
 
     print(f"Loading checkpoint: {checkpoint_path}")
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    except Exception as e:
-        print(f"Error loading checkpoint: {e}")
-        return None
+    # Let load errors propagate - corrupted checkpoint should crash
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
     model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.train()
     zero_center_taps(model)
 
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=LEARNING_RATE,
-        weight_decay=WEIGHT_DECAY,
-        fused=True
-    )
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    # Create optimizer with only unfrozen parameters (applies freeze schedule internally)
+    # Note: We don't restore optimizer state dict because param groups may differ
+    # after applying freeze schedule. Adam momentum will warm up quickly.
+    optimizer = create_optimizer_for_unfrozen(model, current_update, lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
+    print(f"Created optimizer for unfrozen params at update {current_update} (optimizer state reset)")
 
     def lr_lambda(epoch):
         # Tanh-based decay from LEARNING_RATE to MIN_LR
@@ -180,30 +177,19 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     opponent_pool = deque()
-    loaded_opponent_updates = []  # Track successfully loaded opponents
 
     for pool_update in opponent_pool_updates:
         pool_checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{pool_update}.pt")
         if not os.path.exists(pool_checkpoint_path):
-            print(f"Warning: Opponent pool checkpoint not found: {pool_checkpoint_path}")
-            print(f"Skipping this opponent")
-            continue
+            raise FileNotFoundError(f"Opponent pool checkpoint not found: {pool_checkpoint_path}")
 
-        try:
-            pool_checkpoint = torch.load(pool_checkpoint_path, map_location=device, weights_only=False)
-            pool_model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
-            pool_model.load_state_dict(pool_checkpoint['model_state_dict'])
-            pool_model.eval()
-            opponent_pool.append(pool_model)
-            loaded_opponent_updates.append(pool_update)  # Only add if successfully loaded
-            print(f"Loaded opponent from update {pool_update}")
-        except Exception as e:
-            print(f"Error loading opponent pool checkpoint {pool_checkpoint_path}: {e}")
-            continue
-
-    if len(opponent_pool) == 0:
-        print("Error: No opponent models loaded from pool")
-        return None
+        # Let load errors propagate - corrupted opponent checkpoint should crash
+        pool_checkpoint = torch.load(pool_checkpoint_path, map_location=device, weights_only=False)
+        pool_model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+        pool_model.load_state_dict(pool_checkpoint['model_state_dict'])
+        pool_model.eval()
+        opponent_pool.append(pool_model)
+        print(f"Loaded opponent from update {pool_update}")
 
     print(f"Successfully loaded {len(opponent_pool)} opponents")
 
@@ -213,8 +199,8 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     print(f"Resume training starting from update {current_update + 1}")
     print()
 
-    return (model, optimizer, scheduler, opponent_pool, loaded_opponent_updates, current_update - 1, next_eval_update,
-            per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema)
+    return (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, current_update - 1, next_eval_update,
+            per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema, unfrozen_blocks)
 
 
 # ============================================================================
@@ -295,7 +281,7 @@ def main():
     if resume_result is not None:
         (current_policy, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
          next_eval_update, per_opponent_win_rates, scan_event_counter,
-         evals_since_last_scan, win_rate_ema) = resume_result
+         evals_since_last_scan, win_rate_ema, unfrozen_blocks_loaded) = resume_result
         print("=" * 60)
         print("Successfully resumed training!")
         print("=" * 60)
@@ -354,17 +340,26 @@ def main():
         'time': [], 'selfplay_time': [], 'train_time': []
     }
 
-    # Tactical probe metrics (periodic, not per-update)
-    tactical_probe_stats = TacticalStats()
-
     # Track unfrozen blocks for progressive unfreezing
     if resume_result is None:
         unfrozen_blocks = 0  # Fresh start: heads only
     else:
-        # For resume, we need to recompute based on update
+        # Always apply freeze schedule on resume to ensure correct requires_grad state
+        # (load_state_dict doesn't preserve requires_grad, so all params are trainable after load)
         unfrozen_blocks = apply_freeze_schedule(current_policy, start_update + 1)
+        if unfrozen_blocks_loaded is not None and unfrozen_blocks_loaded != unfrozen_blocks:
+            print(f"Warning: loaded unfrozen_blocks ({unfrozen_blocks_loaded}) differs from calculated ({unfrozen_blocks})")
+        print(f"Applied freeze schedule on resume: {unfrozen_blocks} blocks unfrozen")
 
     training_start_time = time.time()
+
+    # Define lr_lambda once for scheduler creation/recreation
+    def lr_lambda(epoch):
+        midpoint = TOTAL_UPDATES * LR_DECAY_MIDPOINT_PERCENTAGE
+        steepness_k = 3.0 / (TOTAL_UPDATES * LR_DECAY_STEEPNESS)
+        decay_factor = 0.5 * (1.0 + torch.tanh(torch.tensor(steepness_k * (midpoint - epoch)))).item()
+        decayed_lr = MIN_LR + (LEARNING_RATE - MIN_LR) * decay_factor
+        return decayed_lr / LEARNING_RATE
 
     # Training loop
     for update in range(start_update + 1, TOTAL_UPDATES):
@@ -372,10 +367,16 @@ def main():
 
         # Check if we need to update optimizer due to unfreezing schedule change
         current_lr = optimizer.param_groups[0]['lr']
+        prev_optimizer = optimizer
         optimizer, unfrozen_blocks = maybe_update_optimizer(
             current_policy, optimizer, update, unfrozen_blocks,
             lr=current_lr, weight_decay=WEIGHT_DECAY
         )
+
+        # Recreate scheduler if optimizer was replaced (Issue #2 fix)
+        if optimizer is not prev_optimizer:
+            scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=update - 1)
+            print(f"Update {update}: Recreated scheduler for new optimizer (unfrozen_blocks={unfrozen_blocks})")
 
         # Prepare episode setup
         current_is_black = []
@@ -462,11 +463,21 @@ def main():
         )
         t_train = time.time() - t0
 
-        # No gradient probe for search training (different loss structure)
-        # Run tactical probe at the same interval as before
+        # Run tactical probe on search samples
         if PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0:
-            # For tactical probe, we need trajectories - skip for now since we use search samples
-            # TODO: Could reconstruct trajectories from search samples if needed
+            probe_stats = probe_tactical_accuracy_search(search_samples)
+
+            # Log to CSV (use update + 1 for consistency with other CSVs)
+            csv_logger.log_tactical_probe(update + 1, {
+                'win_opportunities': probe_stats.win_opportunities,
+                'win_hits': probe_stats.win_hits,
+                'win_misses': probe_stats.win_misses,
+                'win_accuracy': probe_stats.win_accuracy,
+                'block_opportunities': probe_stats.block_opportunities,
+                'block_hits': probe_stats.block_hits,
+                'block_misses': probe_stats.block_misses,
+                'block_accuracy': probe_stats.block_accuracy
+            })
             torch.cuda.empty_cache()
 
         t_total = time.time() - t_start
@@ -564,7 +575,7 @@ def main():
                 'win_rate_black': avg_win_rate_black,
                 'win_rate_white': avg_win_rate_white,
                 'avg_game_length': avg_length,
-                'entropy': 0.0,  # No entropy in search training
+                'entropy': float('nan'),  # Not applicable in search training
                 'value_loss': avg_value_loss,
                 'raw_value_mse': avg_value_mse,
                 'time_total': avg_time,
@@ -719,7 +730,8 @@ def main():
             # Save training state
             save_training_state(
                 output_dir, update + 1, opponent_pool_updates,
-                per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema
+                per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
+                unfrozen_blocks
             )
 
             eval_interval = get_eval_interval(update + 1)
@@ -735,7 +747,8 @@ def main():
 
     save_training_state(
         output_dir, TOTAL_UPDATES, opponent_pool_updates,
-        per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema
+        per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
+        unfrozen_blocks
     )
     print(f"Final training state saved")
 

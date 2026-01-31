@@ -32,6 +32,30 @@ LOGIT_MASK_VALUE = -1e9
 
 
 # ============================================================================
+# Negamax Search Constants
+# ============================================================================
+
+SEARCH_DEPTH = 3                 # Default search depth
+
+# Root node candidate generation
+ROOT_TOP_K = 5                   # Top-k from policy at root
+ROOT_RANDOM_K = 1                # Random neighbors at root
+# Total root candidates = 6
+
+# Internal node candidate generation
+INTERNAL_TOP_K = 5               # Top-k from policy at internal nodes
+INTERNAL_RANDOM_K = 1            # Random neighbors at internal nodes
+# Total internal candidates = 6
+
+# Sampling parameters
+TOP_K_SAMPLE = 5                 # Top candidates for sampling (excludes worst random)
+SAMPLING_TAU = 0.5               # Temperature for Q-based sampling
+Q_NORM_EPSILON = 1e-6            # Normalization epsilon for Q values
+
+# Search tree size at depth=3: 6 × 6 × 6 leaf nodes
+
+
+# ============================================================================
 # Renju Opening Sequences (for Opening Seeding)
 # ============================================================================
 
@@ -872,30 +896,6 @@ def compute_outcome_stats(trajectories: List[Trajectory], current_is_black: List
 
 
 # ============================================================================
-# Negamax Search Constants
-# ============================================================================
-
-SEARCH_DEPTH = 3                 # Default search depth
-
-# Root node candidate generation
-ROOT_TOP_K = 5                   # Top-k from policy at root
-ROOT_RANDOM_K = 1                # Random neighbors at root
-# Total root candidates = 6
-
-# Internal node candidate generation
-INTERNAL_TOP_K = 4               # Top-k from policy at internal nodes
-INTERNAL_RANDOM_K = 1            # Random neighbors at internal nodes
-# Total internal candidates = 5
-
-# Sampling parameters
-TOP_K_SAMPLE = 5                 # Top candidates for sampling (excludes worst random)
-SAMPLING_TAU = 0.5               # Temperature for Q-based sampling
-Q_NORM_EPSILON = 1e-6            # Normalization epsilon for Q values
-
-# Search tree size at depth=3: 6 × 5 × 5 = 150 leaf nodes
-
-
-# ============================================================================
 # Search Sample Dataclass
 # ============================================================================
 
@@ -905,8 +905,8 @@ from dataclasses import dataclass
 class SearchSample:
     """Training sample generated from negamax search."""
     obs: np.ndarray               # [3, 15, 15] canonical observation
-    sorted_candidates: List[int]  # [c1, c2, c3, c4, c5] sorted by Q descending (top 5)
-    all_candidates: List[int]     # All 6 candidates
+    sorted_candidates: List[int]  # Top candidates sorted by Q descending (length: TOP_K_SAMPLE)
+    all_candidates: List[int]     # All candidates (length: ROOT_TOP_K + ROOT_RANDOM_K)
     Q_values: List[float]         # Q values for sorted_candidates [Q(c1), ..., Q(c5)]
     legal_mask: np.ndarray        # [15, 15]
     V_target: float               # max Q_search value (search backup target)
@@ -951,32 +951,21 @@ def generate_candidates(obs: np.ndarray, legal_mask: np.ndarray,
     _, top_indices = torch.topk(logits_flat, min(top_k, int(mask_tensor.sum().item())))
     top_actions = top_indices.cpu().tolist()
 
-    # Get neighbor positions (Chebyshev distance <= 1 from any stone)
+    # Get neighbor positions (Chebyshev distance <= 1 from any stone) using vectorized ops
     occupied = (obs[0] == 1) | (obs[1] == 1)
-    neighbor_candidates = []
 
-    for r in range(15):
-        for c in range(15):
-            if legal_mask[r, c] == 0:
-                continue
-            action = r * 15 + c
-            if action in top_actions:
-                continue  # Already in top-k
+    # Compute neighbor mask via padded shifted views (binary dilation)
+    padded = np.pad(occupied, 1, mode='constant', constant_values=False)
+    is_neighbor = (
+        padded[:-2, :-2] | padded[:-2, 1:-1] | padded[:-2, 2:] |
+        padded[1:-1, :-2] |                    padded[1:-1, 2:] |
+        padded[2:, :-2]  | padded[2:, 1:-1]  | padded[2:, 2:]
+    )
 
-            # Check if adjacent to any stone
-            is_neighbor = False
-            for dr in range(-1, 2):
-                if is_neighbor:
-                    break
-                for dc in range(-1, 2):
-                    if dr == 0 and dc == 0:
-                        continue
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < 15 and 0 <= nc < 15 and occupied[nr, nc]:
-                        is_neighbor = True
-                        break
-            if is_neighbor:
-                neighbor_candidates.append(action)
+    # Valid neighbors: adjacent to stone, not occupied, legal, not in top-k
+    top_actions_set = set(top_actions)
+    neighbor_mask = is_neighbor & ~occupied & (legal_mask == 1)
+    neighbor_candidates = [a for a in np.where(neighbor_mask.flatten())[0] if a not in top_actions_set]
 
     # Select random neighbors
     if len(neighbor_candidates) >= random_k:
@@ -1034,32 +1023,20 @@ def generate_candidates_batched(obs_batch: List[np.ndarray],
         obs = obs_batch[i]
         legal_mask = mask_batch[i]
         top_actions = top_indices_list[i]
+        top_actions_set = set(top_actions)
 
-        # Get neighbor candidates
+        # Get neighbor candidates using vectorized ops (binary dilation via shifted views)
         occupied = (obs[0] == 1) | (obs[1] == 1)
-        neighbor_candidates = []
+        padded = np.pad(occupied, 1, mode='constant', constant_values=False)
+        is_neighbor = (
+            padded[:-2, :-2] | padded[:-2, 1:-1] | padded[:-2, 2:] |
+            padded[1:-1, :-2] |                    padded[1:-1, 2:] |
+            padded[2:, :-2]  | padded[2:, 1:-1]  | padded[2:, 2:]
+        )
 
-        for r in range(15):
-            for c in range(15):
-                if legal_mask[r, c] == 0:
-                    continue
-                action = r * 15 + c
-                if action in top_actions:
-                    continue
-
-                is_neighbor = False
-                for dr in range(-1, 2):
-                    if is_neighbor:
-                        break
-                    for dc in range(-1, 2):
-                        if dr == 0 and dc == 0:
-                            continue
-                        nr, nc = r + dr, c + dc
-                        if 0 <= nr < 15 and 0 <= nc < 15 and occupied[nr, nc]:
-                            is_neighbor = True
-                            break
-                if is_neighbor:
-                    neighbor_candidates.append(action)
+        # Valid neighbors: adjacent to stone, not occupied, legal, not in top-k
+        neighbor_mask = is_neighbor & ~occupied & (legal_mask == 1)
+        neighbor_candidates = [a for a in np.where(neighbor_mask.flatten())[0] if a not in top_actions_set]
 
         # Select random neighbors
         if len(neighbor_candidates) >= random_k:
@@ -1093,11 +1070,10 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
     Strategy: Generate all leaf positions upfront, batch evaluate,
     then backpropagate values using negamax rule.
 
-    Tree structure (depth=3):
-    - Root: 6 candidates (ROOT_TOP_K + ROOT_RANDOM_K)
-    - Depth 1: 5 candidates each (INTERNAL_TOP_K + INTERNAL_RANDOM_K)
-    - Depth 2: 5 candidates each
-    - Total leaves: 6 × 5 × 5 = 150
+    Tree structure:
+    - Root: ROOT_TOP_K + ROOT_RANDOM_K candidates
+    - Internal nodes: INTERNAL_TOP_K + INTERNAL_RANDOM_K candidates each
+    - Leaf count depends on depth and candidate counts
 
     Args:
         root_obs: Root observation [3, 15, 15]
@@ -1307,14 +1283,10 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
             leaf_values = values.squeeze(-1).cpu().numpy()
 
         # Assign values back
-        # Value is from leaf player's perspective; we need root's perspective
-        # Number of negations = depth - 1 (since leaf is at depth 'depth')
+        # Value is from leaf player's perspective (canonical observation)
+        # Negamax backup (max of -children) handles perspective alternation automatically
         for i, idx in enumerate(leaf_indices):
-            val = leaf_values[i]
-            # Negate based on parity (odd depth = negate)
-            if (depth - 1) % 2 == 1:
-                val = -val
-            leaf_level[idx]['value'] = val
+            leaf_level[idx]['value'] = leaf_values[i]
     else:
         pass  # All leaves are terminal
 
@@ -1365,10 +1337,10 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
 def sample_move_from_q(candidates: List[int], Q_search: dict,
                        tau: float = SAMPLING_TAU) -> int:
     """
-    Sample from top-5 candidates using normalized Q softmax.
+    Sample from top candidates using normalized Q softmax.
 
     Args:
-        candidates: All 6 candidates (sorted by Q descending)
+        candidates: All candidates (sorted by Q descending)
         Q_search: dict mapping action -> Q value
         tau: Temperature for softmax
 
@@ -1378,7 +1350,7 @@ def sample_move_from_q(candidates: List[int], Q_search: dict,
     # Sort candidates by Q value descending
     sorted_candidates = sorted(candidates, key=lambda a: Q_search.get(a, -float('inf')), reverse=True)
 
-    # Use top-5 (exclude c6)
+    # Use top TOP_K_SAMPLE candidates (exclude worst random)
     top5 = sorted_candidates[:TOP_K_SAMPLE]
     top5_q = [Q_search[a] for a in top5]
 
@@ -1431,10 +1403,10 @@ def play_episodes_with_search(num_episodes: int,
     Play games using negamax search for move selection.
 
     For each move by current_policy:
-    1. Generate 6 candidates
+    1. Generate candidates (ROOT_TOP_K + ROOT_RANDOM_K)
     2. Run negamax search
     3. Record SearchSample
-    4. Sample move from top-5 using Q softmax
+    4. Sample move from top candidates using Q softmax
 
     Args:
         num_episodes: Number of games to play

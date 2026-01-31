@@ -15,13 +15,13 @@ from typing import Tuple
 # Model Architecture Constants
 # ============================================================================
 
-N_BLOCKS = 20                     # Number of residual blocks
+N_BLOCKS = 18                     # Number of residual blocks
 WIDTH = 96                        # Residual block width
 GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
 
 # Head architecture
-POLICY_HEAD_CHANNELS = 2          # Policy head intermediate channels
-VALUE_HEAD_CHANNELS = 1           # Value head intermediate channels
+POLICY_HEAD_CHANNELS = 8          # Policy head intermediate channels
+VALUE_HEAD_CHANNELS = 4           # Value head intermediate channels
 VALUE_HEAD_HIDDEN = 160           # Value head hidden layer size
 
 

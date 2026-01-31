@@ -60,7 +60,8 @@ ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of tot
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF = 1.0         # Weight for value head loss
+VALUE_LOSS_COEFF_EARLY = 1.0   # Weight for value head loss before GAE enabled
+VALUE_LOSS_COEFF_GAE = 0.25    # Weight for value head loss after GAE enabled
 GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
 VALUE_BASELINE_START = 512     # Update at which to start using value baseline
 
@@ -649,7 +650,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
-        loss_mb = (policy_loss_mb + VALUE_LOSS_COEFF * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
+        value_loss_coeff = VALUE_LOSS_COEFF_GAE if use_value_baseline else VALUE_LOSS_COEFF_EARLY
+        loss_mb = (policy_loss_mb + value_loss_coeff * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
         loss_mb.backward()
 
         accumulated_loss += loss_mb.item()

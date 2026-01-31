@@ -70,6 +70,16 @@ VALUE_BASELINE_START = 512     # Update at which to start using value baseline
 PRINT_INTERVAL = 1             # Print stats every N updates
 PROBE_INTERVAL = 64            # Probe gradient conflict every N updates (0 = disable)
 
+# --- Search-Based Training (Post-Train) ---
+M_RANK = 0.15        # Ranking margin (max) for inside loss
+M_SEP = 0.15         # Separation margin for outside loss
+ALPHA_SEP = 1.0      # Separation loss weight
+LAMBDA_V = 1.0       # Value loss weight
+
+# --- Progressive Unfreezing Schedule ---
+HEADS_ONLY_UPDATES = 2048    # N: updates with only heads trainable
+BLOCK_UNFREEZE_INTERVAL = 128  # M: interval between block unfreezes
+
 
 # ============================================================================
 # Entropy Target Helper
@@ -726,20 +736,6 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
 
 
 # ============================================================================
-# Search-Based Training Constants
-# ============================================================================
-
-M_RANK = 0.15        # Ranking margin (max) for inside loss
-M_SEP = 0.15         # Separation margin for outside loss
-ALPHA_SEP = 1.0      # Separation loss weight
-LAMBDA_V = 1.0       # Value loss weight
-
-# Progressive unfreezing schedule
-HEADS_ONLY_UPDATES = 2048    # N: updates with only heads trainable
-BLOCK_UNFREEZE_INTERVAL = 128  # M: interval between block unfreezes
-
-
-# ============================================================================
 # Progressive Unfreezing Logic
 # ============================================================================
 
@@ -894,14 +890,14 @@ def compute_ranking_inside_loss(logits_flat: torch.Tensor,
                                 sorted_candidates: torch.Tensor,
                                 Q_norms: torch.Tensor) -> torch.Tensor:
     """
-    Margin-based ranking loss for c1-c5.
+    Margin-based ranking loss for sorted candidates.
 
     Uses dynamic margin: margin(i,j) = min(m_rank, Q_norm[ci] - Q_norm[cj])
 
     Args:
         logits_flat: [B, 225] policy logits
-        sorted_candidates: [B, 5] candidates sorted by Q descending (c1, c2, c3, c4, c5)
-        Q_norms: [B, 5] normalized Q values for c1-c5 (in [0, 1])
+        sorted_candidates: [B, TOP_K_SAMPLE] candidates sorted by Q descending
+        Q_norms: [B, TOP_K_SAMPLE] normalized Q values (in [0, 1])
 
     Returns:
         Scalar ranking inside loss

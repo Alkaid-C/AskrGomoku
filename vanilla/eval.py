@@ -48,8 +48,8 @@ NUM_SCAN_BUCKETS = 4           # Number of buckets for round-robin scanning
 QUICK_SCREEN_ROUNDS = 16       # Rounds for quick screen
 TOP_K_QUICK_SCREEN = 16        # Keep top K from quick screen
 FINAL_SCREEN_ROUNDS = 64       # Rounds for final screen
-MAX_MINED_OPPONENTS_PER_EVENT = 2  # Max opponents to add per scan
-MINING_WIN_RATE_THRESHOLD = 0.5    # Only mine opponents with win rate below this
+MAX_MINED_OPPONENTS_PER_EVENT = 1  # Max opponents to add per scan
+MINING_WIN_RATE_THRESHOLD = 27.0/64    # Only mine opponents with win rate below this
 
 
 # ============================================================================

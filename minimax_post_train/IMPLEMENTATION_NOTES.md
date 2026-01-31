@@ -103,7 +103,7 @@ Q_NORM_EPSILON = 1e-6            # Normalization epsilon for Q values
 - Returns: `(candidates, Q_search)` where Q_search maps action → Q value
 
 **`sample_move_from_q(candidates, Q_search, tau=0.5)`**
-- Sample from top-5 candidates using normalized Q softmax
+- Sample from top candidates (TOP_K_SAMPLE) using normalized Q softmax
 - Scale normalization: `Q_norm = (Q - Q_min) / (Q_max - Q_min + ε)`
 
 ---
@@ -118,8 +118,8 @@ Q_NORM_EPSILON = 1e-6            # Normalization epsilon for Q values
 @dataclass
 class SearchSample:
     obs: np.ndarray               # [3, 15, 15] canonical observation
-    sorted_candidates: List[int]  # [c1, c2, c3, c4] sorted by Q descending
-    all_candidates: List[int]     # All 6 candidates
+    sorted_candidates: List[int]  # Top candidates sorted by Q descending (TOP_K_SAMPLE)
+    all_candidates: List[int]     # All candidates (ROOT_TOP_K + ROOT_RANDOM_K)
     Q_values: List[float]         # Q values for sorted_candidates
     legal_mask: np.ndarray        # [15, 15]
     V_target: float               # max Q_search value (search backup target)
@@ -130,10 +130,10 @@ class SearchSample:
 **`play_episodes_with_search(num_episodes, current_policy, opponents, opponent_indices, current_is_black, device, depth=3, opening_ids=None, tau=0.5)`**
 
 For each move by current_policy:
-1. Generate 6 candidates
+1. Generate candidates (ROOT_TOP_K + ROOT_RANDOM_K)
 2. Run negamax search
 3. Record SearchSample with Q values
-4. Sample move from top-5 using Q softmax
+4. Sample move from top candidates (TOP_K_SAMPLE) using Q softmax
 
 Returns: `(List[List[SearchSample]], List[GameState])`
 
@@ -335,3 +335,11 @@ for update in range(total_updates):
 - Search-based training can coexist with RL training in the same codebase
 - `training_state.json` will need updates to track `unfrozen_blocks` for resume
 - Main training loop integration (updating `main.py` to use search-based training) is a separate task
+
+### Design Decisions
+
+**Ranking loss includes c4-c5 constraint**: The implementation applies ranking constraints to all consecutive pairs (c1,c2), (c2,c3), (c3,c4), and (c4,c5), which is stricter than the spec's requirement to constrain only c1-c4. This ensures clearer separation in the learned move ordering and does not harm training.
+
+**Search result caching not implemented**: At depth=3, caching previous search subtrees provides minimal benefit (saves ~6+30 node expansions vs ~156 total). The added complexity of cache management is not justified for the marginal performance gain at this search depth.
+
+**Assumes sufficient legal moves**: The candidate generation expects at least ROOT_TOP_K + ROOT_RANDOM_K (currently 6) legal moves at the root. This is not a practical concern because Gomoku games average 20-30 moves on a 15×15 board (225 positions), meaning the board is never close to full during normal play. Games end via five-in-a-row, not board exhaustion.

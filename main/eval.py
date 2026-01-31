@@ -39,17 +39,17 @@ EVAL_INTERVAL_LATE = 128       # Evaluation interval for late training
 WIN_RATE_THRESHOLD = 19.0/32   # Minimum win rate to add to opponent pool
 
 # --- Opponent Sampling ---
-UNIFORM_SAMPLING_FRACTION = 0.5  # Fraction of samples that are uniform
+UNIFORM_SAMPLING_FRACTION = 0.75  # Fraction of samples that are uniform
 
 # --- Historical Exploiter Scanning ---
-SCAN_START_UPDATE = 8192       # Update at which to start scanning
-SCAN_PERIOD = 16               # Scan every N evaluations
-NUM_SCAN_BUCKETS = 4           # Number of buckets for round-robin scanning
-QUICK_SCREEN_ROUNDS = 16       # Rounds for quick screen
-TOP_K_QUICK_SCREEN = 16        # Keep top K from quick screen
-FINAL_SCREEN_ROUNDS = 64       # Rounds for final screen
-MAX_MINED_OPPONENTS_PER_EVENT = 2  # Max opponents to add per scan
-MINING_WIN_RATE_THRESHOLD = 0.5    # Only mine opponents with win rate below this
+SCAN_START_UPDATE = 8192               # Update at which to start scanning
+SCAN_PERIOD = 16                       # Scan every N evaluations
+NUM_SCAN_BUCKETS = 4                   # Number of buckets for round-robin scanning
+QUICK_SCREEN_ROUNDS = 16               # Rounds for quick screen
+TOP_K_QUICK_SCREEN = 16                # Keep top K from quick screen
+FINAL_SCREEN_ROUNDS = 64               # Rounds for final screen
+MAX_MINED_OPPONENTS_PER_EVENT = 1      # Max opponents to add per scan
+MINING_WIN_RATE_THRESHOLD = 27.0/64    # Only mine opponents with win rate below this
 
 
 # ============================================================================
