@@ -1,11 +1,9 @@
 AGENTS.md
 CLAUDE.md
 GEMINI.md
-.gitignore
 *.pt
 *.log
 *.json
 *.csv
 __pycache__
-jan*
-j*/
+

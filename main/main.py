@@ -439,9 +439,14 @@ def main():
         # Update miss rate EMAs
         tactical_stats = train_results['tactical_stats']
         this_win_miss_rate = tactical_stats.win_misses / tactical_stats.win_opportunities if tactical_stats.win_opportunities > 0 else 0.0
-        this_block_miss_rate = tactical_stats.block_misses / tactical_stats.block_opportunities if tactical_stats.block_opportunities > 0 else 0.0
+        this_block_miss_rate = (
+            tactical_stats.block_misses / tactical_stats.block_opportunities
+            if tactical_stats.block_opportunities > 0
+            else None
+        )
         win_miss_ema = update_miss_rate_ema(this_win_miss_rate, win_miss_ema, EMA_WINDOW)
-        block_miss_ema = update_miss_rate_ema(this_block_miss_rate, block_miss_ema, EMA_WINDOW)
+        if this_block_miss_rate is not None:
+            block_miss_ema = update_miss_rate_ema(this_block_miss_rate, block_miss_ema, EMA_WINDOW)
 
         t_total = time.time() - t_start
 
