@@ -20,7 +20,7 @@ WIDTH = 96                        # Residual block width
 GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
 
 # Head architecture
-POLICY_HEAD_CHANNELS = 8          # Policy head intermediate channels
+POLICY_WIDTH = 128                # Policy head width
 VALUE_HEAD_CHANNELS = 4           # Value head intermediate channels
 VALUE_HEAD_HIDDEN = 160           # Value head hidden layer size
 
@@ -36,7 +36,7 @@ class GomokuPolicyNet(nn.Module):
     Architecture:
     - Simple stem with single 3x3 convolution
     - Residual trunk with standard residual blocks (no dilation, no SE)
-    - Policy head: Conv1x1 to POLICY_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to 225
+    - Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1 to 1
     - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
     """
 
@@ -54,10 +54,14 @@ class GomokuPolicyNet(nn.Module):
             for _ in range(n_blocks)
         ])
 
-        # === Policy head: classic design ===
-        # Conv1x1 to POLICY_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to 225
-        self.policy_conv = nn.Conv2d(WIDTH, POLICY_HEAD_CHANNELS, kernel_size=1)
-        self.policy_fc = nn.Linear(POLICY_HEAD_CHANNELS * 15 * 15, 225)
+        # === Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1 ===
+        self.policy_conv1 = nn.Conv2d(WIDTH, POLICY_WIDTH, kernel_size=3, padding=1)
+        self.policy_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_WIDTH)
+        self.policy_conv2 = nn.Conv2d(POLICY_WIDTH, POLICY_WIDTH, kernel_size=3, padding=1)
+        self.policy_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_WIDTH)
+        self.policy_conv3 = nn.Conv2d(POLICY_WIDTH, POLICY_WIDTH, kernel_size=3, padding=1)
+        self.policy_norm3 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_WIDTH)
+        self.policy_out = nn.Conv2d(POLICY_WIDTH, 1, kernel_size=1)
 
         # === Value head: classic design ===
         # Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
@@ -90,12 +94,14 @@ class GomokuPolicyNet(nn.Module):
         trunk_features = x
         batch_size = trunk_features.size(0)
 
-        # Policy head: Conv1x1 → GroupNorm → SiLU → flatten → FC → reshape
-        policy_features = self.policy_conv(trunk_features)  # [B, POLICY_HEAD_CHANNELS, 15, 15]
-        policy_features = F.silu(policy_features)
-        policy_features = policy_features.view(batch_size, -1)  # [B, POLICY_HEAD_CHANNELS*15*15]
-        logits_flat = self.policy_fc(policy_features)  # [B, 225]
-        logits_grid = logits_flat.view(batch_size, 1, 15, 15)  # [B, 1, 15, 15]
+        # Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1
+        p = self.policy_conv1(trunk_features)  # [B, POLICY_WIDTH, 15, 15]
+        p = F.silu(self.policy_norm1(p))
+        p = self.policy_conv2(p)
+        p = F.silu(self.policy_norm2(p))
+        p = self.policy_conv3(p)
+        p = F.silu(self.policy_norm3(p))
+        logits_grid = self.policy_out(p)  # [B, 1, 15, 15]
 
         # Value head: Conv1x1 → GroupNorm → SiLU → flatten → FC → SiLU → FC → tanh
         value_features = self.value_conv(trunk_features)  # [B, VALUE_HEAD_CHANNELS, 15, 15]

@@ -241,7 +241,7 @@ def probe_gradient_conflict_chunked(
     for name in policy_grads.keys():
         if any(x in name for x in ['conv_3x3', 'conv_directional5', 'conv_full5',
                                      'conv_directional7', 'conv_full7', 'conv_1x1',
-                                     'stem_norm']):
+                                     'stem_norm', 'stem_conv']):
             stem_params.append(name)
             all_trunk_stem_params.append(name)
         elif 'blocks.' in name:
@@ -276,7 +276,7 @@ def probe_gradient_conflict_chunked(
         'stem_value_norm': stem_norm_v,
     }
 
-    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15']:
+    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15', 'blocks_16-19']:
         cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
         prefix = layer_key.replace('-', '_')
         metrics[f'{prefix}_cos_sim'] = cos

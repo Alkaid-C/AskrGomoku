@@ -35,7 +35,7 @@ WIN_MAX_BOOST = 1.0            # Maximum boost for win-in-1 (when miss rate is 1
 BLOCK_MIN_BOOST = 0.0          # Minimum boost for blocking (when miss rate is 0)
 BLOCK_MAX_BOOST = 0.75         # Maximum boost for blocking (when miss rate is 1)
 
-SYNTHETIC_WIN_BOOST = 3.0      # Signal for missed win-in-1 (synthetic examples)
+SYNTHETIC_WIN_BOOST = 2.0      # Signal for missed win-in-1 (synthetic examples)
 SYNTHETIC_BLOCKING_BOOST = 1.5 # Signal for missed blocks (synthetic examples)
 MAX_SYNTHETIC_WINS = 4096       # Max synthetic win-in-1 examples per batch
 MAX_SYNTHETIC_BLOCKS = 4096     # Max synthetic blocking examples per batch

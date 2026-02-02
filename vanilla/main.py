@@ -23,7 +23,7 @@ import os
 import argparse
 from typing import Optional, Tuple, Dict, List
 
-from model import GomokuPolicyNet, N_BLOCKS, WIDTH, POLICY_HEAD_CHANNELS, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN
+from model import GomokuPolicyNet, N_BLOCKS, WIDTH, POLICY_WIDTH, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN
 from gomoku import (
     play_episodes_batched, select_action_batch, compute_outcome_stats,
     BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
@@ -248,7 +248,7 @@ def main():
     print(f"Model architecture:")
     print(f"  Stem: 3x3 conv -> {WIDTH} channels")
     print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels (standard pre-activation, no dilation, no SE)")
-    print(f"  Policy head: Conv1x1 -> {POLICY_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> 225")
+    print(f"  Policy head: 3x Conv3x3 -> {POLICY_WIDTH}ch (GroupNorm+SiLU) -> Conv1x1 -> 1")
     print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
     num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
 

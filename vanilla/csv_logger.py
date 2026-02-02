@@ -87,7 +87,8 @@ class CSVLogger:
                     'blocks_0_3_cos_sim', 'blocks_0_3_policy_norm', 'blocks_0_3_value_norm',
                     'blocks_4_7_cos_sim', 'blocks_4_7_policy_norm', 'blocks_4_7_value_norm',
                     'blocks_8_11_cos_sim', 'blocks_8_11_policy_norm', 'blocks_8_11_value_norm',
-                    'blocks_12_15_cos_sim', 'blocks_12_15_policy_norm', 'blocks_12_15_value_norm'
+                    'blocks_12_15_cos_sim', 'blocks_12_15_policy_norm', 'blocks_12_15_value_norm',
+                    'blocks_16_19_cos_sim', 'blocks_16_19_policy_norm', 'blocks_16_19_value_norm'
                 ])
 
     def log_training_update(self, update: int, metrics: dict):
@@ -147,5 +148,6 @@ class CSVLogger:
                 metrics['blocks_0_3_cos_sim'], metrics['blocks_0_3_policy_norm'], metrics['blocks_0_3_value_norm'],
                 metrics['blocks_4_7_cos_sim'], metrics['blocks_4_7_policy_norm'], metrics['blocks_4_7_value_norm'],
                 metrics['blocks_8_11_cos_sim'], metrics['blocks_8_11_policy_norm'], metrics['blocks_8_11_value_norm'],
-                metrics['blocks_12_15_cos_sim'], metrics['blocks_12_15_policy_norm'], metrics['blocks_12_15_value_norm']
+                metrics['blocks_12_15_cos_sim'], metrics['blocks_12_15_policy_norm'], metrics['blocks_12_15_value_norm'],
+                metrics['blocks_16_19_cos_sim'], metrics['blocks_16_19_policy_norm'], metrics['blocks_16_19_value_norm']
             ])
