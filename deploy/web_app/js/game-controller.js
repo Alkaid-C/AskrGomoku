@@ -19,7 +19,13 @@ const gameState = {
     pendingMove: null,  // {row, col} for move confirmation
     lastAIThinkTime: 0, // Last AI thinking time in seconds
     undoCount: 0,        // Number of undos in this game
-    gameOver: false      // Whether the game has ended
+    gameOver: false,     // Whether the game has ended
+    // Timing tracking
+    playerTotalTime: 0,  // Total player thinking time in ms
+    playerMoveCount: 0,  // Number of player moves
+    aiTotalTime: 0,      // Total AI thinking time in ms
+    aiMoveCount: 0,      // Number of AI moves
+    playerTurnStart: 0   // Timestamp when player's turn started
 };
 
 // ============================================================================
@@ -149,6 +155,11 @@ async function startGame() {
         gameState.pendingMove = null;
         gameState.undoCount = 0;
         gameState.gameOver = false;
+        gameState.playerTotalTime = 0;
+        gameState.playerMoveCount = 0;
+        gameState.aiTotalTime = 0;
+        gameState.aiMoveCount = 0;
+        gameState.playerTurnStart = 0;
 
         // Reset end mode UI in case previous game ended
         resetEndModeUI();
@@ -165,6 +176,7 @@ async function startGame() {
         if (gameState.aiColor === Player.BLACK) {
             await makeAIMove();
         } else {
+            gameState.playerTurnStart = performance.now();
             updateStatus('你的回合');
         }
 
@@ -201,6 +213,11 @@ function playAgain() {
     gameState.pendingMove = null;
     gameState.undoCount = 0;
     gameState.gameOver = false;
+    gameState.playerTotalTime = 0;
+    gameState.playerMoveCount = 0;
+    gameState.aiTotalTime = 0;
+    gameState.aiMoveCount = 0;
+    gameState.playerTurnStart = 0;
 
     drawBoard();
 
@@ -208,6 +225,7 @@ function playAgain() {
     if (gameState.aiColor === Player.BLACK) {
         makeAIMove();
     } else {
+        gameState.playerTurnStart = performance.now();
         updateStatus('你的回合');
     }
 }
@@ -285,6 +303,13 @@ async function confirmMove(event) {
     }
 
     const { row, col } = gameState.pendingMove;
+
+    // Record player thinking time
+    if (gameState.playerTurnStart > 0) {
+        gameState.playerTotalTime += performance.now() - gameState.playerTurnStart;
+        gameState.playerMoveCount++;
+        gameState.playerTurnStart = 0;
+    }
 
     // Hide confirmation buttons
     document.getElementById('move-confirm').classList.remove('visible');
@@ -374,6 +399,8 @@ async function makeAIMove() {
         const endTime = performance.now();
 
         gameState.lastAIThinkTime = (endTime - startTime) / 1000; // Convert to seconds
+        gameState.aiTotalTime += endTime - startTime;
+        gameState.aiMoveCount++;
 
         console.log(`AI move: (${aiRow}, ${aiCol}), think time: ${gameState.lastAIThinkTime.toFixed(2)}s`);
 
@@ -402,6 +429,7 @@ async function makeAIMove() {
         }
 
         // Player's turn
+        gameState.playerTurnStart = performance.now();
         updateStatus('你的回合');
 
     } catch (error) {
@@ -429,7 +457,14 @@ function undoMove() {
     const movesToUndo = Math.min(2, gameState.history.length);
     let restoreState = null;
     for (let i = 0; i < movesToUndo; i++) {
-        restoreState = gameState.history.pop();
+        const popped = gameState.history.pop();
+        // Adjust move counts for timing averages
+        if (popped.player === gameState.playerColor) {
+            gameState.playerMoveCount = Math.max(0, gameState.playerMoveCount - 1);
+        } else {
+            gameState.aiMoveCount = Math.max(0, gameState.aiMoveCount - 1);
+        }
+        restoreState = popped;
     }
 
     // Restore board state from the oldest popped snapshot.
@@ -445,6 +480,7 @@ function undoMove() {
 
     drawBoard();
     if (gameState.board.whoToPlay === gameState.playerColor) {
+        gameState.playerTurnStart = performance.now();
         updateStatus('你的回合');
     } else {
         updateStatus('AI思考中...');
@@ -474,8 +510,18 @@ function handleGameEnd(result) {
     const fullAiName = 'Askr-' + aiName;
     const blackDot = '<span class="record-piece record-piece-black"></span>';
     const whiteDot = '<span class="record-piece record-piece-white"></span>';
-    const blackLabel = gameState.playerColor === Player.BLACK ? '玩家' : fullAiName;
-    const whiteLabel = gameState.playerColor === Player.WHITE ? '玩家' : fullAiName;
+
+    // Compute average time per move
+    const playerAvg = gameState.playerMoveCount > 0
+        ? (gameState.playerTotalTime / gameState.playerMoveCount / 1000).toFixed(2) : '0.00';
+    const aiAvg = gameState.aiMoveCount > 0
+        ? (gameState.aiTotalTime / gameState.aiMoveCount / 1000).toFixed(2) : '0.00';
+    const playerTimeStr = ' <span class="time-per-move">(' + playerAvg + 's/手)</span>';
+    const aiTimeStr = ' <span class="time-per-move">(' + aiAvg + 's/手)</span>';
+
+    const blackIsPlayer = gameState.playerColor === Player.BLACK;
+    const blackLabel = blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
+    const whiteLabel = !blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
 
     // Stats
     const gameLength = gameState.history.length;
