@@ -176,18 +176,35 @@ h1 {
 
 /* Top Controls */
 .top-controls {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     margin-bottom: 30px;
-    gap: 20px;
+    gap: 10px 20px;
+}
+
+#btn-undo, #end-stat-left {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
 }
 
 #status-text {
+    grid-column: 2;
+    grid-row: 1;
     font-size: 1.1em;
     color: #333;
     text-align: center;
-    flex: 1;
+}
+
+#btn-restart, #end-stat-right {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+}
+
+#end-stat-right {
+    text-align: right;
 }
 
 .btn-control {
@@ -265,6 +282,22 @@ h1 {
 
 .btn-cancel:hover {
     opacity: 0.8;
+}
+
+/* End Stats (shown in top-controls when game ends, replacing buttons) */
+.end-stat {
+    display: none;
+    font-size: 0.85em;
+    color: #666;
+    line-height: 1.25;
+}
+
+.end-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 10px;
+    min-height: 44px;
 }
 
 /* ============================================================================
@@ -495,18 +528,8 @@ h1 {
     }
 
     .top-controls {
-        flex-wrap: wrap;
         margin-bottom: 20px;
-    }
-
-    #status-text {
-        order: -1;
-        width: 100%;
-        margin-bottom: 15px;
-    }
-
-    .btn-control {
-        flex: 1;
+        gap: 10px;
     }
 }
 
@@ -566,10 +589,6 @@ h1 {
     .difficulty-info:nth-of-type(3) {
         min-width: 6em;
         text-align: right;
-    }
-
-    .top-controls {
-        gap: 10px;
     }
 
     .btn-control {

@@ -183,18 +183,35 @@ h1 {
 
 /* Top Controls */
 .top-controls {
-    display: flex;
-    justify-content: space-between;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     margin-bottom: 30px;
-    gap: 20px;
+    gap: 10px 20px;
+}
+
+#btn-undo, #end-stat-left {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
 }
 
 #status-text {
+    grid-column: 2;
+    grid-row: 1;
     font-size: 1.1em;
     color: #333;
     text-align: center;
-    flex: 1;
+}
+
+#btn-restart, #end-stat-right {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+}
+
+#end-stat-right {
+    text-align: right;
 }
 
 .btn-control {
@@ -236,7 +253,7 @@ h1 {
     display: flex;
     gap: 10px;
     justify-content: center;
-    margin-top: 20px;
+    margin-top: 10px;
     visibility: hidden;
     min-height: 44px; /* 预留按钮高度，防止布局跳动 */
 }
@@ -272,6 +289,22 @@ h1 {
 
 .btn-cancel:hover {
     opacity: 0.8;
+}
+
+/* End Stats (shown in top-controls when game ends, replacing buttons) */
+.end-stat {
+    display: none;
+    font-size: 0.85em;
+    color: #666;
+    line-height: 1.25;
+}
+
+.end-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 10px;
+    min-height: 44px;
 }
 
 /* ============================================================================
@@ -311,6 +344,34 @@ h1 {
     color: #666;
 }
 
+/* Result Stats */
+.result-stats {
+    font-size: 0.9em;
+    color: #999;
+    margin-bottom: 30px;
+}
+
+/* Share Button */
+.btn-share {
+    width: 100%;
+    padding: 12px 30px;
+    font-size: 1em;
+    color: #333;
+    background: white;
+    border: 1px solid #ddd;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: 10px;
+}
+
+.btn-share:hover {
+    border-color: #999;
+}
+
+.btn-share:active {
+    background: #f5f5f5;
+}
+
 .btn-secondary {
     width: 100%;
     padding: 12px 30px;
@@ -326,6 +387,106 @@ h1 {
 .btn-secondary:hover {
     border-color: #999;
     color: #333;
+}
+
+/* ============================================================================
+   Record Screen
+   ============================================================================ */
+
+.record-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #F8F8F8;
+    z-index: 2000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.btn-record-close {
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    background: none;
+    border: none;
+    font-size: 1.8em;
+    color: #999;
+    cursor: pointer;
+    line-height: 1;
+    padding: 5px 10px;
+    transition: color 0.2s ease;
+    z-index: 2001;
+}
+
+.btn-record-close:hover {
+    color: #333;
+}
+
+.record-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.record-title {
+    font-size: 1.5em;
+    font-weight: 400;
+    color: #333;
+    text-align: center;
+    margin-bottom: 12px;
+}
+
+.record-info {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.record-info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85em;
+    color: #666;
+    line-height: 1.8;
+}
+
+.record-piece {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    border-radius: 50%;
+    vertical-align: middle;
+    position: relative;
+    top: -0.05em;
+}
+
+.record-piece-black {
+    background: #222;
+}
+
+.record-piece-white {
+    background: #eee;
+    box-shadow: inset 0 0 0 1.5px #000;
+}
+
+.record-board-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#record-board {
+    display: block;
+    max-width: 100%;
+}
+
+.record-footer {
+    font-size: 0.85em;
+    color: #999;
+    text-align: center;
+    margin-top: 10px;
 }
 
 /* ============================================================================
@@ -374,24 +535,14 @@ h1 {
     }
 
     .top-controls {
-        flex-wrap: wrap;
         margin-bottom: 20px;
-    }
-
-    #status-text {
-        order: -1;
-        width: 100%;
-        margin-bottom: 15px;
-    }
-
-    .btn-control {
-        flex: 1;
+        gap: 10px;
     }
 }
 
 @media (max-width: 480px) {
     body {
-        padding: 15px 10px;
+        padding: 10px 10px;
     }
 
     h1 {
@@ -445,10 +596,6 @@ h1 {
     .difficulty-info:nth-of-type(3) {
         min-width: 6em;
         text-align: right;
-    }
-
-    .top-controls {
-        gap: 10px;
     }
 
     .btn-control {
@@ -550,8 +697,10 @@ h1 {
         <!-- Top Controls -->
         <div class="top-controls">
             <button id="btn-undo" class="btn-control">悔棋</button>
+            <span id="end-stat-left" class="end-stat"></span>
             <div id="status-text">你的回合</div>
             <button id="btn-restart" class="btn-control">新游戏</button>
+            <span id="end-stat-right" class="end-stat"></span>
         </div>
 
         <!-- Canvas Board -->
@@ -565,6 +714,11 @@ h1 {
             <button id="btn-cancel-move" class="btn-cancel">取消</button>
         </div>
 
+        <!-- End Actions (replaces move-confirm when game ends) -->
+        <div id="end-actions" class="end-actions" style="display: none;">
+            <button id="btn-end-new-game" class="btn-confirm">新游戏</button>
+        </div>
+
         <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
     </div>
 
@@ -573,8 +727,32 @@ h1 {
         <div class="modal-content">
             <h2 id="result-title">游戏结束</h2>
             <p id="result-message"></p>
+            <div id="result-stats" class="result-stats"></div>
+            <button id="btn-share" class="btn-share">生成棋谱</button>
             <button id="btn-play-again" class="btn-primary">再玩一局</button>
             <button id="btn-new-setup" class="btn-secondary">新设置</button>
+        </div>
+    </div>
+
+    <!-- Record Screen (numbered board for screenshots) -->
+    <div id="record-screen" class="record-screen" style="display: none;">
+        <button id="btn-record-close" class="btn-record-close">&times;</button>
+        <div id="record-content" class="record-content">
+            <div class="record-title">Askr五子棋</div>
+            <div class="record-info">
+                <div class="record-info-row">
+                    <span id="record-black"></span>
+                    <span id="record-white"></span>
+                </div>
+                <div class="record-info-row" id="record-info-row-2">
+                    <span id="record-regret"></span>
+                    <span id="record-length"></span>
+                </div>
+            </div>
+            <div class="record-board-container">
+                <canvas id="record-board"></canvas>
+            </div>
+            <div class="record-footer">gomoku.sance.xyz</div>
         </div>
     </div>
 
@@ -861,7 +1039,7 @@ class OnnxAIPlayer {
         const row = Math.floor(actionIdx / 15);
         const col = actionIdx % 15;
 
-        return [row, col];
+        return [row, col, results.value.data[0]];
     }
 
     /**
@@ -983,7 +1161,7 @@ class OnnxAIPlayer {
         console.log(`Negamax complete: ${nodeCount} nodes evaluated`);
         console.log(`Best move: (${bestAction.row}, ${bestAction.col}) with Q = ${bestQ.toFixed(4)}`);
 
-        return [bestAction.row, bestAction.col];
+        return [bestAction.row, bestAction.col, bestQ];
     }
 
     /**
@@ -1222,7 +1400,9 @@ const gameState = {
     history: [],  // History of moves for undo
     isAIThinking: false,
     pendingMove: null,  // {row, col} for move confirmation
-    lastAIThinkTime: 0  // Last AI thinking time in seconds
+    lastAIThinkTime: 0, // Last AI thinking time in seconds
+    undoCount: 0,        // Number of undos in this game
+    gameOver: false      // Whether the game has ended
 };
 
 // ============================================================================
@@ -1294,9 +1474,14 @@ function setupEventListeners() {
     document.getElementById('btn-confirm-move').addEventListener('click', confirmMove);
     document.getElementById('btn-cancel-move').addEventListener('click', cancelMove);
 
-    // Result modal
+    // Result modal (legacy, kept for standalone build compatibility)
     document.getElementById('btn-play-again').addEventListener('click', playAgain);
     document.getElementById('btn-new-setup').addEventListener('click', newSetup);
+    document.getElementById('btn-share').addEventListener('click', showRecordScreen);
+    document.getElementById('btn-record-close').addEventListener('click', hideRecordScreen);
+
+    // End actions (in-place button after game ends)
+    document.getElementById('btn-end-new-game').addEventListener('click', newSetup);
 
     // Window resize
     window.addEventListener('resize', updateCanvasSize);
@@ -1345,6 +1530,11 @@ async function startGame() {
         gameState.history = [];
         gameState.isAIThinking = false;
         gameState.pendingMove = null;
+        gameState.undoCount = 0;
+        gameState.gameOver = false;
+
+        // Reset end mode UI in case previous game ended
+        resetEndModeUI();
 
         // Show game panel
         loadingScreen.style.display = 'none';
@@ -1385,12 +1575,15 @@ function restartGame() {
  */
 function playAgain() {
     resultModal.style.display = 'none';
+    resetEndModeUI();
 
     // Reset board
     gameState.board = new GomokuBoard();
     gameState.history = [];
     gameState.isAIThinking = false;
     gameState.pendingMove = null;
+    gameState.undoCount = 0;
+    gameState.gameOver = false;
 
     drawBoard();
 
@@ -1407,8 +1600,27 @@ function playAgain() {
  */
 function newSetup() {
     resultModal.style.display = 'none';
+    resetEndModeUI();
+    gameState.gameOver = false;
     gamePanel.style.display = 'none';
     setupPanel.style.display = 'block';
+}
+
+/**
+ * Reset end mode UI back to normal game state.
+ */
+function resetEndModeUI() {
+    // Restore top-controls: show buttons, hide stats
+    document.getElementById('btn-undo').style.display = '';
+    document.getElementById('btn-restart').style.display = '';
+    document.getElementById('end-stat-left').style.display = 'none';
+    document.getElementById('end-stat-right').style.display = 'none';
+
+    // Restore bottom area
+    document.getElementById('end-actions').style.display = 'none';
+    document.getElementById('move-confirm').style.display = '';
+
+    canvas.style.cursor = 'pointer';
 }
 
 // ============================================================================
@@ -1419,6 +1631,7 @@ function newSetup() {
  * Handle board click.
  */
 function handleBoardClick(event) {
+    if (gameState.gameOver) return;
     if (gameState.isAIThinking) return;
     if (gameState.board.whoToPlay !== gameState.playerColor) return;
 
@@ -1531,14 +1744,14 @@ async function makeAIMove() {
 
         // Get AI move
         const startTime = performance.now();
-        let aiRow, aiCol;
+        let aiRow, aiCol, aiValue;
 
         if (useNegamax) {
             // Advanced difficulty: use negamax search (depth=3, topK=3)
-            [aiRow, aiCol] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
+            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
         } else {
             // Junior/Intermediate: sample from policy distribution
-            [aiRow, aiCol] = await gameState.aiPlayer.getMove(gameState.board);
+            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMove(gameState.board);
         }
 
         const endTime = performance.now();
@@ -1547,10 +1760,11 @@ async function makeAIMove() {
 
         console.log(`AI move: (${aiRow}, ${aiCol}), think time: ${gameState.lastAIThinkTime.toFixed(2)}s`);
 
-        // Save to history
+        // Save to history (value is from AI's perspective before this move)
         gameState.history.push({
             row: aiRow, col: aiCol,
             player: gameState.aiColor,
+            value: aiValue,
             blackPieces: gameState.board.blackPieces.map(r => [...r]),
             whitePieces: gameState.board.whitePieces.map(r => [...r]),
             whoToPlay: gameState.board.whoToPlay,
@@ -1585,9 +1799,12 @@ async function makeAIMove() {
  */
 function undoMove() {
     if (!gameState.board) return;
+    if (gameState.gameOver) return;
     if (gameState.history.length === 0) return;
     if (gameState.isAIThinking) return;
     if (gameState.pendingMove) return;
+
+    gameState.undoCount++;
 
     // Pop the last 2 moves (AI + player), or as many as available.
     // History stores snapshots BEFORE each move, so we must restore the
@@ -1623,24 +1840,55 @@ function undoMove() {
  */
 function handleGameEnd(result) {
     console.log(`Game ended: ${result}`);
+    gameState.gameOver = true;
 
+    // Determine result title
     let title = '游戏结束';
-    let message = '';
-
     if (result === GameState.BLACK_WIN) {
         title = gameState.playerColor === Player.BLACK ? '你赢了！' : '你输了！';
-        message = '⚫ 黑棋获胜';
     } else if (result === GameState.WHITE_WIN) {
         title = gameState.playerColor === Player.WHITE ? '你赢了！' : '你输了！';
-        message = '⚪ 白棋获胜';
     } else if (result === GameState.DRAW) {
         title = '平局';
-        message = '棋盘已满,没有获胜者';
     }
 
-    document.getElementById('result-title').textContent = title;
-    document.getElementById('result-message').textContent = message;
-    resultModal.style.display = 'flex';
+    // Player info
+    const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
+    const fullAiName = 'Askr-' + aiName;
+    const blackDot = '<span class="record-piece record-piece-black"></span>';
+    const whiteDot = '<span class="record-piece record-piece-white"></span>';
+    const blackLabel = gameState.playerColor === Player.BLACK ? '玩家' : fullAiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? '玩家' : fullAiName;
+
+    // Stats
+    const gameLength = gameState.history.length;
+    const userWon = (result === GameState.BLACK_WIN && gameState.playerColor === Player.BLACK) ||
+                    (result === GameState.WHITE_WIN && gameState.playerColor === Player.WHITE);
+    let rightHtml = gameLength + '手';
+    if (gameState.undoCount > 0 && userWon) {
+        rightHtml += '<br>悔棋' + gameState.undoCount + '次';
+    }
+
+    // Replace top-controls content in-place: hide buttons, show stats
+    document.getElementById('btn-undo').style.display = 'none';
+    document.getElementById('btn-restart').style.display = 'none';
+    const statLeft = document.getElementById('end-stat-left');
+    const statRight = document.getElementById('end-stat-right');
+    statLeft.innerHTML = blackDot + ' ' + blackLabel + '<br>' + whiteDot + ' ' + whiteLabel;
+    statRight.innerHTML = rightHtml;
+    statLeft.style.display = 'block';
+    statRight.style.display = 'block';
+    updateStatus(title);
+
+    // Switch bottom area: hide move-confirm, show end actions
+    document.getElementById('move-confirm').style.display = 'none';
+    document.getElementById('end-actions').style.display = 'flex';
+
+    // Disable board interaction
+    canvas.style.cursor = 'default';
+
+    // Draw record-style board with move numbers and winning line
+    drawBoardRecord();
 }
 
 // ============================================================================
@@ -1672,7 +1920,11 @@ function updateCanvasSize() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
 
-    drawBoard();
+    if (gameState.gameOver) {
+        drawBoardRecord();
+    } else {
+        drawBoard();
+    }
 }
 
 /**
@@ -1801,6 +2053,92 @@ function drawBoard() {
 }
 
 /**
+ * Draw the game board in record mode (with move numbers and winning line).
+ */
+function drawBoardRecord() {
+    const rect = canvas.getBoundingClientRect();
+    const size = rect.width;
+    const padding = size * 0.05;
+    const gridSize = (size - 2 * padding) / 14;
+    const pieceRadius = gridSize * 0.4;
+
+    // Clear canvas
+    ctx.fillStyle = '#F8F8F8';
+    ctx.fillRect(0, 0, size, size);
+
+    // Draw grid
+    ctx.strokeStyle = '#808080';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 15; i++) {
+        ctx.beginPath();
+        ctx.moveTo(padding + i * gridSize, padding);
+        ctx.lineTo(padding + i * gridSize, padding + 14 * gridSize);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(padding, padding + i * gridSize);
+        ctx.lineTo(padding + 14 * gridSize, padding + i * gridSize);
+        ctx.stroke();
+    }
+
+    // Star points
+    ctx.fillStyle = '#404040';
+    const starPoints = [[3,3],[3,11],[11,3],[11,11],[7,7]];
+    for (const [row, col] of starPoints) {
+        ctx.beginPath();
+        ctx.arc(padding + col * gridSize, padding + row * gridSize, size * 0.008, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+
+    // Winning line (drawn beneath pieces)
+    const winLine = findWinningLine();
+    if (winLine) {
+        const first = winLine[0];
+        const last = winLine[winLine.length - 1];
+        ctx.strokeStyle = '#CC0000';
+        ctx.lineWidth = size < 500 ? 3 : 5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(padding + first[1] * gridSize, padding + first[0] * gridSize);
+        ctx.lineTo(padding + last[1] * gridSize, padding + last[0] * gridSize);
+        ctx.stroke();
+    }
+
+    // Pieces with move numbers
+    for (let i = 0; i < gameState.history.length; i++) {
+        const move = gameState.history[i];
+        const moveNum = i + 1;
+        const x = padding + move.col * gridSize;
+        const y = padding + move.row * gridSize;
+        const isBlack = move.player === Player.BLACK;
+
+        if (isBlack) {
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            ctx.fill();
+        } else {
+            ctx.fillStyle = '#FFF';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        // Move number
+        ctx.fillStyle = isBlack ? '#FFF' : '#000';
+        const digits = String(moveNum).length;
+        const fontSize = digits <= 1 ? pieceRadius * 1.2 : digits <= 2 ? pieceRadius * 1.0 : pieceRadius * 0.8;
+        ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(moveNum), x, y);
+    }
+}
+
+/**
  * Convert screen coordinates to board position.
  */
 function screenToBoard(x, y) {
@@ -1917,6 +2255,190 @@ function cleanupOrbitLines() {
 function getPlanetPosition(planet) {
     const ctm = planet.getCTM();
     return { x: ctm.e, y: ctm.f };
+}
+
+// ============================================================================
+// Record Screen (numbered board for screenshots)
+// ============================================================================
+
+const AI_DISPLAY_NAMES = { junior: 'Vibe', intermediate: 'Mood', advanced: 'Melody' };
+
+/**
+ * Show the record screen with a numbered board.
+ */
+function showRecordScreen() {
+    const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
+
+    // Populate player labels
+    const blackLabel = gameState.playerColor === Player.BLACK ? '\u73a9\u5bb6' : aiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? '\u73a9\u5bb6' : aiName;
+    const blackDot = '<span class="record-piece record-piece-black"></span>';
+    const whiteDot = '<span class="record-piece record-piece-white"></span>';
+    document.getElementById('record-black').innerHTML = blackDot + ' \u9ed1\u68cb\uff1a' + blackLabel;
+    document.getElementById('record-white').innerHTML = whiteDot + ' \u767d\u68cb\uff1a' + whiteLabel;
+
+    // Regret (only if > 0)
+    if (gameState.undoCount > 0) {
+        document.getElementById('record-regret').textContent = '\u608d\u68cb\u6b21\u6570\uff1a' + gameState.undoCount;
+    } else {
+        document.getElementById('record-regret').textContent = '';
+    }
+
+    // Game length
+    document.getElementById('record-length').textContent = '\u68cb\u5c40\u957f\u5ea6\uff1a' + gameState.history.length;
+
+    document.getElementById('record-screen').style.display = 'flex';
+    drawRecordBoard();
+}
+
+/**
+ * Hide the record screen.
+ */
+function hideRecordScreen() {
+    document.getElementById('record-screen').style.display = 'none';
+}
+
+/**
+ * Find the winning line (5+ in a row) from the last move.
+ * @returns {Array|null} Array of [row, col] pairs sorted by position, or null
+ */
+function findWinningLine() {
+    if (gameState.history.length === 0) return null;
+
+    const lastMove = gameState.history[gameState.history.length - 1];
+    const { row, col, player } = lastMove;
+    const pieces = player === Player.BLACK ? gameState.board.blackPieces : gameState.board.whitePieces;
+
+    const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+
+    for (const [dr, dc] of directions) {
+        const line = [[row, col]];
+
+        let r = row + dr, c = col + dc;
+        while (r >= 0 && r < 15 && c >= 0 && c < 15 && pieces[r][c] === 1) {
+            line.push([r, c]);
+            r += dr; c += dc;
+        }
+
+        r = row - dr; c = col - dc;
+        while (r >= 0 && r < 15 && c >= 0 && c < 15 && pieces[r][c] === 1) {
+            line.push([r, c]);
+            r -= dr; c -= dc;
+        }
+
+        if (line.length >= 5) {
+            line.sort((a, b) => a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]);
+            return line;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Draw the numbered board onto the record canvas.
+ */
+function drawRecordBoard() {
+    const recordCanvas = document.getElementById('record-board');
+    const c = recordCanvas.getContext('2d');
+
+    // Size the canvas to fit the viewport (square, capped at 600px CSS)
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const cssSize = Math.min(vw - 40, vh - 80, 600);
+    const dpr = window.devicePixelRatio || 1;
+
+    recordCanvas.style.width = cssSize + 'px';
+    recordCanvas.style.height = cssSize + 'px';
+    recordCanvas.width = cssSize * dpr;
+    recordCanvas.height = cssSize * dpr;
+
+    // Match content wrapper width to canvas
+    document.getElementById('record-content').style.width = cssSize + 'px';
+
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.scale(dpr, dpr);
+
+    const size = cssSize;
+    const padding = size * 0.05;
+    const gridSize = (size - 2 * padding) / 14;
+    const pieceRadius = gridSize * 0.4;
+
+    // Background
+    c.fillStyle = '#F8F8F8';
+    c.fillRect(0, 0, size, size);
+
+    // Grid lines
+    c.strokeStyle = '#808080';
+    c.lineWidth = 1;
+    for (let i = 0; i < 15; i++) {
+        c.beginPath();
+        c.moveTo(padding + i * gridSize, padding);
+        c.lineTo(padding + i * gridSize, padding + 14 * gridSize);
+        c.stroke();
+
+        c.beginPath();
+        c.moveTo(padding, padding + i * gridSize);
+        c.lineTo(padding + 14 * gridSize, padding + i * gridSize);
+        c.stroke();
+    }
+
+    // Star points
+    c.fillStyle = '#404040';
+    const starPoints = [[3,3],[3,11],[11,3],[11,11],[7,7]];
+    for (const [row, col] of starPoints) {
+        c.beginPath();
+        c.arc(padding + col * gridSize, padding + row * gridSize, size * 0.008, 0, 2 * Math.PI);
+        c.fill();
+    }
+
+    // Winning line (drawn beneath pieces)
+    const winLine = findWinningLine();
+    if (winLine) {
+        const first = winLine[0];
+        const last = winLine[winLine.length - 1];
+        c.strokeStyle = '#CC0000';
+        c.lineWidth = cssSize < 500 ? 3 : 5;
+        c.lineCap = 'round';
+        c.beginPath();
+        c.moveTo(padding + first[1] * gridSize, padding + first[0] * gridSize);
+        c.lineTo(padding + last[1] * gridSize, padding + last[0] * gridSize);
+        c.stroke();
+    }
+
+    // Pieces with move numbers
+    for (let i = 0; i < gameState.history.length; i++) {
+        const move = gameState.history[i];
+        const moveNum = i + 1;
+        const x = padding + move.col * gridSize;
+        const y = padding + move.row * gridSize;
+        const isBlack = move.player === Player.BLACK;
+
+        // Draw piece
+        if (isBlack) {
+            c.fillStyle = '#000';
+            c.beginPath();
+            c.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            c.fill();
+        } else {
+            c.fillStyle = '#FFF';
+            c.strokeStyle = '#000';
+            c.lineWidth = 1.5;
+            c.beginPath();
+            c.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            c.fill();
+            c.stroke();
+        }
+
+        // Draw number
+        c.fillStyle = isBlack ? '#FFF' : '#000';
+        const digits = String(moveNum).length;
+        const fontSize = digits <= 1 ? pieceRadius * 1.2 : digits <= 2 ? pieceRadius * 1.0 : pieceRadius * 0.8;
+        c.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(String(moveNum), x, y);
+    }
 }
 
 // ============================================================================

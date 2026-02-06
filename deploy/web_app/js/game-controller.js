@@ -18,7 +18,8 @@ const gameState = {
     isAIThinking: false,
     pendingMove: null,  // {row, col} for move confirmation
     lastAIThinkTime: 0, // Last AI thinking time in seconds
-    undoCount: 0         // Number of undos in this game
+    undoCount: 0,        // Number of undos in this game
+    gameOver: false      // Whether the game has ended
 };
 
 // ============================================================================
@@ -90,11 +91,14 @@ function setupEventListeners() {
     document.getElementById('btn-confirm-move').addEventListener('click', confirmMove);
     document.getElementById('btn-cancel-move').addEventListener('click', cancelMove);
 
-    // Result modal
+    // Result modal (legacy, kept for standalone build compatibility)
     document.getElementById('btn-play-again').addEventListener('click', playAgain);
     document.getElementById('btn-new-setup').addEventListener('click', newSetup);
     document.getElementById('btn-share').addEventListener('click', showRecordScreen);
     document.getElementById('btn-record-close').addEventListener('click', hideRecordScreen);
+
+    // End actions (in-place button after game ends)
+    document.getElementById('btn-end-new-game').addEventListener('click', newSetup);
 
     // Window resize
     window.addEventListener('resize', updateCanvasSize);
@@ -144,6 +148,10 @@ async function startGame() {
         gameState.isAIThinking = false;
         gameState.pendingMove = null;
         gameState.undoCount = 0;
+        gameState.gameOver = false;
+
+        // Reset end mode UI in case previous game ended
+        resetEndModeUI();
 
         // Show game panel
         loadingScreen.style.display = 'none';
@@ -184,6 +192,7 @@ function restartGame() {
  */
 function playAgain() {
     resultModal.style.display = 'none';
+    resetEndModeUI();
 
     // Reset board
     gameState.board = new GomokuBoard();
@@ -191,6 +200,7 @@ function playAgain() {
     gameState.isAIThinking = false;
     gameState.pendingMove = null;
     gameState.undoCount = 0;
+    gameState.gameOver = false;
 
     drawBoard();
 
@@ -207,8 +217,27 @@ function playAgain() {
  */
 function newSetup() {
     resultModal.style.display = 'none';
+    resetEndModeUI();
+    gameState.gameOver = false;
     gamePanel.style.display = 'none';
     setupPanel.style.display = 'block';
+}
+
+/**
+ * Reset end mode UI back to normal game state.
+ */
+function resetEndModeUI() {
+    // Restore top-controls: show buttons, hide stats
+    document.getElementById('btn-undo').style.display = '';
+    document.getElementById('btn-restart').style.display = '';
+    document.getElementById('end-stat-left').style.display = 'none';
+    document.getElementById('end-stat-right').style.display = 'none';
+
+    // Restore bottom area
+    document.getElementById('end-actions').style.display = 'none';
+    document.getElementById('move-confirm').style.display = '';
+
+    canvas.style.cursor = 'pointer';
 }
 
 // ============================================================================
@@ -219,6 +248,7 @@ function newSetup() {
  * Handle board click.
  */
 function handleBoardClick(event) {
+    if (gameState.gameOver) return;
     if (gameState.isAIThinking) return;
     if (gameState.board.whoToPlay !== gameState.playerColor) return;
 
@@ -386,6 +416,7 @@ async function makeAIMove() {
  */
 function undoMove() {
     if (!gameState.board) return;
+    if (gameState.gameOver) return;
     if (gameState.history.length === 0) return;
     if (gameState.isAIThinking) return;
     if (gameState.pendingMove) return;
@@ -426,36 +457,55 @@ function undoMove() {
  */
 function handleGameEnd(result) {
     console.log(`Game ended: ${result}`);
+    gameState.gameOver = true;
 
+    // Determine result title
     let title = '游戏结束';
-    let message = '';
-
     if (result === GameState.BLACK_WIN) {
         title = gameState.playerColor === Player.BLACK ? '你赢了！' : '你输了！';
-        message = '⚫ 黑棋获胜';
     } else if (result === GameState.WHITE_WIN) {
         title = gameState.playerColor === Player.WHITE ? '你赢了！' : '你输了！';
-        message = '⚪ 白棋获胜';
     } else if (result === GameState.DRAW) {
         title = '平局';
-        message = '棋盘已满,没有获胜者';
     }
 
-    document.getElementById('result-title').textContent = title;
-    document.getElementById('result-message').textContent = message;
+    // Player info
+    const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
+    const fullAiName = 'Askr-' + aiName;
+    const blackDot = '<span class="record-piece record-piece-black"></span>';
+    const whiteDot = '<span class="record-piece record-piece-white"></span>';
+    const blackLabel = gameState.playerColor === Player.BLACK ? '玩家' : fullAiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? '玩家' : fullAiName;
 
-    // Build stats
+    // Stats
     const gameLength = gameState.history.length;
     const userWon = (result === GameState.BLACK_WIN && gameState.playerColor === Player.BLACK) ||
                     (result === GameState.WHITE_WIN && gameState.playerColor === Player.WHITE);
-
-    let statsText = `${gameLength}手`;
+    let rightHtml = gameLength + '手';
     if (gameState.undoCount > 0 && userWon) {
-        statsText += ` · 悔棋${gameState.undoCount}次`;
+        rightHtml += '<br>悔棋' + gameState.undoCount + '次';
     }
-    document.getElementById('result-stats').textContent = statsText;
 
-    resultModal.style.display = 'flex';
+    // Replace top-controls content in-place: hide buttons, show stats
+    document.getElementById('btn-undo').style.display = 'none';
+    document.getElementById('btn-restart').style.display = 'none';
+    const statLeft = document.getElementById('end-stat-left');
+    const statRight = document.getElementById('end-stat-right');
+    statLeft.innerHTML = blackDot + ' ' + blackLabel + '<br>' + whiteDot + ' ' + whiteLabel;
+    statRight.innerHTML = rightHtml;
+    statLeft.style.display = 'block';
+    statRight.style.display = 'block';
+    updateStatus(title);
+
+    // Switch bottom area: hide move-confirm, show end actions
+    document.getElementById('move-confirm').style.display = 'none';
+    document.getElementById('end-actions').style.display = 'flex';
+
+    // Disable board interaction
+    canvas.style.cursor = 'default';
+
+    // Draw record-style board with move numbers and winning line
+    drawBoardRecord();
 }
 
 // ============================================================================
@@ -487,7 +537,11 @@ function updateCanvasSize() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.scale(dpr, dpr);
 
-    drawBoard();
+    if (gameState.gameOver) {
+        drawBoardRecord();
+    } else {
+        drawBoard();
+    }
 }
 
 /**
@@ -612,6 +666,92 @@ function drawBoard() {
                 ctx.fill();
             }
         }
+    }
+}
+
+/**
+ * Draw the game board in record mode (with move numbers and winning line).
+ */
+function drawBoardRecord() {
+    const rect = canvas.getBoundingClientRect();
+    const size = rect.width;
+    const padding = size * 0.05;
+    const gridSize = (size - 2 * padding) / 14;
+    const pieceRadius = gridSize * 0.4;
+
+    // Clear canvas
+    ctx.fillStyle = '#F8F8F8';
+    ctx.fillRect(0, 0, size, size);
+
+    // Draw grid
+    ctx.strokeStyle = '#808080';
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 15; i++) {
+        ctx.beginPath();
+        ctx.moveTo(padding + i * gridSize, padding);
+        ctx.lineTo(padding + i * gridSize, padding + 14 * gridSize);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.moveTo(padding, padding + i * gridSize);
+        ctx.lineTo(padding + 14 * gridSize, padding + i * gridSize);
+        ctx.stroke();
+    }
+
+    // Star points
+    ctx.fillStyle = '#404040';
+    const starPoints = [[3,3],[3,11],[11,3],[11,11],[7,7]];
+    for (const [row, col] of starPoints) {
+        ctx.beginPath();
+        ctx.arc(padding + col * gridSize, padding + row * gridSize, size * 0.008, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+
+    // Winning line (drawn beneath pieces)
+    const winLine = findWinningLine();
+    if (winLine) {
+        const first = winLine[0];
+        const last = winLine[winLine.length - 1];
+        ctx.strokeStyle = '#CC0000';
+        ctx.lineWidth = size < 500 ? 3 : 5;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(padding + first[1] * gridSize, padding + first[0] * gridSize);
+        ctx.lineTo(padding + last[1] * gridSize, padding + last[0] * gridSize);
+        ctx.stroke();
+    }
+
+    // Pieces with move numbers
+    for (let i = 0; i < gameState.history.length; i++) {
+        const move = gameState.history[i];
+        const moveNum = i + 1;
+        const x = padding + move.col * gridSize;
+        const y = padding + move.row * gridSize;
+        const isBlack = move.player === Player.BLACK;
+
+        if (isBlack) {
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            ctx.fill();
+        } else {
+            ctx.fillStyle = '#FFF';
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        // Move number
+        ctx.fillStyle = isBlack ? '#FFF' : '#000';
+        const digits = String(moveNum).length;
+        const fontSize = digits <= 1 ? pieceRadius * 1.2 : digits <= 2 ? pieceRadius * 1.0 : pieceRadius * 0.8;
+        ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(String(moveNum), x, y);
     }
 }
 

@@ -97,8 +97,10 @@
         <!-- Top Controls -->
         <div class="top-controls">
             <button id="btn-undo" class="btn-control">悔棋</button>
+            <span id="end-stat-left" class="end-stat"></span>
             <div id="status-text">你的回合</div>
             <button id="btn-restart" class="btn-control">新游戏</button>
+            <span id="end-stat-right" class="end-stat"></span>
         </div>
 
         <!-- Canvas Board -->
@@ -110,6 +112,11 @@
         <div id="move-confirm" class="move-confirm">
             <button id="btn-confirm-move" class="btn-confirm">确认落子</button>
             <button id="btn-cancel-move" class="btn-cancel">取消</button>
+        </div>
+
+        <!-- End Actions (replaces move-confirm when game ends) -->
+        <div id="end-actions" class="end-actions" style="display: none;">
+            <button id="btn-end-new-game" class="btn-confirm">新游戏</button>
         </div>
 
         <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
