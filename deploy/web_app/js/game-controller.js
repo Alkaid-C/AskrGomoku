@@ -379,32 +379,38 @@ async function makeAIMove() {
  * Undo last move (player + AI).
  */
 function undoMove() {
+    if (!gameState.board) return;
     if (gameState.history.length === 0) return;
     if (gameState.isAIThinking) return;
     if (gameState.pendingMove) return;
 
-    // Pop the last 2 moves (AI + player), or as many as available
-    // Since we save state BEFORE making a move, we need to pop twice
+    // Pop the last 2 moves (AI + player), or as many as available.
+    // History stores snapshots BEFORE each move, so we must restore the
+    // oldest popped snapshot to roll back exactly those moves.
     const movesToUndo = Math.min(2, gameState.history.length);
+    let restoreState = null;
     for (let i = 0; i < movesToUndo; i++) {
-        gameState.history.pop();
+        restoreState = gameState.history.pop();
     }
 
-    // Restore board state
-    if (gameState.history.length > 0) {
-        // Restore to the last saved state
-        const lastState = gameState.history[gameState.history.length - 1];
-        gameState.board.blackPieces = lastState.blackPieces.map(r => [...r]);
-        gameState.board.whitePieces = lastState.whitePieces.map(r => [...r]);
-        gameState.board.whoToPlay = lastState.whoToPlay;
-        gameState.board.occupiedCount = lastState.occupiedCount;
+    // Restore board state from the oldest popped snapshot.
+    if (restoreState) {
+        gameState.board.blackPieces = restoreState.blackPieces.map(r => [...r]);
+        gameState.board.whitePieces = restoreState.whitePieces.map(r => [...r]);
+        gameState.board.whoToPlay = restoreState.whoToPlay;
+        gameState.board.occupiedCount = restoreState.occupiedCount;
     } else {
-        // No history left, reset to initial state
+        // No snapshot available, reset to initial state.
         gameState.board = new GomokuBoard();
     }
 
     drawBoard();
-    updateStatus('你的回合');
+    if (gameState.board.whoToPlay === gameState.playerColor) {
+        updateStatus('你的回合');
+    } else {
+        updateStatus('AI思考中...');
+        makeAIMove();
+    }
 }
 
 /**
