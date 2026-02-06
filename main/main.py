@@ -11,7 +11,7 @@ import os
 
 # Enable expandable segments to reduce CUDA memory fragmentation
 # This helps avoid OOM errors when there is reserved but unallocated memory
-os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 import torch
 from collections import deque
@@ -44,7 +44,7 @@ from training import (
     EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE,
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
     ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
-    VALUE_LOSS_COEFF, GAE_LAMBDA, VALUE_BASELINE_START,
+    VALUE_LOSS_COEFF_EARLY, VALUE_LOSS_COEFF_GAE, GAE_LAMBDA, VALUE_BASELINE_START,
     PRINT_INTERVAL
 )
 from eval import (
@@ -275,7 +275,8 @@ def main():
     print(f"  Batch inference size (self-play): {BATCH_INFERENCE_SIZE}")
     print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
-    print(f"  Value head: ENABLED (weight: {VALUE_LOSS_COEFF}, targets: TD(0))")
+    print(f"  Value head: ENABLED (phase 1 weight: {VALUE_LOSS_COEFF_EARLY}, targets: TD(0))")
+    print(f"               (phase 2 weight: {VALUE_LOSS_COEFF_GAE}, targets: GAE)")
     print(f"  GAE: lambda={GAE_LAMBDA} ({'TD(0)' if GAE_LAMBDA == 0 else 'MC' if GAE_LAMBDA == 1 else 'blend'})")
     print(f"  Phased training:")
     print(f"    - Phase 1 (0-{VALUE_BASELINE_START-1}): Raw returns + tactical bonuses")

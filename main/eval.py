@@ -39,7 +39,7 @@ EVAL_INTERVAL_LATE = 128       # Evaluation interval for late training
 WIN_RATE_THRESHOLD = 19.0/32   # Minimum win rate to add to opponent pool
 
 # --- Opponent Sampling ---
-UNIFORM_SAMPLING_FRACTION = 0.75  # Fraction of samples that are uniform
+UNIFORM_SAMPLING_FRACTION = 0.5  # Fraction of samples that are uniform
 
 # --- Historical Exploiter Scanning ---
 SCAN_START_UPDATE = 8192               # Update at which to start scanning

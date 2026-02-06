@@ -37,8 +37,8 @@ BLOCK_MAX_BOOST = 0.75         # Maximum boost for blocking (when miss rate is 1
 
 SYNTHETIC_WIN_BOOST = 2.0      # Signal for missed win-in-1 (synthetic examples)
 SYNTHETIC_BLOCKING_BOOST = 1.5 # Signal for missed blocks (synthetic examples)
-MAX_SYNTHETIC_WINS = 256       # Max synthetic win-in-1 examples per batch
-MAX_SYNTHETIC_BLOCKS = 256     # Max synthetic blocking examples per batch
+MAX_SYNTHETIC_WINS = 4096      # Max synthetic win-in-1 examples per batch
+MAX_SYNTHETIC_BLOCKS = 4096    # Max synthetic blocking examples per batch
 
 # --- Imitation Learning ---
 IMITATION_MAX_WEIGHT = 1.5      # Maximum weight for imitation learning (at 0% win rate)
