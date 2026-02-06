@@ -78,7 +78,7 @@ class OnnxAIPlayer {
         const row = Math.floor(actionIdx / 15);
         const col = actionIdx % 15;
 
-        return [row, col];
+        return [row, col, results.value.data[0]];
     }
 
     /**
@@ -200,7 +200,7 @@ class OnnxAIPlayer {
         console.log(`Negamax complete: ${nodeCount} nodes evaluated`);
         console.log(`Best move: (${bestAction.row}, ${bestAction.col}) with Q = ${bestQ.toFixed(4)}`);
 
-        return [bestAction.row, bestAction.col];
+        return [bestAction.row, bestAction.col, bestQ];
     }
 
     /**

@@ -229,7 +229,7 @@ h1 {
     display: flex;
     gap: 10px;
     justify-content: center;
-    margin-top: 20px;
+    margin-top: 10px;
     visibility: hidden;
     min-height: 44px; /* 预留按钮高度，防止布局跳动 */
 }
@@ -304,6 +304,34 @@ h1 {
     color: #666;
 }
 
+/* Result Stats */
+.result-stats {
+    font-size: 0.9em;
+    color: #999;
+    margin-bottom: 30px;
+}
+
+/* Share Button */
+.btn-share {
+    width: 100%;
+    padding: 12px 30px;
+    font-size: 1em;
+    color: #333;
+    background: white;
+    border: 1px solid #ddd;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: 10px;
+}
+
+.btn-share:hover {
+    border-color: #999;
+}
+
+.btn-share:active {
+    background: #f5f5f5;
+}
+
 .btn-secondary {
     width: 100%;
     padding: 12px 30px;
@@ -319,6 +347,106 @@ h1 {
 .btn-secondary:hover {
     border-color: #999;
     color: #333;
+}
+
+/* ============================================================================
+   Record Screen
+   ============================================================================ */
+
+.record-screen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: #F8F8F8;
+    z-index: 2000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.btn-record-close {
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    background: none;
+    border: none;
+    font-size: 1.8em;
+    color: #999;
+    cursor: pointer;
+    line-height: 1;
+    padding: 5px 10px;
+    transition: color 0.2s ease;
+    z-index: 2001;
+}
+
+.btn-record-close:hover {
+    color: #333;
+}
+
+.record-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.record-title {
+    font-size: 1.5em;
+    font-weight: 400;
+    color: #333;
+    text-align: center;
+    margin-bottom: 12px;
+}
+
+.record-info {
+    width: 100%;
+    margin-bottom: 10px;
+}
+
+.record-info-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85em;
+    color: #666;
+    line-height: 1.8;
+}
+
+.record-piece {
+    display: inline-block;
+    width: 0.8em;
+    height: 0.8em;
+    border-radius: 50%;
+    vertical-align: middle;
+    position: relative;
+    top: -0.05em;
+}
+
+.record-piece-black {
+    background: #222;
+}
+
+.record-piece-white {
+    background: #eee;
+    box-shadow: inset 0 0 0 1.5px #000;
+}
+
+.record-board-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+#record-board {
+    display: block;
+    max-width: 100%;
+}
+
+.record-footer {
+    font-size: 0.85em;
+    color: #999;
+    text-align: center;
+    margin-top: 10px;
 }
 
 /* ============================================================================
@@ -384,7 +512,7 @@ h1 {
 
 @media (max-width: 480px) {
     body {
-        padding: 15px 10px;
+        padding: 10px 10px;
     }
 
     h1 {

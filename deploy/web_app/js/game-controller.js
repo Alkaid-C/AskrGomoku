@@ -17,7 +17,8 @@ const gameState = {
     history: [],  // History of moves for undo
     isAIThinking: false,
     pendingMove: null,  // {row, col} for move confirmation
-    lastAIThinkTime: 0  // Last AI thinking time in seconds
+    lastAIThinkTime: 0, // Last AI thinking time in seconds
+    undoCount: 0         // Number of undos in this game
 };
 
 // ============================================================================
@@ -92,6 +93,8 @@ function setupEventListeners() {
     // Result modal
     document.getElementById('btn-play-again').addEventListener('click', playAgain);
     document.getElementById('btn-new-setup').addEventListener('click', newSetup);
+    document.getElementById('btn-share').addEventListener('click', showRecordScreen);
+    document.getElementById('btn-record-close').addEventListener('click', hideRecordScreen);
 
     // Window resize
     window.addEventListener('resize', updateCanvasSize);
@@ -140,6 +143,7 @@ async function startGame() {
         gameState.history = [];
         gameState.isAIThinking = false;
         gameState.pendingMove = null;
+        gameState.undoCount = 0;
 
         // Show game panel
         loadingScreen.style.display = 'none';
@@ -186,6 +190,7 @@ function playAgain() {
     gameState.history = [];
     gameState.isAIThinking = false;
     gameState.pendingMove = null;
+    gameState.undoCount = 0;
 
     drawBoard();
 
@@ -326,14 +331,14 @@ async function makeAIMove() {
 
         // Get AI move
         const startTime = performance.now();
-        let aiRow, aiCol;
+        let aiRow, aiCol, aiValue;
 
         if (useNegamax) {
             // Advanced difficulty: use negamax search (depth=3, topK=3)
-            [aiRow, aiCol] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
+            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
         } else {
             // Junior/Intermediate: sample from policy distribution
-            [aiRow, aiCol] = await gameState.aiPlayer.getMove(gameState.board);
+            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMove(gameState.board);
         }
 
         const endTime = performance.now();
@@ -342,10 +347,11 @@ async function makeAIMove() {
 
         console.log(`AI move: (${aiRow}, ${aiCol}), think time: ${gameState.lastAIThinkTime.toFixed(2)}s`);
 
-        // Save to history
+        // Save to history (value is from AI's perspective before this move)
         gameState.history.push({
             row: aiRow, col: aiCol,
             player: gameState.aiColor,
+            value: aiValue,
             blackPieces: gameState.board.blackPieces.map(r => [...r]),
             whitePieces: gameState.board.whitePieces.map(r => [...r]),
             whoToPlay: gameState.board.whoToPlay,
@@ -383,6 +389,8 @@ function undoMove() {
     if (gameState.history.length === 0) return;
     if (gameState.isAIThinking) return;
     if (gameState.pendingMove) return;
+
+    gameState.undoCount++;
 
     // Pop the last 2 moves (AI + player), or as many as available.
     // History stores snapshots BEFORE each move, so we must restore the
@@ -435,6 +443,18 @@ function handleGameEnd(result) {
 
     document.getElementById('result-title').textContent = title;
     document.getElementById('result-message').textContent = message;
+
+    // Build stats
+    const gameLength = gameState.history.length;
+    const userWon = (result === GameState.BLACK_WIN && gameState.playerColor === Player.BLACK) ||
+                    (result === GameState.WHITE_WIN && gameState.playerColor === Player.WHITE);
+
+    let statsText = `${gameLength}手`;
+    if (gameState.undoCount > 0 && userWon) {
+        statsText += ` · 悔棋${gameState.undoCount}次`;
+    }
+    document.getElementById('result-stats').textContent = statsText;
+
     resultModal.style.display = 'flex';
 }
 
@@ -712,6 +732,190 @@ function cleanupOrbitLines() {
 function getPlanetPosition(planet) {
     const ctm = planet.getCTM();
     return { x: ctm.e, y: ctm.f };
+}
+
+// ============================================================================
+// Record Screen (numbered board for screenshots)
+// ============================================================================
+
+const AI_DISPLAY_NAMES = { junior: 'Vibe', intermediate: 'Mood', advanced: 'Melody' };
+
+/**
+ * Show the record screen with a numbered board.
+ */
+function showRecordScreen() {
+    const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
+
+    // Populate player labels
+    const blackLabel = gameState.playerColor === Player.BLACK ? '\u73a9\u5bb6' : aiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? '\u73a9\u5bb6' : aiName;
+    const blackDot = '<span class="record-piece record-piece-black"></span>';
+    const whiteDot = '<span class="record-piece record-piece-white"></span>';
+    document.getElementById('record-black').innerHTML = blackDot + ' \u9ed1\u68cb\uff1a' + blackLabel;
+    document.getElementById('record-white').innerHTML = whiteDot + ' \u767d\u68cb\uff1a' + whiteLabel;
+
+    // Regret (only if > 0)
+    if (gameState.undoCount > 0) {
+        document.getElementById('record-regret').textContent = '\u608d\u68cb\u6b21\u6570\uff1a' + gameState.undoCount;
+    } else {
+        document.getElementById('record-regret').textContent = '';
+    }
+
+    // Game length
+    document.getElementById('record-length').textContent = '\u68cb\u5c40\u957f\u5ea6\uff1a' + gameState.history.length;
+
+    document.getElementById('record-screen').style.display = 'flex';
+    drawRecordBoard();
+}
+
+/**
+ * Hide the record screen.
+ */
+function hideRecordScreen() {
+    document.getElementById('record-screen').style.display = 'none';
+}
+
+/**
+ * Find the winning line (5+ in a row) from the last move.
+ * @returns {Array|null} Array of [row, col] pairs sorted by position, or null
+ */
+function findWinningLine() {
+    if (gameState.history.length === 0) return null;
+
+    const lastMove = gameState.history[gameState.history.length - 1];
+    const { row, col, player } = lastMove;
+    const pieces = player === Player.BLACK ? gameState.board.blackPieces : gameState.board.whitePieces;
+
+    const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+
+    for (const [dr, dc] of directions) {
+        const line = [[row, col]];
+
+        let r = row + dr, c = col + dc;
+        while (r >= 0 && r < 15 && c >= 0 && c < 15 && pieces[r][c] === 1) {
+            line.push([r, c]);
+            r += dr; c += dc;
+        }
+
+        r = row - dr; c = col - dc;
+        while (r >= 0 && r < 15 && c >= 0 && c < 15 && pieces[r][c] === 1) {
+            line.push([r, c]);
+            r -= dr; c -= dc;
+        }
+
+        if (line.length >= 5) {
+            line.sort((a, b) => a[0] !== b[0] ? a[0] - b[0] : a[1] - b[1]);
+            return line;
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Draw the numbered board onto the record canvas.
+ */
+function drawRecordBoard() {
+    const recordCanvas = document.getElementById('record-board');
+    const c = recordCanvas.getContext('2d');
+
+    // Size the canvas to fit the viewport (square, capped at 600px CSS)
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const cssSize = Math.min(vw - 40, vh - 80, 600);
+    const dpr = window.devicePixelRatio || 1;
+
+    recordCanvas.style.width = cssSize + 'px';
+    recordCanvas.style.height = cssSize + 'px';
+    recordCanvas.width = cssSize * dpr;
+    recordCanvas.height = cssSize * dpr;
+
+    // Match content wrapper width to canvas
+    document.getElementById('record-content').style.width = cssSize + 'px';
+
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.scale(dpr, dpr);
+
+    const size = cssSize;
+    const padding = size * 0.05;
+    const gridSize = (size - 2 * padding) / 14;
+    const pieceRadius = gridSize * 0.4;
+
+    // Background
+    c.fillStyle = '#F8F8F8';
+    c.fillRect(0, 0, size, size);
+
+    // Grid lines
+    c.strokeStyle = '#808080';
+    c.lineWidth = 1;
+    for (let i = 0; i < 15; i++) {
+        c.beginPath();
+        c.moveTo(padding + i * gridSize, padding);
+        c.lineTo(padding + i * gridSize, padding + 14 * gridSize);
+        c.stroke();
+
+        c.beginPath();
+        c.moveTo(padding, padding + i * gridSize);
+        c.lineTo(padding + 14 * gridSize, padding + i * gridSize);
+        c.stroke();
+    }
+
+    // Star points
+    c.fillStyle = '#404040';
+    const starPoints = [[3,3],[3,11],[11,3],[11,11],[7,7]];
+    for (const [row, col] of starPoints) {
+        c.beginPath();
+        c.arc(padding + col * gridSize, padding + row * gridSize, size * 0.008, 0, 2 * Math.PI);
+        c.fill();
+    }
+
+    // Winning line (drawn beneath pieces)
+    const winLine = findWinningLine();
+    if (winLine) {
+        const first = winLine[0];
+        const last = winLine[winLine.length - 1];
+        c.strokeStyle = '#CC0000';
+        c.lineWidth = cssSize < 500 ? 3 : 5;
+        c.lineCap = 'round';
+        c.beginPath();
+        c.moveTo(padding + first[1] * gridSize, padding + first[0] * gridSize);
+        c.lineTo(padding + last[1] * gridSize, padding + last[0] * gridSize);
+        c.stroke();
+    }
+
+    // Pieces with move numbers
+    for (let i = 0; i < gameState.history.length; i++) {
+        const move = gameState.history[i];
+        const moveNum = i + 1;
+        const x = padding + move.col * gridSize;
+        const y = padding + move.row * gridSize;
+        const isBlack = move.player === Player.BLACK;
+
+        // Draw piece
+        if (isBlack) {
+            c.fillStyle = '#000';
+            c.beginPath();
+            c.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            c.fill();
+        } else {
+            c.fillStyle = '#FFF';
+            c.strokeStyle = '#000';
+            c.lineWidth = 1.5;
+            c.beginPath();
+            c.arc(x, y, pieceRadius, 0, 2 * Math.PI);
+            c.fill();
+            c.stroke();
+        }
+
+        // Draw number
+        c.fillStyle = isBlack ? '#FFF' : '#000';
+        const digits = String(moveNum).length;
+        const fontSize = digits <= 1 ? pieceRadius * 1.2 : digits <= 2 ? pieceRadius * 1.0 : pieceRadius * 0.8;
+        c.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`;
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.fillText(String(moveNum), x, y);
+    }
 }
 
 // ============================================================================

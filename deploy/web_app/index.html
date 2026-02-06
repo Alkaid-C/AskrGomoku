@@ -120,8 +120,32 @@
         <div class="modal-content">
             <h2 id="result-title">游戏结束</h2>
             <p id="result-message"></p>
+            <div id="result-stats" class="result-stats"></div>
+            <button id="btn-share" class="btn-share">生成棋谱</button>
             <button id="btn-play-again" class="btn-primary">再玩一局</button>
             <button id="btn-new-setup" class="btn-secondary">新设置</button>
+        </div>
+    </div>
+
+    <!-- Record Screen (numbered board for screenshots) -->
+    <div id="record-screen" class="record-screen" style="display: none;">
+        <button id="btn-record-close" class="btn-record-close">&times;</button>
+        <div id="record-content" class="record-content">
+            <div class="record-title">Askr五子棋</div>
+            <div class="record-info">
+                <div class="record-info-row">
+                    <span id="record-black"></span>
+                    <span id="record-white"></span>
+                </div>
+                <div class="record-info-row" id="record-info-row-2">
+                    <span id="record-regret"></span>
+                    <span id="record-length"></span>
+                </div>
+            </div>
+            <div class="record-board-container">
+                <canvas id="record-board"></canvas>
+            </div>
+            <div class="record-footer">gomoku.sance.xyz</div>
         </div>
     </div>
 
