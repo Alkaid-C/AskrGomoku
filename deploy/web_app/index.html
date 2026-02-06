@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Askr五子棋</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Loading Screen -->
+    <div id="loading-screen" style="display: none;">
+        <h1>Askr五子棋</h1>
+        <div class="loading-orbit">
+            <svg width="200" height="200" viewBox="0 0 200 200">
+                <!-- 线条容器 (will be populated by JavaScript) -->
+                <g id="orbit-lines"></g>
+
+                <!-- 内轨道 -->
+                <g class="orbit orbit-1">
+                    <ellipse cx="100" cy="100" rx="30" ry="20" fill="none" stroke="none"/>
+                    <circle class="planet planet-1" r="4" fill="#666">
+                        <animateMotion dur="3s" repeatCount="indefinite">
+                            <mpath href="#orbit1"/>
+                        </animateMotion>
+                    </circle>
+                </g>
+
+                <!-- 中轨道 -->
+                <g class="orbit orbit-2">
+                    <ellipse cx="100" cy="100" rx="50" ry="35" fill="none" stroke="none"/>
+                    <circle class="planet planet-2" r="6" fill="#555">
+                        <animateMotion dur="5s" repeatCount="indefinite">
+                            <mpath href="#orbit2"/>
+                        </animateMotion>
+                    </circle>
+                </g>
+
+                <!-- 外轨道 -->
+                <g class="orbit orbit-3">
+                    <ellipse cx="100" cy="100" rx="70" ry="50" fill="none" stroke="none"/>
+                    <circle class="planet planet-3" r="8" fill="#444">
+                        <animateMotion dur="7s" repeatCount="indefinite">
+                            <mpath href="#orbit3"/>
+                        </animateMotion>
+                    </circle>
+                </g>
+
+                <!-- 轨道路径定义 -->
+                <defs>
+                    <path id="orbit1" d="M 100,80 a 30,20 0 1,1 0,40 a 30,20 0 1,1 0,-40 z"/>
+                    <path id="orbit2" d="M 100,65 a 50,35 0 1,1 0,70 a 50,35 0 1,1 0,-70 z"/>
+                    <path id="orbit3" d="M 100,50 a 70,50 0 1,1 0,100 a 70,50 0 1,1 0,-100 z"/>
+                </defs>
+            </svg>
+        </div>
+        <p id="loading-message">正在加载模型...</p>
+    </div>
+
+    <!-- Setup Panel -->
+    <div id="setup-panel" style="display: none;">
+        <h1>Askr五子棋</h1>
+        <div class="setup-content">
+            <label>你的执子：</label>
+            <div class="button-group">
+                <button id="btn-black" class="btn-color active" data-color="1">⚫ 黑棋（先手）</button>
+                <button id="btn-white" class="btn-color" data-color="2">⚪ 白棋（后手）</button>
+            </div>
+
+            <label>你的对手：</label>
+            <div class="difficulty-group">
+                <button class="btn-difficulty" data-difficulty="junior">
+                    <div class="difficulty-name">Vibe</div>
+                    <div class="difficulty-info">初级</div>
+                    <div class="difficulty-info">500万参数</div>
+                    <div class="difficulty-info">2048轮对弈</div>
+                </button>
+                <button class="btn-difficulty active" data-difficulty="intermediate">
+                    <div class="difficulty-name">Mood</div>
+                    <div class="difficulty-info">中级</div>
+                    <div class="difficulty-info">500万参数</div>
+                    <div class="difficulty-info">5000轮对弈</div>
+                </button>
+                <button class="btn-difficulty" data-difficulty="advanced">
+                    <div class="difficulty-name">Melody</div>
+                    <div class="difficulty-info">高级</div>
+                    <div class="difficulty-info">500万参数</div>
+                    <div class="difficulty-info">10000轮对弈</div>
+                </button>
+            </div>
+
+            <button id="btn-start" class="btn-primary">开始游戏</button>
+            <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+        </div>
+    </div>
+
+    <!-- Game Panel -->
+    <div id="game-panel" style="display: none;">
+        <h1>Askr五子棋</h1>
+
+        <!-- Top Controls -->
+        <div class="top-controls">
+            <button id="btn-undo" class="btn-control">悔棋</button>
+            <div id="status-text">你的回合</div>
+            <button id="btn-restart" class="btn-control">新游戏</button>
+        </div>
+
+        <!-- Canvas Board -->
+        <div class="board-container">
+            <canvas id="game-board" width="600" height="600"></canvas>
+        </div>
+
+        <!-- Move Confirmation -->
+        <div id="move-confirm" class="move-confirm">
+            <button id="btn-confirm-move" class="btn-confirm">确认落子</button>
+            <button id="btn-cancel-move" class="btn-cancel">取消</button>
+        </div>
+
+        <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+    </div>
+
+    <!-- Result Modal -->
+    <div id="result-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h2 id="result-title">游戏结束</h2>
+            <p id="result-message"></p>
+            <button id="btn-play-again" class="btn-primary">再玩一局</button>
+            <button id="btn-new-setup" class="btn-secondary">新设置</button>
+        </div>
+    </div>
+
+    <!-- Credit -->
+    <div class="credit">
+        Credit: @Alkaid C.
+        <a href="https://www.sance.xyz" target="_blank" rel="noopener noreferrer">Blog</a> |
+        <a href="https://github.com/Alkaid-C" target="_blank" rel="noopener noreferrer">Github</a>
+    </div>
+
+    <!-- ONNX Runtime Web (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+
+    <!-- Game modules -->
+    <script src="js/gomoku-board.js"></script>
+    <script src="js/onnx-ai-player.js"></script>
+    <script src="js/model-manager.js"></script>
+    <script src="js/game-controller.js"></script>
+</body>
+</html>
