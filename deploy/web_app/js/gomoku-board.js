@@ -148,6 +148,19 @@ class GomokuBoard {
     }
 
     /**
+     * Create a deep copy of the board.
+     * @returns {GomokuBoard} Cloned board instance
+     */
+    clone() {
+        const copy = new GomokuBoard();
+        copy.blackPieces = this.blackPieces.map(row => [...row]);
+        copy.whitePieces = this.whitePieces.map(row => [...row]);
+        copy.whoToPlay = this.whoToPlay;
+        copy.occupiedCount = this.occupiedCount;
+        return copy;
+    }
+
+    /**
      * Render board as text (for debugging).
      * @returns {string} Text representation of the board
      */

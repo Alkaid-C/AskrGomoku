@@ -39,7 +39,7 @@ const ctx = canvas.getContext('2d');
 /**
  * Initialize the game on page load.
  */
-async function init() {
+function init() {
     console.log('Initializing Gomoku game...');
 
     // Show setup panel
@@ -47,7 +47,7 @@ async function init() {
 
     // Initialize model manager
     gameState.modelManager = new ModelManager();
-    await gameState.modelManager.initialize();
+    gameState.modelManager.initialize();
 
     // Set up event listeners
     setupEventListeners();
@@ -167,7 +167,7 @@ async function startGame() {
 /**
  * Restart game with same settings.
  */
-async function restartGame() {
+function restartGame() {
     console.log('Restarting game...');
 
     // Show setup panel
@@ -215,7 +215,6 @@ function newSetup() {
  */
 function handleBoardClick(event) {
     if (gameState.isAIThinking) return;
-    if (gameState.pendingMove) return; // Already have a pending move
     if (gameState.board.whoToPlay !== gameState.playerColor) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -228,7 +227,12 @@ function handleBoardClick(event) {
 
     const [row, col] = pos;
 
-    // Show pending move
+    // Check if position is occupied
+    if (gameState.board.blackPieces[row][col] === 1 || gameState.board.whitePieces[row][col] === 1) {
+        return;
+    }
+
+    // Update pending move (allows changing position without canceling first)
     gameState.pendingMove = { row, col };
     drawBoard();
 
@@ -239,8 +243,11 @@ function handleBoardClick(event) {
 /**
  * Confirm pending move.
  */
-async function confirmMove() {
-    if (!gameState.pendingMove) return;
+async function confirmMove(event) {
+    // Prevent iOS Safari scroll jump when button disappears
+    if (event) {
+        event.preventDefault();
+    }
 
     const { row, col } = gameState.pendingMove;
 
@@ -256,7 +263,12 @@ async function confirmMove() {
 /**
  * Cancel pending move.
  */
-function cancelMove() {
+function cancelMove(event) {
+    // Prevent iOS Safari scroll jump when button disappears
+    if (event) {
+        event.preventDefault();
+    }
+
     gameState.pendingMove = null;
     document.getElementById('move-confirm').classList.remove('visible');
     drawBoard();
@@ -298,12 +310,32 @@ async function makePlayerMove(row, col) {
  */
 async function makeAIMove() {
     gameState.isAIThinking = true;
-    updateStatus('AI思考中...');
+
+    // Check if using advanced difficulty (negamax search)
+    const useNegamax = gameState.modelManager.selectedModel === 'advanced';
+
+    if (useNegamax) {
+        updateStatus('深度思考中...');
+    } else {
+        updateStatus('AI思考中...');
+    }
 
     try {
-        // Get AI move (samples from probability distribution, temperature is baked into model)
+        // Give browser a chance to update UI before heavy computation
+        await new Promise(resolve => setTimeout(resolve, 50));
+
+        // Get AI move
         const startTime = performance.now();
-        const [aiRow, aiCol] = await gameState.aiPlayer.getMove(gameState.board);
+        let aiRow, aiCol;
+
+        if (useNegamax) {
+            // Advanced difficulty: use negamax search (depth=3, topK=3)
+            [aiRow, aiCol] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
+        } else {
+            // Junior/Intermediate: sample from policy distribution
+            [aiRow, aiCol] = await gameState.aiPlayer.getMove(gameState.board);
+        }
+
         const endTime = performance.now();
 
         gameState.lastAIThinkTime = (endTime - startTime) / 1000; // Convert to seconds
@@ -334,7 +366,7 @@ async function makeAIMove() {
         }
 
         // Player's turn
-        updateStatus(`你的回合 (AI思考: ${gameState.lastAIThinkTime.toFixed(2)}秒)`);
+        updateStatus('你的回合');
 
     } catch (error) {
         console.error('AI move failed:', error);
@@ -526,6 +558,35 @@ function drawBoard() {
 
         ctx.globalAlpha = 1.0;
     }
+
+    // Draw last move marker - only for AI moves
+    if (gameState.history.length > 0) {
+        const lastMove = gameState.history[gameState.history.length - 1];
+        if (lastMove.player === gameState.aiColor) {
+            const x = padding + lastMove.col * gridSize;
+            const y = padding + lastMove.row * gridSize;
+
+            if (lastMove.player === Player.BLACK) {
+                // White cross on black piece
+                const halfLen = pieceRadius * 0.375;
+                ctx.strokeStyle = '#FFF';
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(x - halfLen, y);
+                ctx.lineTo(x + halfLen, y);
+                ctx.moveTo(x, y - halfLen);
+                ctx.lineTo(x, y + halfLen);
+                ctx.stroke();
+            } else {
+                // Black dot on white piece
+                const dotRadius = pieceRadius * 0.2;
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.arc(x, y, dotRadius, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        }
+    }
 }
 
 /**
@@ -571,7 +632,6 @@ function startOrbitAnimation() {
     // Clean up any existing lines
     cleanupOrbitLines();
 
-    const svg = document.querySelector('.loading-orbit svg');
     const orbitLinesContainer = document.getElementById('orbit-lines');
 
     // Get planet elements
@@ -627,10 +687,8 @@ function startOrbitAnimation() {
  */
 function stopOrbitAnimation() {
     orbitAnimationRunning = false;
-    if (orbitAnimationFrame) {
-        cancelAnimationFrame(orbitAnimationFrame);
-        orbitAnimationFrame = null;
-    }
+    cancelAnimationFrame(orbitAnimationFrame);
+    orbitAnimationFrame = null;
     cleanupOrbitLines();
 }
 
@@ -646,13 +704,8 @@ function cleanupOrbitLines() {
  * Get planet position in SVG coordinates.
  */
 function getPlanetPosition(planet) {
-    const svg = planet.ownerSVGElement;
     const ctm = planet.getCTM();
-
-    return {
-        x: ctm.e,
-        y: ctm.f
-    };
+    return { x: ctm.e, y: ctm.f };
 }
 
 // ============================================================================

@@ -39,7 +39,7 @@ class ModelManager {
     /**
      * Initialize model manager.
      */
-    async initialize() {
+    initialize() {
         console.log('Model Manager initialized');
     }
 
