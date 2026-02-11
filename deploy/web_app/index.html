@@ -9,7 +9,7 @@
 <body>
     <!-- Loading Screen -->
     <div id="loading-screen" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
         <div class="loading-orbit">
             <svg width="200" height="200" viewBox="0 0 200 200">
                 <!-- 线条容器 (will be populated by JavaScript) -->
@@ -53,53 +53,56 @@
                 </defs>
             </svg>
         </div>
-        <p id="loading-message">正在加载模型...</p>
+        <p id="loading-message" data-i18n="loading_model">正在加载模型...</p>
+        <div class="loading-poem-container">
+            <div id="loading-poem" class="loading-poem"></div>
+        </div>
     </div>
 
     <!-- Setup Panel -->
     <div id="setup-panel" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
         <div class="setup-content">
-            <label>你的执子：</label>
+            <label data-i18n="your_pieces">你的执子：</label>
             <div class="button-group">
-                <button id="btn-black" class="btn-color active" data-color="1">⚫ 黑棋（先手）</button>
-                <button id="btn-white" class="btn-color" data-color="2">⚪ 白棋（后手）</button>
+                <button id="btn-black" class="btn-color active" data-color="1" data-i18n="black_first">⚫ 黑棋（先手）</button>
+                <button id="btn-white" class="btn-color" data-color="2" data-i18n="white_second">⚪ 白棋（后手）</button>
             </div>
 
-            <label>你的对手：</label>
+            <label data-i18n="your_opponent">你的对手：</label>
             <div class="difficulty-group">
                 <button class="btn-difficulty" data-difficulty="junior">
-                    <div class="difficulty-name">Vibe</div>
-                    <div class="difficulty-info">初级</div>
-                    <div class="difficulty-info">经典模型架构</div>
+                    <div class="difficulty-name">Dial</div>
+                    <div class="difficulty-info" data-i18n="junior">初级</div>
+                    <div class="difficulty-info" data-i18n="classic_arch">经典模型架构</div>
                 </button>
                 <button class="btn-difficulty active" data-difficulty="intermediate">
-                    <div class="difficulty-name">Mood</div>
-                    <div class="difficulty-info">中级</div>
-                    <div class="difficulty-info">高级模型架构</div>
+                    <div class="difficulty-name">Cello</div>
+                    <div class="difficulty-info" data-i18n="intermediate">中级</div>
+                    <div class="difficulty-info" data-i18n="advanced_arch">高级模型架构</div>
                 </button>
                 <button class="btn-difficulty" data-difficulty="advanced">
                     <div class="difficulty-name">Melody</div>
-                    <div class="difficulty-info">高级</div>
-                    <div class="difficulty-info">深度思考</div>
+                    <div class="difficulty-info" data-i18n="advanced">高级</div>
+                    <div class="difficulty-info" data-i18n="deep_think_desc">深度思考</div>
                 </button>
             </div>
 
-            <button id="btn-start" class="btn-primary">开始游戏</button>
-            <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+            <button id="btn-start" class="btn-primary" data-i18n="start_game">开始游戏</button>
+            <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
         </div>
     </div>
 
     <!-- Game Panel -->
     <div id="game-panel" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
 
         <!-- Top Controls -->
         <div class="top-controls">
-            <button id="btn-undo" class="btn-control">悔棋</button>
+            <button id="btn-undo" class="btn-control" data-i18n="undo">悔棋</button>
             <span id="end-stat-left" class="end-stat"></span>
-            <div id="status-text">你的回合</div>
-            <button id="btn-restart" class="btn-control">新游戏</button>
+            <div id="status-text" data-i18n="your_turn">你的回合</div>
+            <button id="btn-restart" class="btn-control" data-i18n="new_game">新游戏</button>
             <span id="end-stat-right" class="end-stat"></span>
         </div>
 
@@ -110,27 +113,27 @@
 
         <!-- Move Confirmation -->
         <div id="move-confirm" class="move-confirm">
-            <button id="btn-confirm-move" class="btn-confirm">确认落子</button>
-            <button id="btn-cancel-move" class="btn-cancel">取消</button>
+            <button id="btn-confirm-move" class="btn-confirm" data-i18n="confirm_move">确认落子</button>
+            <button id="btn-cancel-move" class="btn-cancel" data-i18n="cancel">取消</button>
         </div>
 
         <!-- End Actions (replaces move-confirm when game ends) -->
         <div id="end-actions" class="end-actions" style="display: none;">
-            <button id="btn-end-new-game" class="btn-confirm">新游戏</button>
+            <button id="btn-end-new-game" class="btn-confirm" data-i18n="new_game">新游戏</button>
         </div>
 
-        <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+        <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
     </div>
 
     <!-- Result Modal -->
     <div id="result-modal" class="modal" style="display: none;">
         <div class="modal-content">
-            <h2 id="result-title">游戏结束</h2>
+            <h2 id="result-title" data-i18n="game_over">游戏结束</h2>
             <p id="result-message"></p>
             <div id="result-stats" class="result-stats"></div>
-            <button id="btn-share" class="btn-share">生成棋谱</button>
-            <button id="btn-play-again" class="btn-primary">再玩一局</button>
-            <button id="btn-new-setup" class="btn-secondary">新设置</button>
+            <button id="btn-share" class="btn-share" data-i18n="generate_record">生成棋谱</button>
+            <button id="btn-play-again" class="btn-primary" data-i18n="play_again">再玩一局</button>
+            <button id="btn-new-setup" class="btn-secondary" data-i18n="new_setup">新设置</button>
         </div>
     </div>
 
@@ -138,7 +141,7 @@
     <div id="record-screen" class="record-screen" style="display: none;">
         <button id="btn-record-close" class="btn-record-close">&times;</button>
         <div id="record-content" class="record-content">
-            <div class="record-title">Askr五子棋</div>
+            <div class="record-title" data-i18n="record_title">Askr五子棋</div>
             <div class="record-info">
                 <div class="record-info-row">
                     <span id="record-black"></span>
@@ -156,6 +159,13 @@
         </div>
     </div>
 
+    <!-- Language Switcher -->
+    <div class="lang-switch">
+        <button class="lang-btn active" data-lang="zh">中文</button>
+        <span class="lang-sep">|</span>
+        <button class="lang-btn" data-lang="en">English</button>
+    </div>
+
     <!-- Credit -->
     <div class="credit">
         Credit: @Alkaid C.
@@ -165,6 +175,9 @@
 
     <!-- ONNX Runtime Web (CDN) -->
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+
+    <!-- i18n (must load before other modules) -->
+    <script src="js/i18n.js"></script>
 
     <!-- Game modules -->
     <script src="js/gomoku-board.js"></script>

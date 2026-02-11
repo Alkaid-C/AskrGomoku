@@ -5,8 +5,9 @@
  */
 
 class OnnxAIPlayer {
-    constructor(modelPath) {
+    constructor(modelPath, temperature = 1.0) {
         this.modelPath = modelPath;
+        this.temperature = temperature;
         this.session = null;
     }
 
@@ -30,7 +31,7 @@ class OnnxAIPlayer {
     /**
      * Get AI's next move for a given board state.
      * @param {GomokuBoard} board - Current board state
-     * @returns {Promise<Array>} [row, col] of AI's move
+     * @returns {Promise<Array>} [row, col, value] of AI's move
      */
     async getMove(board) {
         // Get board state from current player's perspective
@@ -43,36 +44,20 @@ class OnnxAIPlayer {
         const feeds = { board_state: inputTensor };
         const results = await this.session.run(feeds);
 
-        // Get output probabilities [15, 15] (flattened to [225])
-        const policyOutput = results.policy_probs;
-        const probs = Array.from(policyOutput.data);
+        // Get raw logits [225]
+        const logits = Array.from(results.policy_logits.data);
 
-        console.log('Policy probs sum:', probs.reduce((a, b) => a + b, 0).toFixed(6));
         console.log(`Position value: ${results.value.data[0].toFixed(3)}`);
 
         // Get legal moves mask
         const [legalMask, _] = board.GetLegalMoves();
         const legalMaskFlat = this._flattenMask(legalMask);
 
-        // Mask illegal moves and renormalize
-        let maskedProbs = new Array(225);
-        let sum = 0;
-        for (let i = 0; i < 225; i++) {
-            if (legalMaskFlat[i] === 0) {
-                maskedProbs[i] = 0;
-            } else {
-                maskedProbs[i] = probs[i];
-                sum += probs[i];
-            }
-        }
+        // Masked softmax with temperature
+        const probs = this._maskedSoftmax(logits, legalMaskFlat, this.temperature);
 
-        // Renormalize to sum to 1.0
-        for (let i = 0; i < 225; i++) {
-            maskedProbs[i] /= sum;
-        }
-
-        // Sample from probability distribution (temperature is baked into model)
-        const actionIdx = this._sampleCategorical(maskedProbs);
+        // Sample from probability distribution
+        const actionIdx = this._sampleCategorical(probs);
 
         // Convert flat index to (row, col)
         const row = Math.floor(actionIdx / 15);
@@ -105,6 +90,45 @@ class OnnxAIPlayer {
         }
 
         return new ort.Tensor('float32', data, [2, 15, 15]);
+    }
+
+    /**
+     * Apply masked softmax with temperature over logits.
+     * Only legal positions participate; illegal positions get probability 0.
+     * Uses max subtraction for numerical stability.
+     * @param {Array} logits - Raw logits [225]
+     * @param {Array} legalMask - Binary mask [225] (1 = legal, 0 = illegal)
+     * @param {number} temperature - Softmax temperature
+     * @returns {Array} Probability distribution [225]
+     */
+    _maskedSoftmax(logits, legalMask, temperature) {
+        // Find max logit among legal moves (for numerical stability)
+        let maxLogit = -Infinity;
+        for (let i = 0; i < 225; i++) {
+            if (legalMask[i] === 1) {
+                const scaled = logits[i] / temperature;
+                if (scaled > maxLogit) maxLogit = scaled;
+            }
+        }
+
+        // Compute exp(logit/T - max) for legal moves, sum them
+        const probs = new Array(225);
+        let sum = 0;
+        for (let i = 0; i < 225; i++) {
+            if (legalMask[i] === 0) {
+                probs[i] = 0;
+            } else {
+                probs[i] = Math.exp(logits[i] / temperature - maxLogit);
+                sum += probs[i];
+            }
+        }
+
+        // Normalize
+        for (let i = 0; i < 225; i++) {
+            probs[i] /= sum;
+        }
+
+        return probs;
     }
 
     /**
@@ -254,10 +278,10 @@ class OnnxAIPlayer {
     }
 
     /**
-     * Get top-k actions by policy probability.
+     * Get top-k actions by policy logit (ranking is the same as by probability).
      * @param {GomokuBoard} board - Current board state
      * @param {number} k - Number of top actions to return
-     * @returns {Promise<Array>} Array of {row, col, idx, prob}
+     * @returns {Promise<Array>} Array of {row, col, idx, logit}
      */
     async _getTopKActions(board, k) {
         // Get board state from current player's perspective
@@ -270,14 +294,13 @@ class OnnxAIPlayer {
         const feeds = { board_state: inputTensor };
         const results = await this.session.run(feeds);
 
-        // Get policy probabilities
-        const policyOutput = results.policy_probs;
-        const probs = Array.from(policyOutput.data);
+        // Get raw logits
+        const logits = Array.from(results.policy_logits.data);
 
         // Get legal moves mask
         const [legalMask, _] = board.GetLegalMoves();
 
-        // Collect legal actions with their probabilities
+        // Collect legal actions with their logits
         const legalActions = [];
         for (let row = 0; row < 15; row++) {
             for (let col = 0; col < 15; col++) {
@@ -287,14 +310,14 @@ class OnnxAIPlayer {
                         row,
                         col,
                         idx,
-                        prob: probs[idx]
+                        logit: logits[idx]
                     });
                 }
             }
         }
 
-        // Sort by probability descending
-        legalActions.sort((a, b) => b.prob - a.prob);
+        // Sort by logit descending (same ranking as probability)
+        legalActions.sort((a, b) => b.logit - a.logit);
 
         // Return top-k
         return legalActions.slice(0, k);

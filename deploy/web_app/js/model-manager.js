@@ -8,28 +8,16 @@ class ModelManager {
     constructor() {
         this.models = {
             junior: {
-                path: 'models/easy.onnx',
-                size: '~14 MB',
-                description: '初级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度1.0)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/dial.onnx',
+                temperature: 1.0,
             },
             intermediate: {
-                path: 'models/mid.onnx',
-                size: '~14 MB',
-                description: '中级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度0.5)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/cello.onnx',
+                temperature: 0.7,
             },
             advanced: {
-                path: 'models/hard.onnx',
-                size: '~14 MB',
-                description: '高级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度0.2)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/melody.onnx',
+                temperature: 0.5,
             }
         };
 
@@ -60,12 +48,21 @@ class ModelManager {
     }
 
     /**
+     * Get selected model temperature.
+     * @returns {number} Temperature for softmax sampling
+     */
+    getModelTemperature() {
+        return this.models[this.selectedModel].temperature;
+    }
+
+    /**
      * Load selected model.
      * @returns {Promise<OnnxAIPlayer>} Loaded AI player
      */
     async loadSelectedModel() {
         const modelPath = this.getModelPath();
-        const aiPlayer = new OnnxAIPlayer(modelPath);
+        const temperature = this.getModelTemperature();
+        const aiPlayer = new OnnxAIPlayer(modelPath, temperature);
         await aiPlayer.loadModel();
         return aiPlayer;
     }

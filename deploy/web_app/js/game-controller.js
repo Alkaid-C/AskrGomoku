@@ -25,7 +25,8 @@ const gameState = {
     playerMoveCount: 0,  // Number of player moves
     aiTotalTime: 0,      // Total AI thinking time in ms
     aiMoveCount: 0,      // Number of AI moves
-    playerTurnStart: 0   // Timestamp when player's turn started
+    playerTurnStart: 0,  // Timestamp when player's turn started
+    hasLoadedModel: false // Whether a model has been loaded this session
 };
 
 // ============================================================================
@@ -138,15 +139,29 @@ async function startGame() {
     setupPanel.style.display = 'none';
     loadingScreen.style.display = 'block';
 
-    // Start orbital animation
+    // Start animations
     startOrbitAnimation();
+    startPoemRotation();
+
+    const loadStartTime = performance.now();
+    const isFirstLoad = !gameState.hasLoadedModel;
 
     try {
         // Load model
         gameState.aiPlayer = await gameState.modelManager.loadSelectedModel();
 
-        // Stop orbital animation
+        // Enforce minimum 3s loading screen on first load
+        if (isFirstLoad) {
+            const elapsed = performance.now() - loadStartTime;
+            if (elapsed < 3000) {
+                await new Promise(resolve => setTimeout(resolve, 3000 - elapsed));
+            }
+            gameState.hasLoadedModel = true;
+        }
+
+        // Stop animations
         stopOrbitAnimation();
+        stopPoemRotation();
 
         // Initialize board
         gameState.board = new GomokuBoard();
@@ -177,12 +192,14 @@ async function startGame() {
             await makeAIMove();
         } else {
             gameState.playerTurnStart = performance.now();
-            updateStatus('你的回合');
+            updateStatus(t('your_turn'));
         }
 
     } catch (error) {
         console.error('Failed to start game:', error);
-        alert('加载模型失败,请刷新页面重试。');
+        stopOrbitAnimation();
+        stopPoemRotation();
+        alert(t('model_load_failed'));
         loadingScreen.style.display = 'none';
         setupPanel.style.display = 'block';
     }
@@ -226,7 +243,7 @@ function playAgain() {
         makeAIMove();
     } else {
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
     }
 }
 
@@ -375,9 +392,9 @@ async function makeAIMove() {
     const useNegamax = gameState.modelManager.selectedModel === 'advanced';
 
     if (useNegamax) {
-        updateStatus('深度思考中...');
+        updateStatus(t('deep_thinking'));
     } else {
-        updateStatus('AI思考中...');
+        updateStatus(t('ai_thinking'));
     }
 
     try {
@@ -430,12 +447,12 @@ async function makeAIMove() {
 
         // Player's turn
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
 
     } catch (error) {
         console.error('AI move failed:', error);
         gameState.isAIThinking = false;
-        updateStatus('AI出错,请重新开始');
+        updateStatus(t('ai_error'));
     }
 }
 
@@ -481,9 +498,9 @@ function undoMove() {
     drawBoard();
     if (gameState.board.whoToPlay === gameState.playerColor) {
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
     } else {
-        updateStatus('AI思考中...');
+        updateStatus(t('ai_thinking'));
         makeAIMove();
     }
 }
@@ -496,13 +513,13 @@ function handleGameEnd(result) {
     gameState.gameOver = true;
 
     // Determine result title
-    let title = '游戏结束';
+    let title = t('game_over');
     if (result === GameState.BLACK_WIN) {
-        title = gameState.playerColor === Player.BLACK ? '你赢了！' : '你输了！';
+        title = gameState.playerColor === Player.BLACK ? t('you_won') : t('you_lost');
     } else if (result === GameState.WHITE_WIN) {
-        title = gameState.playerColor === Player.WHITE ? '你赢了！' : '你输了！';
+        title = gameState.playerColor === Player.WHITE ? t('you_won') : t('you_lost');
     } else if (result === GameState.DRAW) {
-        title = '平局';
+        title = t('draw');
     }
 
     // Player info
@@ -516,20 +533,20 @@ function handleGameEnd(result) {
         ? (gameState.playerTotalTime / gameState.playerMoveCount / 1000).toFixed(2) : '0.00';
     const aiAvg = gameState.aiMoveCount > 0
         ? (gameState.aiTotalTime / gameState.aiMoveCount / 1000).toFixed(2) : '0.00';
-    const playerTimeStr = ' <span class="time-per-move">(' + playerAvg + 's/手)</span>';
-    const aiTimeStr = ' <span class="time-per-move">(' + aiAvg + 's/手)</span>';
+    const playerTimeStr = ' <span class="time-per-move">(' + playerAvg + t('sec_per_move') + ')</span>';
+    const aiTimeStr = ' <span class="time-per-move">(' + aiAvg + t('sec_per_move') + ')</span>';
 
     const blackIsPlayer = gameState.playerColor === Player.BLACK;
-    const blackLabel = blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
-    const whiteLabel = !blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
+    const blackLabel = blackIsPlayer ? t('player') + playerTimeStr : fullAiName + aiTimeStr;
+    const whiteLabel = !blackIsPlayer ? t('player') + playerTimeStr : fullAiName + aiTimeStr;
 
     // Stats
     const gameLength = gameState.history.length;
     const userWon = (result === GameState.BLACK_WIN && gameState.playerColor === Player.BLACK) ||
                     (result === GameState.WHITE_WIN && gameState.playerColor === Player.WHITE);
-    let rightHtml = gameLength + '手';
+    let rightHtml = gameLength + t('move_unit');
     if (gameState.undoCount > 0 && userWon) {
-        rightHtml += '<br>悔棋' + gameState.undoCount + '次';
+        rightHtml += '<br>' + t('undo_label') + gameState.undoCount + t('times');
     }
 
     // Replace top-controls content in-place: hide buttons, show stats
@@ -831,6 +848,66 @@ function updateStatus(text) {
 // Orbital Loading Animation
 // ============================================================================
 
+// ============================================================================
+// Loading Poem Rotation
+// ============================================================================
+
+const poemLines = [
+    'Midway through, a haunted computer types its own questions:',
+    '\u201CWould you like to meet a ghost?\u201D',
+    '\u201CDo you live to shovel sand or shovel sand to live?\u201D',
+    'It\u2019s the best part of the movie,',
+    'I think you\u2019d like it.',
+    'There\u2019s this melody one character hears after',
+    'in his head\u2014it is the answer, we discover, to everything',
+    'not yet asked; a sort of dial tone',
+    'overtakes you with dread while you\u2019re watching',
+    'him listen to a wind-blown curtain swell',
+    'into a cello or a pear-shaped person, illegibility\u2019s the point',
+    'and also the mood. Or is it a vibe? I think moods',
+    'are for people with choices',
+    'and children\u2014',
+    'Anyway the room\u2019s crummy,',
+    'how was karaoke?',
+    'Will you call again later and sing it for me?'
+];
+
+let poemInterval = null;
+let poemIndex = 0;
+
+function startPoemRotation() {
+    const el = document.getElementById('loading-poem');
+    poemIndex = Math.floor(Math.random() * poemLines.length);
+    el.textContent = poemLines[poemIndex];
+    el.className = 'loading-poem';
+
+    poemInterval = setInterval(() => {
+        el.classList.add('slide-out');
+
+        setTimeout(() => {
+            poemIndex = (poemIndex + 1) % poemLines.length;
+            el.classList.remove('slide-out');
+            el.classList.add('slide-in-prep');
+            el.textContent = poemLines[poemIndex];
+
+            // Force reflow then slide in
+            el.offsetHeight;
+            el.classList.remove('slide-in-prep');
+        }, 500);
+    }, 2000);
+}
+
+function stopPoemRotation() {
+    if (poemInterval) {
+        clearInterval(poemInterval);
+        poemInterval = null;
+    }
+}
+
+// ============================================================================
+// Orbital Loading Animation
+// ============================================================================
+
 let orbitAnimationRunning = false;
 let orbitAnimationFrame = null;
 let orbitLines = [];
@@ -924,7 +1001,7 @@ function getPlanetPosition(planet) {
 // Record Screen (numbered board for screenshots)
 // ============================================================================
 
-const AI_DISPLAY_NAMES = { junior: 'Vibe', intermediate: 'Mood', advanced: 'Melody' };
+const AI_DISPLAY_NAMES = { junior: 'Dial', intermediate: 'Cello', advanced: 'Melody' };
 
 /**
  * Show the record screen with a numbered board.
@@ -933,22 +1010,22 @@ function showRecordScreen() {
     const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
 
     // Populate player labels
-    const blackLabel = gameState.playerColor === Player.BLACK ? '\u73a9\u5bb6' : aiName;
-    const whiteLabel = gameState.playerColor === Player.WHITE ? '\u73a9\u5bb6' : aiName;
+    const blackLabel = gameState.playerColor === Player.BLACK ? t('player') : aiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? t('player') : aiName;
     const blackDot = '<span class="record-piece record-piece-black"></span>';
     const whiteDot = '<span class="record-piece record-piece-white"></span>';
-    document.getElementById('record-black').innerHTML = blackDot + ' \u9ed1\u68cb\uff1a' + blackLabel;
-    document.getElementById('record-white').innerHTML = whiteDot + ' \u767d\u68cb\uff1a' + whiteLabel;
+    document.getElementById('record-black').innerHTML = blackDot + ' ' + t('black_label') + blackLabel;
+    document.getElementById('record-white').innerHTML = whiteDot + ' ' + t('white_label') + whiteLabel;
 
     // Regret (only if > 0)
     if (gameState.undoCount > 0) {
-        document.getElementById('record-regret').textContent = '\u608d\u68cb\u6b21\u6570\uff1a' + gameState.undoCount;
+        document.getElementById('record-regret').textContent = t('undo_count') + gameState.undoCount;
     } else {
         document.getElementById('record-regret').textContent = '';
     }
 
     // Game length
-    document.getElementById('record-length').textContent = '\u68cb\u5c40\u957f\u5ea6\uff1a' + gameState.history.length;
+    document.getElementById('record-length').textContent = t('game_length') + gameState.history.length;
 
     document.getElementById('record-screen').style.display = 'flex';
     drawRecordBoard();

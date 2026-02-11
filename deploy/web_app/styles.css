@@ -53,6 +53,30 @@ h1 {
     color: #999;
 }
 
+.loading-poem-container {
+    margin-top: 20px;
+    min-height: 3em;
+}
+
+.loading-poem {
+    font-style: italic;
+    color: #999;
+    font-size: 0.85em;
+    line-height: 1.4;
+    transition: transform 0.5s ease, opacity 0.5s ease;
+}
+
+.loading-poem.slide-out {
+    transform: translateY(-10px);
+    opacity: 0;
+}
+
+.loading-poem.slide-in-prep {
+    transform: translateY(10px);
+    opacity: 0;
+    transition: none;
+}
+
 /* ============================================================================
    Setup Panel
    ============================================================================ */
@@ -508,6 +532,39 @@ h1 {
 
 .credit a:hover {
     color: #333;
+}
+
+/* Language Switcher */
+.lang-switch {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    font-size: 0.85em;
+    color: #666;
+}
+
+.lang-btn {
+    background: none;
+    border: none;
+    font-size: inherit;
+    color: #666;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.2s ease;
+}
+
+.lang-btn:hover {
+    color: #333;
+}
+
+.lang-btn.active {
+    color: #666;
+    text-decoration: underline;
+}
+
+.lang-sep {
+    color: #ccc;
+    margin: 0 4px;
 }
 
 /* Privacy Note */

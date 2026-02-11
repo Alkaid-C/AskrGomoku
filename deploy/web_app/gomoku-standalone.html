@@ -60,6 +60,30 @@ h1 {
     color: #999;
 }
 
+.loading-poem-container {
+    margin-top: 20px;
+    min-height: 3em;
+}
+
+.loading-poem {
+    font-style: italic;
+    color: #999;
+    font-size: 0.85em;
+    line-height: 1.4;
+    transition: transform 0.5s ease, opacity 0.5s ease;
+}
+
+.loading-poem.slide-out {
+    transform: translateY(-10px);
+    opacity: 0;
+}
+
+.loading-poem.slide-in-prep {
+    transform: translateY(10px);
+    opacity: 0;
+    transition: none;
+}
+
 /* ============================================================================
    Setup Panel
    ============================================================================ */
@@ -517,6 +541,39 @@ h1 {
     color: #333;
 }
 
+/* Language Switcher */
+.lang-switch {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    font-size: 0.85em;
+    color: #666;
+}
+
+.lang-btn {
+    background: none;
+    border: none;
+    font-size: inherit;
+    color: #666;
+    cursor: pointer;
+    padding: 0;
+    transition: color 0.2s ease;
+}
+
+.lang-btn:hover {
+    color: #333;
+}
+
+.lang-btn.active {
+    color: #666;
+    text-decoration: underline;
+}
+
+.lang-sep {
+    color: #ccc;
+    margin: 0 4px;
+}
+
 /* Privacy Note */
 .privacy-note {
     font-size: 0.75em;
@@ -615,7 +672,7 @@ h1 {
 <body>
     <!-- Loading Screen -->
     <div id="loading-screen" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
         <div class="loading-orbit">
             <svg width="200" height="200" viewBox="0 0 200 200">
                 <!-- 线条容器 (will be populated by JavaScript) -->
@@ -659,53 +716,56 @@ h1 {
                 </defs>
             </svg>
         </div>
-        <p id="loading-message">正在加载模型...</p>
+        <p id="loading-message" data-i18n="loading_model">正在加载模型...</p>
+        <div class="loading-poem-container">
+            <div id="loading-poem" class="loading-poem"></div>
+        </div>
     </div>
 
     <!-- Setup Panel -->
     <div id="setup-panel" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
         <div class="setup-content">
-            <label>你的执子：</label>
+            <label data-i18n="your_pieces">你的执子：</label>
             <div class="button-group">
-                <button id="btn-black" class="btn-color active" data-color="1">⚫ 黑棋（先手）</button>
-                <button id="btn-white" class="btn-color" data-color="2">⚪ 白棋（后手）</button>
+                <button id="btn-black" class="btn-color active" data-color="1" data-i18n="black_first">⚫ 黑棋（先手）</button>
+                <button id="btn-white" class="btn-color" data-color="2" data-i18n="white_second">⚪ 白棋（后手）</button>
             </div>
 
-            <label>你的对手：</label>
+            <label data-i18n="your_opponent">你的对手：</label>
             <div class="difficulty-group">
                 <button class="btn-difficulty" data-difficulty="junior">
-                    <div class="difficulty-name">Vibe</div>
-                    <div class="difficulty-info">初级</div>
-                    <div class="difficulty-info">经典模型架构</div>
+                    <div class="difficulty-name">Dial</div>
+                    <div class="difficulty-info" data-i18n="junior">初级</div>
+                    <div class="difficulty-info" data-i18n="classic_arch">经典模型架构</div>
                 </button>
                 <button class="btn-difficulty active" data-difficulty="intermediate">
-                    <div class="difficulty-name">Mood</div>
-                    <div class="difficulty-info">中级</div>
-                    <div class="difficulty-info">高级模型架构</div>
+                    <div class="difficulty-name">Cello</div>
+                    <div class="difficulty-info" data-i18n="intermediate">中级</div>
+                    <div class="difficulty-info" data-i18n="advanced_arch">高级模型架构</div>
                 </button>
                 <button class="btn-difficulty" data-difficulty="advanced">
                     <div class="difficulty-name">Melody</div>
-                    <div class="difficulty-info">高级</div>
-                    <div class="difficulty-info">深度思考</div>
+                    <div class="difficulty-info" data-i18n="advanced">高级</div>
+                    <div class="difficulty-info" data-i18n="deep_think_desc">深度思考</div>
                 </button>
             </div>
 
-            <button id="btn-start" class="btn-primary">开始游戏</button>
-            <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+            <button id="btn-start" class="btn-primary" data-i18n="start_game">开始游戏</button>
+            <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
         </div>
     </div>
 
     <!-- Game Panel -->
     <div id="game-panel" style="display: none;">
-        <h1>Askr五子棋</h1>
+        <h1 data-i18n="title">Askr五子棋</h1>
 
         <!-- Top Controls -->
         <div class="top-controls">
-            <button id="btn-undo" class="btn-control">悔棋</button>
+            <button id="btn-undo" class="btn-control" data-i18n="undo">悔棋</button>
             <span id="end-stat-left" class="end-stat"></span>
-            <div id="status-text">你的回合</div>
-            <button id="btn-restart" class="btn-control">新游戏</button>
+            <div id="status-text" data-i18n="your_turn">你的回合</div>
+            <button id="btn-restart" class="btn-control" data-i18n="new_game">新游戏</button>
             <span id="end-stat-right" class="end-stat"></span>
         </div>
 
@@ -716,27 +776,27 @@ h1 {
 
         <!-- Move Confirmation -->
         <div id="move-confirm" class="move-confirm">
-            <button id="btn-confirm-move" class="btn-confirm">确认落子</button>
-            <button id="btn-cancel-move" class="btn-cancel">取消</button>
+            <button id="btn-confirm-move" class="btn-confirm" data-i18n="confirm_move">确认落子</button>
+            <button id="btn-cancel-move" class="btn-cancel" data-i18n="cancel">取消</button>
         </div>
 
         <!-- End Actions (replaces move-confirm when game ends) -->
         <div id="end-actions" class="end-actions" style="display: none;">
-            <button id="btn-end-new-game" class="btn-confirm">新游戏</button>
+            <button id="btn-end-new-game" class="btn-confirm" data-i18n="new_game">新游戏</button>
         </div>
 
-        <p class="privacy-note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
+        <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
     </div>
 
     <!-- Result Modal -->
     <div id="result-modal" class="modal" style="display: none;">
         <div class="modal-content">
-            <h2 id="result-title">游戏结束</h2>
+            <h2 id="result-title" data-i18n="game_over">游戏结束</h2>
             <p id="result-message"></p>
             <div id="result-stats" class="result-stats"></div>
-            <button id="btn-share" class="btn-share">生成棋谱</button>
-            <button id="btn-play-again" class="btn-primary">再玩一局</button>
-            <button id="btn-new-setup" class="btn-secondary">新设置</button>
+            <button id="btn-share" class="btn-share" data-i18n="generate_record">生成棋谱</button>
+            <button id="btn-play-again" class="btn-primary" data-i18n="play_again">再玩一局</button>
+            <button id="btn-new-setup" class="btn-secondary" data-i18n="new_setup">新设置</button>
         </div>
     </div>
 
@@ -744,7 +804,7 @@ h1 {
     <div id="record-screen" class="record-screen" style="display: none;">
         <button id="btn-record-close" class="btn-record-close">&times;</button>
         <div id="record-content" class="record-content">
-            <div class="record-title">Askr五子棋</div>
+            <div class="record-title" data-i18n="record_title">Askr五子棋</div>
             <div class="record-info">
                 <div class="record-info-row">
                     <span id="record-black"></span>
@@ -762,6 +822,13 @@ h1 {
         </div>
     </div>
 
+    <!-- Language Switcher -->
+    <div class="lang-switch">
+        <button class="lang-btn active" data-lang="zh">中文</button>
+        <span class="lang-sep">|</span>
+        <button class="lang-btn" data-lang="en">English</button>
+    </div>
+
     <!-- Credit -->
     <div class="credit">
         Credit: @Alkaid C.
@@ -771,6 +838,168 @@ h1 {
 
     <!-- ONNX Runtime Web (CDN) -->
     <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.18.0/dist/ort.min.js"></script>
+
+    <!-- i18n (must load before other modules) -->
+    <script>
+/**
+ * Internationalization (i18n) Module
+ *
+ * Manages translations and language switching for the Gomoku web app.
+ */
+
+const I18N = {
+    zh: {
+        title: 'Askr\u4e94\u5b50\u68cb',
+        loading_model: '\u6b63\u5728\u52a0\u8f7d\u6a21\u578b...',
+        your_pieces: '\u4f60\u7684\u6267\u5b50\uff1a',
+        black_first: '\u26ab \u9ed1\u68cb\uff08\u5148\u624b\uff09',
+        white_second: '\u26aa \u767d\u68cb\uff08\u540e\u624b\uff09',
+        your_opponent: '\u4f60\u7684\u5bf9\u624b\uff1a',
+        junior: '\u521d\u7ea7',
+        classic_arch: '\u7ecf\u5178\u6a21\u578b\u67b6\u6784',
+        intermediate: '\u4e2d\u7ea7',
+        advanced_arch: '\u9ad8\u7ea7\u6a21\u578b\u67b6\u6784',
+        advanced: '\u9ad8\u7ea7',
+        deep_think_desc: '\u6df1\u5ea6\u601d\u8003',
+        start_game: '\u5f00\u59cb\u6e38\u620f',
+        privacy_note: '\u6240\u6709\u8fd0\u7b97\u5747\u5728\u672c\u5730\u5b8c\u6210\uff0c\u6211\u4eec\u4e0d\u4f1a\u6536\u96c6\u4efb\u4f55\u4f7f\u7528\u6570\u636e\u3002',
+        undo: '\u608d\u68cb',
+        your_turn: '\u4f60\u7684\u56de\u5408',
+        new_game: '\u65b0\u6e38\u620f',
+        confirm_move: '\u786e\u8ba4\u843d\u5b50',
+        cancel: '\u53d6\u6d88',
+        game_over: '\u6e38\u620f\u7ed3\u675f',
+        generate_record: '\u751f\u6210\u68cb\u8c31',
+        play_again: '\u518d\u73a9\u4e00\u5c40',
+        new_setup: '\u65b0\u8bbe\u7f6e',
+        you_won: '\u4f60\u8d62\u4e86\uff01',
+        you_lost: '\u4f60\u8f93\u4e86\uff01',
+        draw: '\u5e73\u5c40',
+        ai_thinking: 'AI\u601d\u8003\u4e2d...',
+        deep_thinking: '\u6df1\u5ea6\u601d\u8003\u4e2d...',
+        ai_error: 'AI\u51fa\u9519\uff0c\u8bf7\u91cd\u65b0\u5f00\u59cb',
+        model_load_failed: '\u52a0\u8f7d\u6a21\u578b\u5931\u8d25\uff0c\u8bf7\u5237\u65b0\u9875\u9762\u91cd\u8bd5\u3002',
+        player: '\u73a9\u5bb6',
+        move_unit: '\u624b',
+        sec_per_move: 's/\u624b',
+        undo_label: '\u608d\u68cb',
+        times: '\u6b21',
+        black_label: '\u9ed1\u68cb\uff1a',
+        white_label: '\u767d\u68cb\uff1a',
+        undo_count: '\u608d\u68cb\u6b21\u6570\uff1a',
+        game_length: '\u68cb\u5c40\u957f\u5ea6\uff1a',
+        record_title: 'Askr\u4e94\u5b50\u68cb'
+    },
+    en: {
+        title: 'Askr Gomoku',
+        loading_model: 'Loading model...',
+        your_pieces: 'Your color:',
+        black_first: '\u26ab Black (first)',
+        white_second: '\u26aa White (second)',
+        your_opponent: 'Your opponent:',
+        junior: 'Easy',
+        classic_arch: 'Classic model',
+        intermediate: 'Medium',
+        advanced_arch: 'Advanced model',
+        advanced: 'Hard',
+        deep_think_desc: 'Deep thinking',
+        start_game: 'Start Game',
+        privacy_note: 'All computation is done locally. We do not collect any data.',
+        undo: 'Undo',
+        your_turn: 'Your turn',
+        new_game: 'New Game',
+        confirm_move: 'Confirm',
+        cancel: 'Cancel',
+        game_over: 'Game Over',
+        generate_record: 'Game Record',
+        play_again: 'Play Again',
+        new_setup: 'New Setup',
+        you_won: 'You won!',
+        you_lost: 'You lost!',
+        draw: 'Draw',
+        ai_thinking: 'AI thinking...',
+        deep_thinking: 'Deep thinking...',
+        ai_error: 'AI error, please restart',
+        model_load_failed: 'Failed to load model. Please refresh and try again.',
+        player: 'Player',
+        move_unit: ' moves',
+        sec_per_move: 's/move',
+        undo_label: 'Undo',
+        times: 'x',
+        black_label: 'Black: ',
+        white_label: 'White: ',
+        undo_count: 'Undos: ',
+        game_length: 'Game length: ',
+        record_title: 'Askr Gomoku'
+    }
+};
+
+let currentLang = 'zh';
+
+/**
+ * Get translated string by key.
+ * @param {string} key - Translation key
+ * @returns {string} Translated string
+ */
+function t(key) {
+    return (I18N[currentLang] && I18N[currentLang][key]) || (I18N.zh[key]) || key;
+}
+
+/**
+ * Apply translations to all elements with data-i18n attributes.
+ */
+function applyTranslations() {
+    document.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n');
+        el.textContent = t(key);
+    });
+    document.documentElement.lang = currentLang === 'zh' ? 'zh-CN' : 'en';
+    document.title = t('title');
+}
+
+/**
+ * Set language and update all UI text.
+ * @param {string} lang - Language code ('zh' or 'en')
+ */
+function setLang(lang) {
+    currentLang = lang;
+    localStorage.setItem('gomoku-lang', lang);
+
+    // Update switcher button states
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.getAttribute('data-lang') === lang);
+    });
+
+    applyTranslations();
+}
+
+/**
+ * Initialize i18n: detect language from localStorage or browser.
+ */
+function initI18n() {
+    const saved = localStorage.getItem('gomoku-lang');
+    if (saved && I18N[saved]) {
+        currentLang = saved;
+    } else {
+        const browserLang = (navigator.language || navigator.userLanguage || 'zh').toLowerCase();
+        currentLang = browserLang.startsWith('zh') ? 'zh' : 'en';
+    }
+
+    // Set up language switcher click handlers
+    document.querySelectorAll('.lang-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            setLang(btn.getAttribute('data-lang'));
+        });
+    });
+
+    // Apply initial language
+    setLang(currentLang);
+}
+
+// Initialize when DOM is ready
+initI18n();
+
+    </script>
 
     <!-- Game modules -->
     <script>
@@ -1322,28 +1551,13 @@ class ModelManager {
     constructor() {
         this.models = {
             junior: {
-                path: 'models/easy.onnx',
-                size: '~14 MB',
-                description: '初级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度1.0)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/dial.onnx',
             },
             intermediate: {
-                path: 'models/mid.onnx',
-                size: '~14 MB',
-                description: '中级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度0.5)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/cello.onnx',
             },
             advanced: {
-                path: 'models/hard.onnx',
-                size: '~14 MB',
-                description: '高级',
-                params: '355万参数',
-                training: '20480轮对弈 (温度0.2)',
-                sizeBytes: 14 * 1024 * 1024
+                path: 'models/melody.onnx',
             }
         };
 
@@ -1414,7 +1628,8 @@ const gameState = {
     playerMoveCount: 0,  // Number of player moves
     aiTotalTime: 0,      // Total AI thinking time in ms
     aiMoveCount: 0,      // Number of AI moves
-    playerTurnStart: 0   // Timestamp when player's turn started
+    playerTurnStart: 0,  // Timestamp when player's turn started
+    hasLoadedModel: false // Whether a model has been loaded this session
 };
 
 // ============================================================================
@@ -1527,15 +1742,29 @@ async function startGame() {
     setupPanel.style.display = 'none';
     loadingScreen.style.display = 'block';
 
-    // Start orbital animation
+    // Start animations
     startOrbitAnimation();
+    startPoemRotation();
+
+    const loadStartTime = performance.now();
+    const isFirstLoad = !gameState.hasLoadedModel;
 
     try {
         // Load model
         gameState.aiPlayer = await gameState.modelManager.loadSelectedModel();
 
-        // Stop orbital animation
+        // Enforce minimum 3s loading screen on first load
+        if (isFirstLoad) {
+            const elapsed = performance.now() - loadStartTime;
+            if (elapsed < 3000) {
+                await new Promise(resolve => setTimeout(resolve, 3000 - elapsed));
+            }
+            gameState.hasLoadedModel = true;
+        }
+
+        // Stop animations
         stopOrbitAnimation();
+        stopPoemRotation();
 
         // Initialize board
         gameState.board = new GomokuBoard();
@@ -1566,12 +1795,14 @@ async function startGame() {
             await makeAIMove();
         } else {
             gameState.playerTurnStart = performance.now();
-            updateStatus('你的回合');
+            updateStatus(t('your_turn'));
         }
 
     } catch (error) {
         console.error('Failed to start game:', error);
-        alert('加载模型失败,请刷新页面重试。');
+        stopOrbitAnimation();
+        stopPoemRotation();
+        alert(t('model_load_failed'));
         loadingScreen.style.display = 'none';
         setupPanel.style.display = 'block';
     }
@@ -1615,7 +1846,7 @@ function playAgain() {
         makeAIMove();
     } else {
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
     }
 }
 
@@ -1764,9 +1995,9 @@ async function makeAIMove() {
     const useNegamax = gameState.modelManager.selectedModel === 'advanced';
 
     if (useNegamax) {
-        updateStatus('深度思考中...');
+        updateStatus(t('deep_thinking'));
     } else {
-        updateStatus('AI思考中...');
+        updateStatus(t('ai_thinking'));
     }
 
     try {
@@ -1819,12 +2050,12 @@ async function makeAIMove() {
 
         // Player's turn
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
 
     } catch (error) {
         console.error('AI move failed:', error);
         gameState.isAIThinking = false;
-        updateStatus('AI出错,请重新开始');
+        updateStatus(t('ai_error'));
     }
 }
 
@@ -1870,9 +2101,9 @@ function undoMove() {
     drawBoard();
     if (gameState.board.whoToPlay === gameState.playerColor) {
         gameState.playerTurnStart = performance.now();
-        updateStatus('你的回合');
+        updateStatus(t('your_turn'));
     } else {
-        updateStatus('AI思考中...');
+        updateStatus(t('ai_thinking'));
         makeAIMove();
     }
 }
@@ -1885,13 +2116,13 @@ function handleGameEnd(result) {
     gameState.gameOver = true;
 
     // Determine result title
-    let title = '游戏结束';
+    let title = t('game_over');
     if (result === GameState.BLACK_WIN) {
-        title = gameState.playerColor === Player.BLACK ? '你赢了！' : '你输了！';
+        title = gameState.playerColor === Player.BLACK ? t('you_won') : t('you_lost');
     } else if (result === GameState.WHITE_WIN) {
-        title = gameState.playerColor === Player.WHITE ? '你赢了！' : '你输了！';
+        title = gameState.playerColor === Player.WHITE ? t('you_won') : t('you_lost');
     } else if (result === GameState.DRAW) {
-        title = '平局';
+        title = t('draw');
     }
 
     // Player info
@@ -1905,20 +2136,20 @@ function handleGameEnd(result) {
         ? (gameState.playerTotalTime / gameState.playerMoveCount / 1000).toFixed(2) : '0.00';
     const aiAvg = gameState.aiMoveCount > 0
         ? (gameState.aiTotalTime / gameState.aiMoveCount / 1000).toFixed(2) : '0.00';
-    const playerTimeStr = ' <span class="time-per-move">(' + playerAvg + 's/手)</span>';
-    const aiTimeStr = ' <span class="time-per-move">(' + aiAvg + 's/手)</span>';
+    const playerTimeStr = ' <span class="time-per-move">(' + playerAvg + t('sec_per_move') + ')</span>';
+    const aiTimeStr = ' <span class="time-per-move">(' + aiAvg + t('sec_per_move') + ')</span>';
 
     const blackIsPlayer = gameState.playerColor === Player.BLACK;
-    const blackLabel = blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
-    const whiteLabel = !blackIsPlayer ? '玩家' + playerTimeStr : fullAiName + aiTimeStr;
+    const blackLabel = blackIsPlayer ? t('player') + playerTimeStr : fullAiName + aiTimeStr;
+    const whiteLabel = !blackIsPlayer ? t('player') + playerTimeStr : fullAiName + aiTimeStr;
 
     // Stats
     const gameLength = gameState.history.length;
     const userWon = (result === GameState.BLACK_WIN && gameState.playerColor === Player.BLACK) ||
                     (result === GameState.WHITE_WIN && gameState.playerColor === Player.WHITE);
-    let rightHtml = gameLength + '手';
+    let rightHtml = gameLength + t('move_unit');
     if (gameState.undoCount > 0 && userWon) {
-        rightHtml += '<br>悔棋' + gameState.undoCount + '次';
+        rightHtml += '<br>' + t('undo_label') + gameState.undoCount + t('times');
     }
 
     // Replace top-controls content in-place: hide buttons, show stats
@@ -2220,6 +2451,66 @@ function updateStatus(text) {
 // Orbital Loading Animation
 // ============================================================================
 
+// ============================================================================
+// Loading Poem Rotation
+// ============================================================================
+
+const poemLines = [
+    'Midway through, a haunted computer types its own questions:',
+    '\u201CWould you like to meet a ghost?\u201D',
+    '\u201CDo you live to shovel sand or shovel sand to live?\u201D',
+    'It\u2019s the best part of the movie,',
+    'I think you\u2019d like it.',
+    'There\u2019s this melody one character hears after',
+    'in his head\u2014it is the answer, we discover, to everything',
+    'not yet asked; a sort of dial tone',
+    'overtakes you with dread while you\u2019re watching',
+    'him listen to a wind-blown curtain swell',
+    'into a cello or a pear-shaped person, illegibility\u2019s the point',
+    'and also the mood. Or is it a vibe? I think moods',
+    'are for people with choices',
+    'and children\u2014',
+    'Anyway the room\u2019s crummy,',
+    'how was karaoke?',
+    'Will you call again later and sing it for me?'
+];
+
+let poemInterval = null;
+let poemIndex = 0;
+
+function startPoemRotation() {
+    const el = document.getElementById('loading-poem');
+    poemIndex = Math.floor(Math.random() * poemLines.length);
+    el.textContent = poemLines[poemIndex];
+    el.className = 'loading-poem';
+
+    poemInterval = setInterval(() => {
+        el.classList.add('slide-out');
+
+        setTimeout(() => {
+            poemIndex = (poemIndex + 1) % poemLines.length;
+            el.classList.remove('slide-out');
+            el.classList.add('slide-in-prep');
+            el.textContent = poemLines[poemIndex];
+
+            // Force reflow then slide in
+            el.offsetHeight;
+            el.classList.remove('slide-in-prep');
+        }, 500);
+    }, 2000);
+}
+
+function stopPoemRotation() {
+    if (poemInterval) {
+        clearInterval(poemInterval);
+        poemInterval = null;
+    }
+}
+
+// ============================================================================
+// Orbital Loading Animation
+// ============================================================================
+
 let orbitAnimationRunning = false;
 let orbitAnimationFrame = null;
 let orbitLines = [];
@@ -2313,7 +2604,7 @@ function getPlanetPosition(planet) {
 // Record Screen (numbered board for screenshots)
 // ============================================================================
 
-const AI_DISPLAY_NAMES = { junior: 'Vibe', intermediate: 'Mood', advanced: 'Melody' };
+const AI_DISPLAY_NAMES = { junior: 'Dial', intermediate: 'Cello', advanced: 'Melody' };
 
 /**
  * Show the record screen with a numbered board.
@@ -2322,22 +2613,22 @@ function showRecordScreen() {
     const aiName = AI_DISPLAY_NAMES[gameState.modelManager.selectedModel] || 'AI';
 
     // Populate player labels
-    const blackLabel = gameState.playerColor === Player.BLACK ? '\u73a9\u5bb6' : aiName;
-    const whiteLabel = gameState.playerColor === Player.WHITE ? '\u73a9\u5bb6' : aiName;
+    const blackLabel = gameState.playerColor === Player.BLACK ? t('player') : aiName;
+    const whiteLabel = gameState.playerColor === Player.WHITE ? t('player') : aiName;
     const blackDot = '<span class="record-piece record-piece-black"></span>';
     const whiteDot = '<span class="record-piece record-piece-white"></span>';
-    document.getElementById('record-black').innerHTML = blackDot + ' \u9ed1\u68cb\uff1a' + blackLabel;
-    document.getElementById('record-white').innerHTML = whiteDot + ' \u767d\u68cb\uff1a' + whiteLabel;
+    document.getElementById('record-black').innerHTML = blackDot + ' ' + t('black_label') + blackLabel;
+    document.getElementById('record-white').innerHTML = whiteDot + ' ' + t('white_label') + whiteLabel;
 
     // Regret (only if > 0)
     if (gameState.undoCount > 0) {
-        document.getElementById('record-regret').textContent = '\u608d\u68cb\u6b21\u6570\uff1a' + gameState.undoCount;
+        document.getElementById('record-regret').textContent = t('undo_count') + gameState.undoCount;
     } else {
         document.getElementById('record-regret').textContent = '';
     }
 
     // Game length
-    document.getElementById('record-length').textContent = '\u68cb\u5c40\u957f\u5ea6\uff1a' + gameState.history.length;
+    document.getElementById('record-length').textContent = t('game_length') + gameState.history.length;
 
     document.getElementById('record-screen').style.display = 'flex';
     drawRecordBoard();
