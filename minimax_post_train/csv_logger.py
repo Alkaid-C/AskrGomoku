@@ -83,10 +83,10 @@ class CSVLogger:
                     'update',
                     'overall_cos_sim', 'overall_policy_norm', 'overall_value_norm',
                     'stem_cos_sim', 'stem_policy_norm', 'stem_value_norm',
-                    'blocks_0_3_cos_sim', 'blocks_0_3_policy_norm', 'blocks_0_3_value_norm',
-                    'blocks_4_7_cos_sim', 'blocks_4_7_policy_norm', 'blocks_4_7_value_norm',
-                    'blocks_8_11_cos_sim', 'blocks_8_11_policy_norm', 'blocks_8_11_value_norm',
-                    'blocks_12_15_cos_sim', 'blocks_12_15_policy_norm', 'blocks_12_15_value_norm'
+                    'shared_0_3_cos_sim', 'shared_0_3_policy_norm', 'shared_0_3_value_norm',
+                    'shared_4_7_cos_sim', 'shared_4_7_policy_norm', 'shared_4_7_value_norm',
+                    'shared_8_11_cos_sim', 'shared_8_11_policy_norm', 'shared_8_11_value_norm',
+                    'dual_se_0_5_cos_sim', 'dual_se_0_5_policy_norm', 'dual_se_0_5_value_norm'
                 ])
 
     def _init_tactical_probe_csv(self):
@@ -157,10 +157,10 @@ class CSVLogger:
                 update,
                 metrics['overall_cos_sim'], metrics['overall_policy_norm'], metrics['overall_value_norm'],
                 metrics['stem_cos_sim'], metrics['stem_policy_norm'], metrics['stem_value_norm'],
-                metrics['blocks_0_3_cos_sim'], metrics['blocks_0_3_policy_norm'], metrics['blocks_0_3_value_norm'],
-                metrics['blocks_4_7_cos_sim'], metrics['blocks_4_7_policy_norm'], metrics['blocks_4_7_value_norm'],
-                metrics['blocks_8_11_cos_sim'], metrics['blocks_8_11_policy_norm'], metrics['blocks_8_11_value_norm'],
-                metrics['blocks_12_15_cos_sim'], metrics['blocks_12_15_policy_norm'], metrics['blocks_12_15_value_norm']
+                metrics['shared_0_3_cos_sim'], metrics['shared_0_3_policy_norm'], metrics['shared_0_3_value_norm'],
+                metrics['shared_4_7_cos_sim'], metrics['shared_4_7_policy_norm'], metrics['shared_4_7_value_norm'],
+                metrics['shared_8_11_cos_sim'], metrics['shared_8_11_policy_norm'], metrics['shared_8_11_value_norm'],
+                metrics['dual_se_0_5_cos_sim'], metrics['dual_se_0_5_policy_norm'], metrics['dual_se_0_5_value_norm']
             ])
 
     def log_tactical_probe(self, update: int, metrics: dict):

@@ -27,7 +27,7 @@ from model import GomokuPolicyNet, N_BLOCKS, zero_center_taps, WIDTH
 from model import (
     STEM_3X3_CHANNELS, STEM_DIRECTIONAL_5X5_CHANNELS, STEM_FULL_5X5_CHANNELS,
     STEM_DIRECTIONAL_7X7_CHANNELS, STEM_FULL_7X7_CHANNELS,
-    TRUNK_DILATION2_SCHEDULE, SE_SCHEDULE,
+    TRUNK_DILATION2_SCHEDULE, N_SHARED_BLOCKS, N_DUAL_SE_BLOCKS,
     POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN
 )
 from gomoku import (
@@ -154,7 +154,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     # Let load errors propagate - corrupted checkpoint should crash
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
-    model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+    model = GomokuPolicyNet().to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.train()
     zero_center_taps(model)
@@ -185,7 +185,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
         # Let load errors propagate - corrupted opponent checkpoint should crash
         pool_checkpoint = torch.load(pool_checkpoint_path, map_location=device, weights_only=False)
-        pool_model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+        pool_model = GomokuPolicyNet().to(device)
         pool_model.load_state_dict(pool_checkpoint['model_state_dict'])
         pool_model.eval()
         opponent_pool.append(pool_model)
@@ -239,9 +239,9 @@ def main():
     print(f"    - 5x5 directional (d1+d2): {STEM_DIRECTIONAL_5X5_CHANNELS}ch, 5x5 full: {STEM_FULL_5X5_CHANNELS}ch")
     print(f"    - 7x7 directional (d1+d2+d3): {STEM_DIRECTIONAL_7X7_CHANNELS}ch, 7x7 full: {STEM_FULL_7X7_CHANNELS}ch")
     print(f"    - Total: {WIDTH} channels (center taps zeroed for d>1)")
-    print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels")
+    print(f"  Residual blocks: {N_BLOCKS} total ({N_SHARED_BLOCKS} shared + {N_DUAL_SE_BLOCKS} dual-SE) x {WIDTH} channels")
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
-    print(f"    - SE schedule: {SE_SCHEDULE} ({sum(SE_SCHEDULE)} blocks with SE)")
+    print(f"    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
     print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (+SiLU) -> 225")
     print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
     num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
@@ -256,7 +256,7 @@ def main():
     print(f"  Loss weights: ranking margin={M_RANK}, separation margin={M_SEP}, alpha_sep={ALPHA_SEP}, lambda_v={LAMBDA_V}")
     print(f"  Progressive unfreezing:")
     print(f"    - Heads only: updates [0, {HEADS_ONLY_UPDATES})")
-    print(f"    - Unfreeze blocks: every {BLOCK_UNFREEZE_INTERVAL} updates (15→0)")
+    print(f"    - Unfreeze blocks: every {BLOCK_UNFREEZE_INTERVAL} updates (from trunk end toward stem)")
     print(f"    - Stem unfreezes after all blocks")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
     print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
@@ -293,7 +293,7 @@ def main():
 
         start_update = -1
 
-        current_policy = GomokuPolicyNet(n_blocks=N_BLOCKS).to(DEVICE)
+        current_policy = GomokuPolicyNet().to(DEVICE)
         current_policy.train()
         zero_center_taps(current_policy)
 

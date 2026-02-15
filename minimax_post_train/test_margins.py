@@ -12,7 +12,7 @@ import torch
 import numpy as np
 import random
 from typing import List, Tuple
-from model import GomokuPolicyNet, N_BLOCKS
+from model import GomokuPolicyNet
 from gomoku import (
     GomokuBoard, encode_observation, idx_to_pos,
     get_local_candidate_moves, LOGIT_MASK_VALUE
@@ -45,7 +45,7 @@ def generate_test_positions(model, device: torch.device, num_games: int = 10) ->
             # Make a move
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-                logits_grid, _ = model(obs_tensor)
+                logits_grid = model.forward_policy_only(obs_tensor)
                 logits = logits_grid.squeeze()
 
                 # Mask illegal moves
@@ -83,7 +83,7 @@ def analyze_position(model, device: torch.device, obs: np.ndarray, legal_mask: n
 
     with torch.no_grad():
         obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze()
 
         # Get flat logits for legal moves
@@ -253,7 +253,7 @@ def main():
     checkpoint_path = 'rl.pt'
     print(f"Loading checkpoint: {checkpoint_path}")
 
-    model = GomokuPolicyNet(N_BLOCKS).to(device)
+    model = GomokuPolicyNet().to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()

@@ -15,7 +15,7 @@ from torch.distributions import Categorical
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 
-from model import N_BLOCKS
+from model import N_BLOCKS, N_SHARED_BLOCKS
 from gomoku import (
     Trajectory,
     obs_batch_to_tensor, mask_batch_to_tensor,
@@ -193,12 +193,12 @@ def probe_gradient_conflict_chunked(
         weights = weights_chunks[i]
         next_values = next_values_chunks[i]
 
-        _, values = model(obs)
+        values = model.forward_value_only(obs)
         values = values.squeeze(1)
 
         if next_values is None:
             with torch.no_grad():
-                _, next_values_computed = model(next_obs)
+                next_values_computed = model.forward_value_only(next_obs)
             next_values = next_values_computed.squeeze(1)
 
         effective_value_targets = torch.where(
@@ -246,7 +246,10 @@ def probe_gradient_conflict_chunked(
 
     # Categorize parameters
     stem_params = []
-    trunk_params = {f'blocks_{i}-{i+3}': [] for i in range(0, N_BLOCKS, 4)}
+    trunk_params = {
+        'shared_0-3': [], 'shared_4-7': [], 'shared_8-11': [],
+        'dual_se_0-5': [],
+    }
     all_trunk_stem_params = []
 
     for name in policy_grads.keys():
@@ -255,11 +258,14 @@ def probe_gradient_conflict_chunked(
                                      'stem_norm']):
             stem_params.append(name)
             all_trunk_stem_params.append(name)
-        elif 'blocks.' in name:
-            block_idx = int(name.split('blocks.')[1].split('.')[0])
+        elif 'shared_blocks.' in name:
+            block_idx = int(name.split('shared_blocks.')[1].split('.')[0])
             layer_start = (block_idx // 4) * 4
-            layer_key = f'blocks_{layer_start}-{layer_start+3}'
+            layer_key = f'shared_{layer_start}-{layer_start+3}'
             trunk_params[layer_key].append(name)
+            all_trunk_stem_params.append(name)
+        elif 'dual_se_blocks.' in name:
+            trunk_params['dual_se_0-5'].append(name)
             all_trunk_stem_params.append(name)
 
     # Compute cosine similarities
@@ -287,7 +293,7 @@ def probe_gradient_conflict_chunked(
         'stem_value_norm': stem_norm_v,
     }
 
-    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15']:
+    for layer_key in ['shared_0-3', 'shared_4-7', 'shared_8-11', 'dual_se_0-5']:
         cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
         prefix = layer_key.replace('-', '_')
         metrics[f'{prefix}_cos_sim'] = cos
@@ -394,7 +400,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     if use_value_baseline and GAE_LAMBDA < 1.0:
         # Compute base GAE advantages using 8-fold averaged values
         with torch.no_grad():
-            _, aug_values_all = model(aug_obs)  # [B*8, 1]
+            aug_values_all = model.forward_value_only(aug_obs)  # [B*8, 1]
 
         aug_values_all = aug_values_all.squeeze(1)  # [B*8]
 
@@ -446,7 +452,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         # Also average next_values for consistent TD targets
         with torch.no_grad():
-            aug_next_values_all = model(aug_next_obs)[1].squeeze(1)  # [B*8]
+            aug_next_values_all = model.forward_value_only(aug_next_obs).squeeze(1)  # [B*8]
         next_values_per_aug = aug_next_values_all.view(8, B)
         avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
         aug_next_values_averaged = avg_next_values.repeat(8)
@@ -533,7 +539,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 probe_next_values_chunks.append(next_values.detach())
         else:
             with torch.no_grad():
-                _, next_values = model(batch_next_obs)
+                next_values = model.forward_value_only(batch_next_obs)
             next_values = next_values.squeeze(1)
             if should_probe:
                 probe_next_values_chunks.append(None)  # Will be computed in probe
@@ -745,9 +751,8 @@ def get_unfrozen_param_groups(model: nn.Module, update: int) -> Tuple[List[str],
 
     Unfreezing schedule:
     - [0, N): Only policy_* and value_* trainable
-    - [N, N+M): + blocks[15] (last block)
-    - [N+M, N+2M): + blocks[14]
-    - ...continue for all 16 blocks (15 down to 0)
+    - Then unfreeze trunk from the end:
+      dual_se_blocks[5] -> ... -> dual_se_blocks[0] -> shared_blocks[11] -> ... -> shared_blocks[0]
     - After all blocks unfrozen: + stem
 
     Args:
@@ -769,10 +774,14 @@ def get_unfrozen_param_groups(model: nn.Module, update: int) -> Tuple[List[str],
     updates_after_heads = update - HEADS_ONLY_UPDATES
     blocks_to_unfreeze = min(N_BLOCKS, 1 + updates_after_heads // BLOCK_UNFREEZE_INTERVAL)
 
-    # Unfreeze blocks from the end (block 15 first, then 14, etc.)
+    # Unfreeze blocks from the end (dual_se last block first, then backwards).
     for i in range(blocks_to_unfreeze):
         block_idx = N_BLOCKS - 1 - i
-        unfrozen_prefixes.append(f'blocks.{block_idx}.')
+        if block_idx >= N_SHARED_BLOCKS:
+            dual_idx = block_idx - N_SHARED_BLOCKS
+            unfrozen_prefixes.append(f'dual_se_blocks.{dual_idx}.')
+        else:
+            unfrozen_prefixes.append(f'shared_blocks.{block_idx}.')
     unfrozen_blocks = blocks_to_unfreeze
 
     # After all blocks unfrozen, unfreeze stem

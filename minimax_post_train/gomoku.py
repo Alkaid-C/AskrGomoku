@@ -400,7 +400,7 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(1)
 
         logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
@@ -438,7 +438,7 @@ def select_action_batch_eval(model: torch.nn.Module, obs_list: List[np.ndarray],
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(1)
         logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
 
@@ -939,7 +939,7 @@ def generate_candidates(obs: np.ndarray, legal_mask: np.ndarray,
     # Get policy logits
     with torch.no_grad():
         obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(device)
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(0).squeeze(0)  # [15, 15]
 
     # Mask illegal moves
@@ -1007,7 +1007,7 @@ def generate_candidates_batched(obs_batch: List[np.ndarray],
     # Batch forward pass for logits
     with torch.no_grad():
         obs_tensor = torch.from_numpy(np.stack(obs_batch)).float().to(device)
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(1)  # [B, 15, 15]
 
     mask_tensor = torch.from_numpy(np.stack(mask_batch)).bool().to(device)
@@ -1125,7 +1125,7 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
         if leaf_obs_list:
             with torch.no_grad():
                 obs_tensor = torch.from_numpy(np.stack(leaf_obs_list)).float().to(device)
-                _, values = current_model(obs_tensor)
+                values = current_model.forward_value_only(obs_tensor)
                 leaf_values = values.squeeze(-1).cpu().numpy()
         else:
             leaf_values = np.array([])
@@ -1279,7 +1279,7 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
     if leaf_obs_list:
         with torch.no_grad():
             obs_tensor = torch.from_numpy(np.stack(leaf_obs_list)).float().to(device)
-            _, values = current_model(obs_tensor)
+            values = current_model.forward_value_only(obs_tensor)
             leaf_values = values.squeeze(-1).cpu().numpy()
 
         # Assign values back
