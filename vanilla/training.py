@@ -235,7 +235,10 @@ def probe_gradient_conflict_chunked(
 
     # Categorize parameters
     stem_params = []
-    trunk_params = {f'blocks_{i}-{i+3}': [] for i in range(0, N_BLOCKS, 4)}
+    trunk_params = {
+        'blocks_0-2': [], 'blocks_3-5': [], 'blocks_6-8': [],
+        'blocks_9-11': [], 'blocks_12-14': [], 'blocks_15-17': [],
+    }
     all_trunk_stem_params = []
 
     for name in policy_grads.keys():
@@ -246,8 +249,8 @@ def probe_gradient_conflict_chunked(
             all_trunk_stem_params.append(name)
         elif 'blocks.' in name:
             block_idx = int(name.split('blocks.')[1].split('.')[0])
-            layer_start = (block_idx // 4) * 4
-            layer_key = f'blocks_{layer_start}-{layer_start+3}'
+            layer_start = (block_idx // 3) * 3
+            layer_key = f'blocks_{layer_start}-{layer_start+2}'
             trunk_params[layer_key].append(name)
             all_trunk_stem_params.append(name)
 
@@ -276,7 +279,7 @@ def probe_gradient_conflict_chunked(
         'stem_value_norm': stem_norm_v,
     }
 
-    for layer_key in ['blocks_0-3', 'blocks_4-7', 'blocks_8-11', 'blocks_12-15', 'blocks_16-19']:
+    for layer_key in ['blocks_0-2', 'blocks_3-5', 'blocks_6-8', 'blocks_9-11', 'blocks_12-14', 'blocks_15-17']:
         cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
         prefix = layer_key.replace('-', '_')
         metrics[f'{prefix}_cos_sim'] = cos

@@ -236,8 +236,8 @@ def probe_gradient_conflict_chunked(
     # Categorize parameters
     stem_params = []
     trunk_params = {
-        'shared_0-3': [], 'shared_4-7': [], 'shared_8-11': [],
-        'dual_se_0-5': [],
+        'shared_0-2': [], 'shared_3-5': [], 'shared_6-8': [], 'shared_9-11': [],
+        'dual_se_0-2': [], 'dual_se_3-5': [],
     }
     all_trunk_stem_params = []
 
@@ -249,12 +249,19 @@ def probe_gradient_conflict_chunked(
             all_trunk_stem_params.append(name)
         elif 'shared_blocks.' in name:
             block_idx = int(name.split('shared_blocks.')[1].split('.')[0])
-            layer_start = (block_idx // 4) * 4
-            layer_key = f'shared_{layer_start}-{layer_start+3}'
+            layer_start = (block_idx // 3) * 3
+            layer_key = f'shared_{layer_start}-{layer_start+2}'
             trunk_params[layer_key].append(name)
             all_trunk_stem_params.append(name)
         elif 'dual_se_blocks.' in name:
-            trunk_params['dual_se_0-5'].append(name)
+            # Skip head-specific SE params: se_policy only gets policy grads,
+            # se_value only gets value grads, so they'd bias cosine sim toward 0
+            if '.se_policy.' in name or '.se_value.' in name:
+                continue
+            block_idx = int(name.split('dual_se_blocks.')[1].split('.')[0])
+            layer_start = (block_idx // 3) * 3
+            layer_key = f'dual_se_{layer_start}-{layer_start+2}'
+            trunk_params[layer_key].append(name)
             all_trunk_stem_params.append(name)
 
     # Compute cosine similarities
@@ -282,7 +289,7 @@ def probe_gradient_conflict_chunked(
         'stem_value_norm': stem_norm_v,
     }
 
-    for layer_key in ['shared_0-3', 'shared_4-7', 'shared_8-11', 'dual_se_0-5']:
+    for layer_key in ['shared_0-2', 'shared_3-5', 'shared_6-8', 'shared_9-11', 'dual_se_0-2', 'dual_se_3-5']:
         cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
         prefix = layer_key.replace('-', '_')
         metrics[f'{prefix}_cos_sim'] = cos

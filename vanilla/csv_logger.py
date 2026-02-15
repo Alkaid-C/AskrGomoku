@@ -84,11 +84,12 @@ class CSVLogger:
                     'update',
                     'overall_cos_sim', 'overall_policy_norm', 'overall_value_norm',
                     'stem_cos_sim', 'stem_policy_norm', 'stem_value_norm',
-                    'blocks_0_3_cos_sim', 'blocks_0_3_policy_norm', 'blocks_0_3_value_norm',
-                    'blocks_4_7_cos_sim', 'blocks_4_7_policy_norm', 'blocks_4_7_value_norm',
-                    'blocks_8_11_cos_sim', 'blocks_8_11_policy_norm', 'blocks_8_11_value_norm',
-                    'blocks_12_15_cos_sim', 'blocks_12_15_policy_norm', 'blocks_12_15_value_norm',
-                    'blocks_16_19_cos_sim', 'blocks_16_19_policy_norm', 'blocks_16_19_value_norm'
+                    'blocks_0_2_cos_sim', 'blocks_0_2_policy_norm', 'blocks_0_2_value_norm',
+                    'blocks_3_5_cos_sim', 'blocks_3_5_policy_norm', 'blocks_3_5_value_norm',
+                    'blocks_6_8_cos_sim', 'blocks_6_8_policy_norm', 'blocks_6_8_value_norm',
+                    'blocks_9_11_cos_sim', 'blocks_9_11_policy_norm', 'blocks_9_11_value_norm',
+                    'blocks_12_14_cos_sim', 'blocks_12_14_policy_norm', 'blocks_12_14_value_norm',
+                    'blocks_15_17_cos_sim', 'blocks_15_17_policy_norm', 'blocks_15_17_value_norm'
                 ])
 
     def log_training_update(self, update: int, metrics: dict):
@@ -145,9 +146,10 @@ class CSVLogger:
                 update,
                 metrics['overall_cos_sim'], metrics['overall_policy_norm'], metrics['overall_value_norm'],
                 metrics['stem_cos_sim'], metrics['stem_policy_norm'], metrics['stem_value_norm'],
-                metrics['blocks_0_3_cos_sim'], metrics['blocks_0_3_policy_norm'], metrics['blocks_0_3_value_norm'],
-                metrics['blocks_4_7_cos_sim'], metrics['blocks_4_7_policy_norm'], metrics['blocks_4_7_value_norm'],
-                metrics['blocks_8_11_cos_sim'], metrics['blocks_8_11_policy_norm'], metrics['blocks_8_11_value_norm'],
-                metrics['blocks_12_15_cos_sim'], metrics['blocks_12_15_policy_norm'], metrics['blocks_12_15_value_norm'],
-                metrics['blocks_16_19_cos_sim'], metrics['blocks_16_19_policy_norm'], metrics['blocks_16_19_value_norm']
+                metrics['blocks_0_2_cos_sim'], metrics['blocks_0_2_policy_norm'], metrics['blocks_0_2_value_norm'],
+                metrics['blocks_3_5_cos_sim'], metrics['blocks_3_5_policy_norm'], metrics['blocks_3_5_value_norm'],
+                metrics['blocks_6_8_cos_sim'], metrics['blocks_6_8_policy_norm'], metrics['blocks_6_8_value_norm'],
+                metrics['blocks_9_11_cos_sim'], metrics['blocks_9_11_policy_norm'], metrics['blocks_9_11_value_norm'],
+                metrics['blocks_12_14_cos_sim'], metrics['blocks_12_14_policy_norm'], metrics['blocks_12_14_value_norm'],
+                metrics['blocks_15_17_cos_sim'], metrics['blocks_15_17_policy_norm'], metrics['blocks_15_17_value_norm']
             ])
