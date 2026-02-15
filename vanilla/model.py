@@ -20,7 +20,7 @@ WIDTH = 96                        # Residual block width
 GROUPNORM_GROUPS = 16             # Groups for GroupNorm layers (must divide WIDTH evenly)
 
 # Head architecture
-POLICY_WIDTH = 128                # Policy head width
+POLICY_WIDTH = 64                 # Policy head width
 VALUE_HEAD_CHANNELS = 4           # Value head intermediate channels
 VALUE_HEAD_HIDDEN = 160           # Value head hidden layer size
 

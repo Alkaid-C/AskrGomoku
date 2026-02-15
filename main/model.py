@@ -42,8 +42,8 @@ SE_SCHEDULE = [
 ]
 
 # Head architecture
-POLICY_HEAD_D = 128            # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 256   # Policy head global MLP hidden size (h)
+POLICY_HEAD_D = 64             # Policy head intermediate channels (d_p)
+POLICY_HEAD_MLP_HIDDEN = 192   # Policy head global MLP hidden size (h)
 VALUE_HEAD_C1 = 128            # Layer 1: 96 -> 128
 VALUE_HEAD_C2_SPLIT = 128      # Layer 2: 128 -> 128(d1) + 128(d2) = 256
 VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
@@ -120,24 +120,25 @@ class GomokuPolicyNet(nn.Module):
         ])
 
         # Policy head: FiLM-based (Feature-wise Linear Modulation)
-        # Local feature tower: 1x1 (no reduce) -> 3x3 (reduce) -> 3x3
-        self.policy_embed = nn.Conv2d(WIDTH, WIDTH, kernel_size=1, stride=1, padding=0)
+        # Local feature tower: 3x3 -> 3x3 (reduce) -> 3x3
+        self.policy_conv1 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=1)
         self.policy_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
-        self.policy_conv1 = nn.Conv2d(WIDTH, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
+        self.policy_conv2 = nn.Conv2d(WIDTH, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
         self.policy_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_HEAD_D)
-        self.policy_conv2 = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
+        self.policy_conv3 = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
         self.policy_norm3 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_HEAD_D)
         # FiLM parameter generator
         self.policy_film_fc1 = nn.Linear(WIDTH, POLICY_HEAD_MLP_HIDDEN)
-        self.policy_film_fc2 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, 2 * POLICY_HEAD_D)
+        self.policy_film_fc2 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, POLICY_HEAD_MLP_HIDDEN)
+        self.policy_film_fc3 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, 2 * POLICY_HEAD_D)
 
         # FiLM identity initialization: gamma ≈ 1, beta ≈ 0
         # This ensures FiLM(H) ≈ H at training start for stability
-        nn.init.zeros_(self.policy_film_fc2.weight)
+        nn.init.zeros_(self.policy_film_fc3.weight)
         with torch.no_grad():
             D = POLICY_HEAD_D
-            self.policy_film_fc2.bias[:D].fill_(1.0)   # gamma init -> 1
-            self.policy_film_fc2.bias[D:].zero_()      # beta init -> 0
+            self.policy_film_fc3.bias[:D].fill_(1.0)   # gamma init -> 1
+            self.policy_film_fc3.bias[D:].zero_()      # beta init -> 0
 
         # Logits output
         self.policy_logits = nn.Conv2d(POLICY_HEAD_D, 1, kernel_size=1, stride=1, padding=0)
@@ -154,11 +155,9 @@ class GomokuPolicyNet(nn.Module):
         self.value_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=VALUE_HEAD_C1)
         # Conv Layer 2
         # Branch A: Dilation 1 (Dense)
-        self.value_conv2a = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=1, dilation=1, bias=False)
+        self.value_conv2a = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=1, dilation=1)
         # Branch B: Dilation 2 (Sparse/Wide) - Padding=2 for Dilation=2
-        self.value_conv2b = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=2, dilation=2, bias=False)
-        # Norm after concat
-        self.value_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=VALUE_HEAD_C2_SPLIT * 2)
+        self.value_conv2b = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=2, dilation=2)
         # FC Layers (Input -> Hidden -> Out 1)
         self.value_fc1 = nn.Linear(VALUE_HEAD_C2_SPLIT * 2, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
@@ -189,8 +188,8 @@ class GomokuPolicyNet(nn.Module):
         branch_1x1 = self.conv_1x1(x)
 
         x = torch.cat([branch_3x3, branch_full_5x5, branch_directional_5x5, branch_full_7x7, branch_directional_7x7, branch_1x1], dim=1)
-        x = F.silu(x)
         x = self.stem_norm(x)
+        x = F.silu(x)
 
         for block in self.blocks:
             x = block(x)
@@ -200,16 +199,17 @@ class GomokuPolicyNet(nn.Module):
 
         # Policy head: FiLM-based (Feature-wise Linear Modulation)
         # 1. Local feature tower
-        E0 = F.silu(self.policy_norm1(self.policy_embed(trunk_features)))
-        E1 = F.silu(self.policy_norm2(self.policy_conv1(E0)))
-        H = F.silu(self.policy_norm3(self.policy_conv2(E1)))  # [B, d_p, 15, 15]
+        E1 = F.silu(self.policy_norm1(self.policy_conv1(trunk_features)))
+        E2 = F.silu(self.policy_norm2(self.policy_conv2(E1)))
+        H = F.silu(self.policy_norm3(self.policy_conv3(E2)))  # [B, d_p, 15, 15]
 
         # 2. Global state extraction
         g = trunk_features.mean(dim=(2, 3))  # [B, WIDTH] - Global Average Pooling
 
         # 3. FiLM parameter generation
         film_params = F.silu(self.policy_film_fc1(g))  # [B, h]
-        film_params = self.policy_film_fc2(film_params)  # [B, 2*d_p]
+        film_params = F.silu(self.policy_film_fc2(film_params))  # [B, h]
+        film_params = self.policy_film_fc3(film_params)  # [B, 2*d_p]
         gamma, beta = film_params.chunk(2, dim=1)  # [B, d_p], [B, d_p]
 
         # 4. FiLM modulation: H' = γ ⊙ H + β
@@ -229,7 +229,7 @@ class GomokuPolicyNet(nn.Module):
         v_d1 = self.value_conv2a(vx)
         v_d2 = self.value_conv2b(vx)
         vx = torch.cat([v_d1, v_d2], dim=1) # Concat
-        vx = F.silu(self.value_norm2(vx))
+        vx = F.silu(vx)
         # 3. GAP
         vx = vx.mean(dim=(2, 3))
         # 4. Dense
