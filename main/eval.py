@@ -50,6 +50,7 @@ TOP_K_QUICK_SCREEN = 16                # Keep top K from quick screen
 FINAL_SCREEN_ROUNDS = 64               # Rounds for final screen
 MAX_MINED_OPPONENTS_PER_EVENT = 1      # Max opponents to add per scan
 MINING_WIN_RATE_THRESHOLD = 27.0/64    # Only mine opponents with win rate below this
+MINING_MODEL_BATCH = 16                # Max models to load simultaneously during mining
 
 
 # ============================================================================
@@ -122,11 +123,12 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
     per_opponent_draws = [0] * num_opponents
     per_opponent_games = [0] * num_opponents
 
-    for round_idx in range(num_rounds):
-        pairs = []
-        current_is_black_list = []
-        opponent_indices = []
+    # Build all game pairs upfront for a single batched play_eval_games call
+    pairs = []
+    current_is_black_list = []
+    opponent_indices = []
 
+    for _ in range(num_rounds):
         for opp_idx, opponent in enumerate(opponent_pool):
             # Current plays as black
             pairs.append((current_model, opponent))
@@ -137,23 +139,23 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
             current_is_black_list.append(False)
             opponent_indices.append(opp_idx)
 
-        results = play_eval_games(
-            pairs, current_is_black_list, EVAL_TEMP, device,
-            batch_size=len(pairs),
-            select_action_fn=select_action_batch_eval
-        )
+    results = play_eval_games(
+        pairs, current_is_black_list, EVAL_TEMP, device,
+        batch_size=len(pairs),
+        select_action_fn=select_action_batch_eval
+    )
 
-        for (outcome, current_is_black), opp_idx in zip(results, opponent_indices):
-            total_games += 1
-            per_opponent_games[opp_idx] += 1
+    for (outcome, current_is_black), opp_idx in zip(results, opponent_indices):
+        total_games += 1
+        per_opponent_games[opp_idx] += 1
 
-            if outcome == GameState.DRAW:
-                total_draws += 1
-                per_opponent_draws[opp_idx] += 1
-            elif (outcome == GameState.BLACK_WIN and current_is_black) or \
-                 (outcome == GameState.WHITE_WIN and not current_is_black):
-                total_wins += 1
-                per_opponent_wins[opp_idx] += 1
+        if outcome == GameState.DRAW:
+            total_draws += 1
+            per_opponent_draws[opp_idx] += 1
+        elif (outcome == GameState.BLACK_WIN and current_is_black) or \
+             (outcome == GameState.WHITE_WIN and not current_is_black):
+            total_wins += 1
+            per_opponent_wins[opp_idx] += 1
 
     current_model.train()
 
@@ -181,39 +183,57 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
     return overall_win_rate, per_opponent_stats
 
 
-def evaluate_single_opponent(current_model: nn.Module, opponent_model: nn.Module,
-                             device: torch.device, num_rounds: int) -> float:
-    """Evaluate current model against a single opponent."""
+def evaluate_against_opponents(current_model: nn.Module, opponents: List[nn.Module],
+                                device: torch.device, num_rounds: int) -> List[float]:
+    """Evaluate current model against multiple opponents in one batched run.
+
+    Returns list of win rates, one per opponent.
+    """
     current_model.eval()
 
-    total_wins = 0
-    total_draws = 0
-    total_games = 0
+    num_opponents = len(opponents)
+    per_opp_wins = [0] * num_opponents
+    per_opp_draws = [0] * num_opponents
+    per_opp_games = [0] * num_opponents
+
+    # Build all pairs upfront
+    pairs = []
+    current_is_black_list = []
+    opponent_indices = []
 
     for _ in range(num_rounds):
-        pairs = [
-            (current_model, opponent_model),
-            (opponent_model, current_model),
-        ]
-        current_is_black_list = [True, False]
+        for opp_idx, opponent in enumerate(opponents):
+            pairs.append((current_model, opponent))
+            current_is_black_list.append(True)
+            opponent_indices.append(opp_idx)
+            pairs.append((opponent, current_model))
+            current_is_black_list.append(False)
+            opponent_indices.append(opp_idx)
 
-        results = play_eval_games(
-            pairs, current_is_black_list, EVAL_TEMP, device,
-            batch_size=2,
-            select_action_fn=select_action_batch_eval
-        )
+    results = play_eval_games(
+        pairs, current_is_black_list, EVAL_TEMP, device,
+        batch_size=len(pairs),
+        select_action_fn=select_action_batch_eval
+    )
 
-        for outcome, current_is_black in results:
-            total_games += 1
-            if outcome == GameState.DRAW:
-                total_draws += 1
-            elif (outcome == GameState.BLACK_WIN and current_is_black) or \
-                 (outcome == GameState.WHITE_WIN and not current_is_black):
-                total_wins += 1
+    for (outcome, current_is_black), opp_idx in zip(results, opponent_indices):
+        per_opp_games[opp_idx] += 1
+        if outcome == GameState.DRAW:
+            per_opp_draws[opp_idx] += 1
+        elif (outcome == GameState.BLACK_WIN and current_is_black) or \
+             (outcome == GameState.WHITE_WIN and not current_is_black):
+            per_opp_wins[opp_idx] += 1
 
     current_model.train()
 
-    return (total_wins + 0.5 * total_draws) / total_games if total_games > 0 else DEFAULT_WIN_RATE
+    win_rates = []
+    for i in range(num_opponents):
+        if per_opp_games[i] > 0:
+            win_rates.append((per_opp_wins[i] + 0.5 * per_opp_draws[i]) / per_opp_games[i])
+        else:
+            win_rates.append(DEFAULT_WIN_RATE)
+
+    return win_rates
 
 
 # ============================================================================
@@ -360,20 +380,28 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
     if not candidates:
         return [], total_candidates, candidates_after_filter
 
-    # Quick screen
+    # Quick screen - load candidates in chunks for batched evaluation
     print(f"  Quick screen ({QUICK_SCREEN_ROUNDS} rounds per candidate)...")
     quick_results = []
 
-    for update_num in candidates:
-        checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update_num}.pt")
-        opponent = load_checkpoint_model(checkpoint_path, device)
-        if opponent is None:
-            continue
+    for chunk_start in range(0, len(candidates), MINING_MODEL_BATCH):
+        chunk_updates = candidates[chunk_start:chunk_start + MINING_MODEL_BATCH]
+        chunk_opponents = []
+        chunk_valid_updates = []
 
-        win_rate = evaluate_single_opponent(current_model, opponent, device, QUICK_SCREEN_ROUNDS)
-        quick_results.append((update_num, win_rate))
+        for update_num in chunk_updates:
+            checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update_num}.pt")
+            opponent = load_checkpoint_model(checkpoint_path, device)
+            if opponent is not None:
+                chunk_opponents.append(opponent)
+                chunk_valid_updates.append(update_num)
 
-        del opponent
+        if chunk_opponents:
+            win_rates = evaluate_against_opponents(current_model, chunk_opponents, device, QUICK_SCREEN_ROUNDS)
+            for update_num, win_rate in zip(chunk_valid_updates, win_rates):
+                quick_results.append((update_num, win_rate))
+
+        del chunk_opponents
         torch.cuda.empty_cache()
 
     if not quick_results:
@@ -384,21 +412,26 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
     hardest_candidates = quick_results[:TOP_K_QUICK_SCREEN]
     print(f"  Top {len(hardest_candidates)} hardest: {[(u, f'{wr:.2%}') for u, wr in hardest_candidates]}")
 
-    # Final screen
+    # Final screen - load all top-K at once for single batched evaluation
     print(f"  Final screen ({FINAL_SCREEN_ROUNDS} rounds per candidate)...")
-    final_results = []
+    final_opponents = []
+    final_valid_updates = []
 
     for update_num, _ in hardest_candidates:
         checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{update_num}.pt")
         opponent = load_checkpoint_model(checkpoint_path, device)
-        if opponent is None:
-            continue
+        if opponent is not None:
+            final_opponents.append(opponent)
+            final_valid_updates.append(update_num)
 
-        win_rate = evaluate_single_opponent(current_model, opponent, device, FINAL_SCREEN_ROUNDS)
-        final_results.append((update_num, win_rate))
+    final_results = []
+    if final_opponents:
+        win_rates = evaluate_against_opponents(current_model, final_opponents, device, FINAL_SCREEN_ROUNDS)
+        for update_num, win_rate in zip(final_valid_updates, win_rates):
+            final_results.append((update_num, win_rate))
 
-        del opponent
-        torch.cuda.empty_cache()
+    del final_opponents
+    torch.cuda.empty_cache()
 
     final_results.sort(key=lambda x: x[1])
     # Only mine opponents that are actually hard (win rate < threshold)
