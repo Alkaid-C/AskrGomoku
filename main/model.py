@@ -15,7 +15,9 @@ from typing import Tuple
 # Model Architecture Constants
 # ============================================================================
 
-N_BLOCKS = 16                     # Number of residual blocks
+N_SHARED_BLOCKS = 12              # Shared residual blocks (no SE)
+N_DUAL_SE_BLOCKS = 6              # Dual-SE residual blocks (policy + value SE streams)
+N_BLOCKS = N_SHARED_BLOCKS + N_DUAL_SE_BLOCKS  # 18 total
 WIDTH = 96                        # Residual block width (must equal sum of all stem channels)
 STEM_3X3_CHANNELS = 6 * 6         # 3x3 convolution channels in stem
 STEM_DIRECTIONAL_5X5_CHANNELS = 3 * 6  # Directional 5x5 (4-line kernel via dilated 3x3 sum) channels in stem
@@ -28,17 +30,13 @@ SE_REDUCTION = 4                  # Squeeze-and-Excitation channel reduction rat
 
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
 TRUNK_DILATION2_SCHEDULE = [
+    # Shared blocks (12)
     1, 1, 2, 3,
     1, 1, 2, 3,
     1, 1, 2, 3,
-    1, 1, 1, 1,
-]
-# SE schedule: True to enable Squeeze-and-Excitation for that block (length must equal N_BLOCKS)
-SE_SCHEDULE = [
-    False, False, False, False,
-    True, True, False, False,
-    True, True, False, False,
-    True, True, False, False,
+    # Dual-SE blocks (6)
+    1, 1, 2, 3,
+    1, 1,
 ]
 
 # Head architecture
@@ -76,7 +74,7 @@ class GomokuPolicyNet(nn.Module):
     - Value head: 2x 3x3 valid convs (15->11) + 1x1 reduction + 2-layer MLP
     """
 
-    def __init__(self, n_blocks: int):
+    def __init__(self):
         super().__init__()
 
         # === Stem: line-aware multi-scale design ===
@@ -114,9 +112,13 @@ class GomokuPolicyNet(nn.Module):
 
         self.stem_norm = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 
-        self.blocks = nn.ModuleList([
-            ResidualBlock(WIDTH, dilation2=TRUNK_DILATION2_SCHEDULE[i], use_se=SE_SCHEDULE[i])
-            for i in range(n_blocks)
+        self.shared_blocks = nn.ModuleList([
+            ResidualBlock(WIDTH, dilation2=TRUNK_DILATION2_SCHEDULE[i], use_se=False)
+            for i in range(N_SHARED_BLOCKS)
+        ])
+        self.dual_se_blocks = nn.ModuleList([
+            DualSEResidualBlock(WIDTH, dilation2=TRUNK_DILATION2_SCHEDULE[N_SHARED_BLOCKS + i])
+            for i in range(N_DUAL_SE_BLOCKS)
         ])
 
         # Policy head: FiLM-based (Feature-wise Linear Modulation)
@@ -132,9 +134,8 @@ class GomokuPolicyNet(nn.Module):
         self.policy_film_fc2 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, POLICY_HEAD_MLP_HIDDEN)
         self.policy_film_fc3 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, 2 * POLICY_HEAD_D)
 
-        # FiLM identity initialization: gamma ≈ 1, beta ≈ 0
-        # This ensures FiLM(H) ≈ H at training start for stability
-        nn.init.zeros_(self.policy_film_fc3.weight)
+        # FiLM bias initialization: gamma ≈ 1, beta ≈ 0 on average
+        # Weight keeps default Kaiming init so FiLM is board-dependent from the start
         with torch.no_grad():
             D = POLICY_HEAD_D
             self.policy_film_fc3.bias[:D].fill_(1.0)   # gamma init -> 1
@@ -162,24 +163,8 @@ class GomokuPolicyNet(nn.Module):
         self.value_fc1 = nn.Linear(VALUE_HEAD_C2_SPLIT * 2, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Forward pass.
-
-        Args:
-            x: Input tensor [B, 3, 15, 15] where:
-               - Channel 0: Current player's pieces
-               - Channel 1: Opponent's pieces
-               - Channel 2: Board mask (all 1s within valid board region)
-
-        Returns:
-            Tuple of (logits_grid [B, 1, 15, 15], value [B, 1])
-
-        Policy head uses FiLM (Feature-wise Linear Modulation):
-            - Local features extracted by 3x conv tower
-            - Global state from GAP generates γ, β modulation parameters
-            - Modulated features: H' = γ ⊙ H + β
-        """
+    def _stem_and_shared_trunk(self, x: torch.Tensor) -> torch.Tensor:
+        """Stem + shared trunk (first 12 blocks). Returns features for branching."""
         branch_3x3 = self.conv_3x3(x)
         branch_directional_5x5 = self.conv_directional5_d1(x) + self.conv_directional5_d2(x)
         branch_full_5x5 = self.conv_full5(x)
@@ -191,13 +176,13 @@ class GomokuPolicyNet(nn.Module):
         x = self.stem_norm(x)
         x = F.silu(x)
 
-        for block in self.blocks:
+        for block in self.shared_blocks:
             x = block(x)
 
-        trunk_features = x
-        batch_size = trunk_features.size(0)
+        return x
 
-        # Policy head: FiLM-based (Feature-wise Linear Modulation)
+    def _policy_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
+        """Policy head: FiLM-based. Returns logits_grid [B, 1, 15, 15]."""
         # 1. Local feature tower
         E1 = F.silu(self.policy_norm1(self.policy_conv1(trunk_features)))
         E2 = F.silu(self.policy_norm2(self.policy_conv2(E1)))
@@ -218,25 +203,71 @@ class GomokuPolicyNet(nn.Module):
         # 5. Logits output (with bypass path for spatial detail preservation)
         logits_film = self.policy_logits(H_modulated)  # FiLM-modulated path [B, 1, 15, 15]
         logits_bypass = self.policy_logits_bypass(H)   # Pre-FiLM bypass path [B, 1, 15, 15]
-        # Use sigmoid to constrain alpha ∈ (0, 1)
         alpha = torch.sigmoid(self.policy_bypass_alpha)
         logits_grid = logits_film + alpha * logits_bypass  # Combined output
+        return logits_grid
 
-        # Value Head
-        # 1. Layer 1 (WIDTH -> VALUE_HEAD_C1)
+    def _value_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
+        """Value head: conv + GAP + FC. Returns value [B, 1]."""
         vx = F.silu(self.value_norm1(self.value_conv1(trunk_features)))
-        # 2. Layer 2 Split (VALUE_HEAD_C1 -> VALUE_HEAD_C2_SPLIT + VALUE_HEAD_C2_SPLIT)
         v_d1 = self.value_conv2a(vx)
         v_d2 = self.value_conv2b(vx)
-        vx = torch.cat([v_d1, v_d2], dim=1) # Concat
+        vx = torch.cat([v_d1, v_d2], dim=1)
         vx = F.silu(vx)
-        # 3. GAP
         vx = vx.mean(dim=(2, 3))
-        # 4. Dense
         vx = F.silu(self.value_fc1(vx))
         value = torch.tanh(self.value_fc2(vx))
+        return value
 
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Both heads: shared trunk -> fork -> dual-SE -> policy head + value head.
+        Used for training step, web play, gradient probing.
+
+        Returns:
+            Tuple of (logits_grid [B, 1, 15, 15], value [B, 1])
+        """
+        x = self._stem_and_shared_trunk(x)
+
+        # Fork into policy and value streams
+        x_policy = x
+        x_value = x
+        for block in self.dual_se_blocks:
+            x_policy, x_value = block(x_policy, x_value)
+
+        logits_grid = self._policy_head(x_policy)
+        value = self._value_head(x_value)
         return logits_grid, value
+
+    def forward_policy_only(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Policy head only: shared trunk -> policy SE stream -> policy head.
+        Used for self-play and evaluation inference.
+
+        Returns:
+            logits_grid [B, 1, 15, 15]
+        """
+        x = self._stem_and_shared_trunk(x)
+
+        for block in self.dual_se_blocks:
+            x = block.forward_policy(x)
+
+        return self._policy_head(x)
+
+    def forward_value_only(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Value head only: shared trunk -> value SE stream -> value head.
+        Used for GAE computation.
+
+        Returns:
+            value [B, 1]
+        """
+        x = self._stem_and_shared_trunk(x)
+
+        for block in self.dual_se_blocks:
+            x = block.forward_value(x)
+
+        return self._value_head(x)
 
 
 class SEBlock(nn.Module):
@@ -275,6 +306,47 @@ class ResidualBlock(nn.Module):
         if self.se is not None:
             out = self.se(out)
         return out + x
+
+
+class DualSEResidualBlock(nn.Module):
+    """Pre-activation residual block with dual SE gates for policy/value streams.
+
+    Shared convolution weights process both streams independently, then separate
+    SE modules gate channels differently for each head. Over multiple blocks the
+    streams progressively diverge through iterative differential gating.
+    """
+
+    def __init__(self, channels: int, dilation2: int):
+        super().__init__()
+        self.norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=dilation2, dilation=dilation2)
+        self.se_policy = SEBlock(channels)
+        self.se_value = SEBlock(channels)
+
+    def _shared_conv(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.silu(self.norm1(x), inplace=True)
+        out = self.conv1(out)
+        out = F.silu(self.norm2(out), inplace=True)
+        out = self.conv2(out)
+        return out
+
+    def forward(self, x_policy: torch.Tensor, x_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Both streams: shared convs + independent SE + skip."""
+        out_p = self._shared_conv(x_policy)
+        out_v = self._shared_conv(x_value)
+        return self.se_policy(out_p) + x_policy, self.se_value(out_v) + x_value
+
+    def forward_policy(self, x: torch.Tensor) -> torch.Tensor:
+        """Policy stream only: shared convs + policy SE + skip."""
+        out = self._shared_conv(x)
+        return self.se_policy(out) + x
+
+    def forward_value(self, x: torch.Tensor) -> torch.Tensor:
+        """Value stream only: shared convs + value SE + skip."""
+        out = self._shared_conv(x)
+        return self.se_value(out) + x
 
 
 def zero_center_taps(model: nn.Module) -> None:

@@ -1,12 +1,5 @@
-report_dual_se_architecture.md
-AGENTS.md
-CLAUDE.md
-GEMINI.md
-*.png
-*.pt
-*.log
-*.json
-*.csv
-*.onnx*
-__pycache__
-
+*
+!*/
+!*.py
+!report.md
+!.gitignore
