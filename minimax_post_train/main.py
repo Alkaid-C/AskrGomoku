@@ -403,6 +403,7 @@ def main():
 
         t0 = time.time()
         # Use search-based self-play
+        current_policy.eval()
         search_samples, outcomes = play_episodes_with_search(
             num_episodes=EPISODES_PER_UPDATE,
             current_policy=current_policy,
@@ -414,6 +415,7 @@ def main():
             opening_ids=opening_ids,
             tau=SAMPLING_TAU
         )
+        current_policy.train()
         t_selfplay = time.time() - t0
 
         # Compute outcome stats

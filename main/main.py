@@ -387,11 +387,13 @@ def main():
                 opening_ids.append(-1)
 
         t0 = time.time()
+        current_policy.eval()
         trajectories = play_episodes_batched(
             pairs, current_is_black, TEMPERATURE_TRAIN, DEVICE,
             select_action_batch_fn=select_action_batch,
             opening_ids=opening_ids
         )
+        current_policy.train()
         t_selfplay = time.time() - t0
 
         stats = compute_outcome_stats(trajectories, current_is_black)

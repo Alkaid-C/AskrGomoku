@@ -374,7 +374,7 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
     Returns:
         Tuple of (actions, entropies)
     """
-    with torch.no_grad():
+    with torch.inference_mode():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
@@ -395,9 +395,8 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
             dist = Categorical(logits=logits_flat, validate_args=False)
             actions_tensor = dist.sample()
 
-        # Separate transfers (stacking adds overhead)
-        actions = actions_tensor.cpu().numpy().tolist()
-        entropies = dist.entropy().cpu().numpy().tolist()
+        actions = actions_tensor.cpu().tolist()
+        entropies = dist.entropy().cpu().tolist()
 
     return actions, entropies
 
@@ -412,7 +411,7 @@ def select_action_batch_eval(model: torch.nn.Module, obs_list: List[np.ndarray],
     Returns:
         List of action indices
     """
-    with torch.no_grad():
+    with torch.inference_mode():
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
