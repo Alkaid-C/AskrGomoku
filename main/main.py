@@ -43,7 +43,7 @@ from training import (
     EPISODES_PER_UPDATE,
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
     ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
-    VALUE_LOSS_COEFF_EARLY, VALUE_LOSS_COEFF_GAE, GAE_LAMBDA, VALUE_BASELINE_START,
+    VALUE_LOSS_COEFF_START, VALUE_LOSS_COEFF_END, GAE_LAMBDA, BASELINE_RAMP_END,
     PRINT_INTERVAL
 )
 from eval import (
@@ -266,12 +266,11 @@ def main():
     print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
     print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
-    print(f"  Value head: ENABLED (phase 1 weight: {VALUE_LOSS_COEFF_EARLY}, targets: TD(0))")
-    print(f"               (phase 2 weight: {VALUE_LOSS_COEFF_GAE}, targets: GAE)")
-    print(f"  GAE: lambda={GAE_LAMBDA} ({'TD(0)' if GAE_LAMBDA == 0 else 'MC' if GAE_LAMBDA == 1 else 'blend'})")
-    print(f"  Phased training:")
-    print(f"    - Phase 1 (0-{VALUE_BASELINE_START-1}): Raw returns + tactical bonuses")
-    print(f"    - Phase 2 ({VALUE_BASELINE_START}+): Value baseline + tactical bonuses (always)")
+    print(f"  Value head: ENABLED (loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END} via cosine ramp over [0, {BASELINE_RAMP_END}])")
+    print(f"  GAE: lambda={GAE_LAMBDA}")
+    print(f"  Baseline transition: cosine ramp alpha over [0, {BASELINE_RAMP_END}]")
+    print(f"    - Advantages: (1-alpha)*max(0,R) + alpha*max(0,GAE) + tactical boost")
+    print(f"    - Value loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END}")
     print(f"    - Tactical bonuses prevent terminal state learning collapse")
     print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")

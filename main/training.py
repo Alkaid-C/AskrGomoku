@@ -60,10 +60,10 @@ ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of tot
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF_EARLY = 1.0   # Weight for value head loss before GAE enabled
-VALUE_LOSS_COEFF_GAE = 0.25    # Weight for value head loss after GAE enabled
+VALUE_LOSS_COEFF_START = 1.0   # Value loss coefficient at alpha=0 (start of training)
+VALUE_LOSS_COEFF_END = 0.25    # Value loss coefficient at alpha=1 (after ramp)
 GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
-VALUE_BASELINE_START = 512     # Update at which to start using value baseline
+BASELINE_RAMP_END = 512        # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
 
 # --- Logging ---
 PRINT_INTERVAL = 1             # Print stats every N updates
@@ -94,6 +94,14 @@ def compute_entropy_schedule(update: int) -> float:
     return float(entropy_schedule)
 
 
+def compute_baseline_alpha(update: int) -> float:
+    """Cosine ramp from 0 to 1 over [0, BASELINE_RAMP_END]."""
+    if update >= BASELINE_RAMP_END:
+        return 1.0
+    progress = update / BASELINE_RAMP_END
+    return 0.5 * (1 - np.cos(np.pi * progress))
+
+
 # ============================================================================
 # Gradient Conflict Probing
 # ============================================================================
@@ -112,7 +120,6 @@ def probe_gradient_conflict_chunked(
     gae_advantages_chunks: List[torch.Tensor],
     next_values_chunks: List[Optional[torch.Tensor]],
     global_normalizers: Tuple[float, float],
-    use_value_baseline: bool,
     entropy_bonus_scale: float = 1.0,
     update: int = 0,
     output_dir: str = ''
@@ -165,8 +172,7 @@ def probe_gradient_conflict_chunked(
         batch_log_probs = dist.log_prob(actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
 
-        advantages = gae_advantages if use_value_baseline else returns
-        policy_loss = -(weights * real_mask.float() * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+        policy_loss = -(weights * real_mask.float() * gae_advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
         policy_loss.backward()
 
         for name, param in model.named_parameters():
@@ -199,8 +205,7 @@ def probe_gradient_conflict_chunked(
         batch_log_probs = dist.log_prob(actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
 
-        advantages = gae_advantages if use_value_baseline else returns
-        policy_loss = -(weights * synth_mask.float() * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+        policy_loss = -(weights * synth_mask.float() * gae_advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
         policy_loss.backward()
 
         for name, param in model.named_parameters():
@@ -469,7 +474,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                   num_opr_samples, probe_data)
         probe_data is a dict with chunked tensors for gradient probing, or None
     """
-    use_value_baseline = (update >= VALUE_BASELINE_START)
+    alpha = compute_baseline_alpha(update)
 
     # Deferred collection: advantages are computed AFTER augmentation (no placeholder pattern)
     all_obs = []
@@ -608,104 +613,81 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Compute advantages after augmentation (deferred collection - no placeholder pattern)
     B = len(all_obs)  # Original batch size before augmentation
 
-    if use_value_baseline and GAE_LAMBDA < 1.0:
-        # Compute base GAE advantages using 8-fold averaged values
-        with torch.no_grad():
-            aug_values_all = model.forward_value_only(aug_obs)  # [B*8, 1]
+    # Always compute 8-fold averaged values and GAE, then blend with raw returns via alpha
+    with torch.no_grad():
+        aug_values_all = model.forward_value_only(aug_obs)  # [B*8, 1]
 
-        aug_values_all = aug_values_all.squeeze(1)  # [B*8]
+    aug_values_all = aug_values_all.squeeze(1)  # [B*8]
 
-        # Reshape to separate augmentations: [8, B]
-        values_per_aug = aug_values_all.view(8, B)
+    # Reshape to separate augmentations: [8, B]
+    values_per_aug = aug_values_all.view(8, B)
 
-        # Average across augmentations (dim=0) to get ensemble estimate
-        avg_values = values_per_aug.mean(dim=0).cpu().numpy()  # [B] numpy array
+    # Average across augmentations (dim=0) to get ensemble estimate
+    avg_values = values_per_aug.mean(dim=0).cpu().numpy()  # [B] numpy array
 
-        # Build per-trajectory value lists
-        traj_value_lists = [[] for _ in trajectories]
-        traj_sample_indices = [[] for _ in trajectories]
+    # Build per-trajectory value lists
+    traj_value_lists = [[] for _ in trajectories]
+    traj_sample_indices = [[] for _ in trajectories]
 
-        for sample_idx in range(B):
-            traj_idx, step_idx = sample_to_traj[sample_idx]
-            if traj_idx >= 0:  # Not synthetic
-                traj_value_lists[traj_idx].append(avg_values[sample_idx])
-                traj_sample_indices[traj_idx].append(sample_idx)
+    for sample_idx in range(B):
+        traj_idx, step_idx = sample_to_traj[sample_idx]
+        if traj_idx >= 0:  # Not synthetic
+            traj_value_lists[traj_idx].append(avg_values[sample_idx])
+            traj_sample_indices[traj_idx].append(sample_idx)
 
-        # Compute base GAE per trajectory
-        base_advantages = np.zeros(B, dtype=np.float32)
+    # Compute base GAE per trajectory
+    gae_advantages = np.zeros(B, dtype=np.float32)
 
-        for traj_idx in range(len(trajectories)):
-            if not traj_value_lists[traj_idx]:
-                continue
+    for traj_idx in range(len(trajectories)):
+        if not traj_value_lists[traj_idx]:
+            continue
 
-            values = np.array(traj_value_lists[traj_idx])
-            sample_indices = traj_sample_indices[traj_idx]
+        values = np.array(traj_value_lists[traj_idx])
+        sample_indices = traj_sample_indices[traj_idx]
 
-            # GAE backward recursion
-            gae = 0.0
-            for i in reversed(range(len(values))):
-                sample_idx = sample_indices[i]
-                z_t = all_returns[sample_idx]
+        # GAE backward recursion
+        gae = 0.0
+        for i in reversed(range(len(values))):
+            sample_idx = sample_indices[i]
+            z_t = all_returns[sample_idx]
 
-                # Compute delta
-                if i == len(values) - 1:
-                    # Terminal step
-                    delta = z_t - values[i]
-                else:
-                    # Non-terminal: use next value
-                    delta = -values[i + 1] - values[i]
+            # Compute delta
+            if i == len(values) - 1:
+                # Terminal step
+                delta = z_t - values[i]
+            else:
+                # Non-terminal: use next value
+                delta = -values[i + 1] - values[i]
 
-                gae = delta - GAE_LAMBDA * gae
-                base_advantages[sample_idx] = gae
+            gae = delta - GAE_LAMBDA * gae
+            gae_advantages[sample_idx] = gae
 
-        # Apply tactical boosts to base advantages
-        final_advantages = np.zeros(B, dtype=np.float32)
+    # Blend advantages: (1-alpha)*max(0, R_t) + alpha*max(0, GAE_t) + tactical boost
+    raw_returns = returns_tensor.cpu().numpy()
+    final_advantages = np.zeros(B, dtype=np.float32)
 
-        for sample_idx in range(num_samples_before_tactical):
-            # Original trajectory samples: base GAE + tactical boost
-            final_advantages[sample_idx] = max(0.0, base_advantages[sample_idx]) + tactical_boost_info.sample_boosts[sample_idx]
+    for sample_idx in range(num_samples_before_tactical):
+        blended = (1 - alpha) * max(0.0, raw_returns[sample_idx]) + alpha * max(0.0, gae_advantages[sample_idx])
+        final_advantages[sample_idx] = blended + tactical_boost_info.sample_boosts[sample_idx]
 
-        # Tactical synthetic samples: use their advantage values directly
-        for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):
-            final_advantages[num_samples_before_tactical + i] = advantage_value
+    # Tactical synthetic samples: use their advantage values directly
+    for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):
+        final_advantages[num_samples_before_tactical + i] = advantage_value
 
-        # Off-policy rollout synthetic samples: use their strength values
-        opr_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
-        for i, advantage_value in enumerate(opr_advantages):
-            final_advantages[opr_start_idx + i] = advantage_value
+    # Off-policy rollout synthetic samples: use their strength values
+    opr_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
+    for i, advantage_value in enumerate(opr_advantages):
+        final_advantages[opr_start_idx + i] = advantage_value
 
-        advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
-        aug_gae_advantages = advantages_tensor.repeat(8)
+    advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
+    aug_gae_advantages = advantages_tensor.repeat(8)
 
-        # Also average next_values for consistent TD targets
-        with torch.no_grad():
-            aug_next_values_all = model.forward_value_only(aug_next_obs).squeeze(1)  # [B*8]
-        next_values_per_aug = aug_next_values_all.view(8, B)
-        avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
-        aug_next_values_averaged = avg_next_values.repeat(8)
-    else:
-        # No GAE: use raw returns as base advantages
-        base_advantages = returns_tensor.cpu().numpy()
-
-        # Apply tactical boosts
-        final_advantages = np.zeros(B, dtype=np.float32)
-
-        for sample_idx in range(num_samples_before_tactical):
-            # Original trajectory samples: return + tactical boost
-            final_advantages[sample_idx] = max(0.0, base_advantages[sample_idx]) + tactical_boost_info.sample_boosts[sample_idx]
-
-        # Tactical synthetic samples
-        for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):
-            final_advantages[num_samples_before_tactical + i] = advantage_value
-
-        # Off-policy rollout synthetic samples
-        opr_start_idx = num_samples_before_tactical + len(tactical_boost_info.synthetic_advantages)
-        for i, advantage_value in enumerate(opr_advantages):
-            final_advantages[opr_start_idx + i] = advantage_value
-
-        advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
-        aug_gae_advantages = advantages_tensor.repeat(8)
-        aug_next_values_averaged = None
+    # Also average next_values for consistent TD targets
+    with torch.no_grad():
+        aug_next_values_all = model.forward_value_only(aug_next_obs).squeeze(1)  # [B*8]
+    next_values_per_aug = aug_next_values_all.view(8, B)
+    avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
+    aug_next_values_averaged = avg_next_values.repeat(8)
 
     global_policy_entropy_normalizer = aug_weights.sum().item()
     value_loss_mask_global = ~aug_is_synthetic
@@ -777,22 +759,12 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         values = values.squeeze(1)
 
-        # Use 8-fold averaged next_values for consistent TD targets if available
-        if aug_next_values_averaged is not None:
-            next_values = aug_next_values_averaged[batch_start:batch_end]
-            if should_probe:
-                probe_next_values_chunks.append(next_values.detach())
-        else:
-            with torch.no_grad():
-                next_values = model.forward_value_only(batch_next_obs)
-            next_values = next_values.squeeze(1)
-            if should_probe:
-                probe_next_values_chunks.append(None)  # Will be computed in probe
+        # Use 8-fold averaged next_values for consistent TD targets
+        next_values = aug_next_values_averaged[batch_start:batch_end]
+        if should_probe:
+            probe_next_values_chunks.append(next_values.detach())
 
-        if not use_value_baseline:
-            advantages = batch_returns
-        else:
-            advantages = batch_gae_advantages
+        advantages = batch_gae_advantages
 
         effective_value_targets = torch.where(
             batch_is_terminal,
@@ -810,7 +782,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
-        value_loss_coeff = VALUE_LOSS_COEFF_GAE if use_value_baseline else VALUE_LOSS_COEFF_EARLY
+        value_loss_coeff = VALUE_LOSS_COEFF_START + (VALUE_LOSS_COEFF_END - VALUE_LOSS_COEFF_START) * alpha
         loss_mb = policy_loss_mb + value_loss_coeff * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb
         loss_mb.backward()
 
@@ -845,7 +817,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             'gae_advantages_chunks': probe_gae_advantages_chunks,
             'next_values_chunks': probe_next_values_chunks,
             'global_normalizers': (global_policy_entropy_normalizer, global_value_normalizer),
-            'use_value_baseline': use_value_baseline,
             'entropy_bonus_scale': ENTROPY_BONUS_COEFF * entropy_bonus_scale
         }
 
@@ -901,7 +872,6 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             probe_data['gae_advantages_chunks'],
             probe_data['next_values_chunks'],
             probe_data['global_normalizers'],
-            probe_data['use_value_baseline'],
             entropy_bonus_scale=probe_data['entropy_bonus_scale'],
             update=update,
             output_dir=output_dir
