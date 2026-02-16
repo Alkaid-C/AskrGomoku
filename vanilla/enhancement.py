@@ -20,8 +20,7 @@ from dataclasses import dataclass
 from gomoku import (
     GameState, Trajectory,
     get_local_candidate_moves,
-    play_offpolicy_rollouts_batched, select_action_batch_eval,
-    BATCH_INFERENCE_SIZE
+    play_offpolicy_rollouts_batched, select_action_batch_eval
 )
 
 
@@ -485,7 +484,6 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
         rollout_configs,
         OPR_ROLLOUT_TEMP,
         device,
-        batch_size=BATCH_INFERENCE_SIZE,
         select_action_fn=select_action_batch_eval
     )
 

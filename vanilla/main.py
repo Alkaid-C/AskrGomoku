@@ -25,7 +25,7 @@ from typing import Optional, Tuple, Dict, List
 from model import GomokuPolicyNet, N_BLOCKS, WIDTH, POLICY_WIDTH, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN
 from gomoku import (
     play_episodes_batched, select_action_batch, compute_outcome_stats,
-    BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
+    TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
 )
 from enhancement import (
     generate_offpolicy_rollout_samples, compute_adaptive_boosts, update_miss_rate_ema,
@@ -259,7 +259,6 @@ def main():
     print(f"    Bonus: coeff={ENTROPY_BONUS_COEFF}")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
     print(f"  Episodes per update: {EPISODES_PER_UPDATE} (chunks: {effective_chunk_size} x {num_accumulation_steps} accumulation steps)")
-    print(f"  Batch inference size (self-play): {BATCH_INFERENCE_SIZE}")
     print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
     print(f"  Value head: ENABLED (phase 1 weight: {VALUE_LOSS_COEFF_EARLY}, targets: TD(0))")
@@ -384,7 +383,6 @@ def main():
         t0 = time.time()
         trajectories = play_episodes_batched(
             pairs, current_is_black, TEMPERATURE_TRAIN, DEVICE,
-            batch_size=BATCH_INFERENCE_SIZE,
             select_action_batch_fn=select_action_batch,
             opening_ids=opening_ids
         )

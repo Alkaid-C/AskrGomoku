@@ -141,7 +141,6 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
 
     results = play_eval_games(
         pairs, current_is_black_list, EVAL_TEMP, device,
-        batch_size=len(pairs),
         select_action_fn=select_action_batch_eval
     )
 
@@ -212,7 +211,6 @@ def evaluate_against_opponents(current_model: nn.Module, opponents: List[nn.Modu
 
     results = play_eval_games(
         pairs, current_is_black_list, EVAL_TEMP, device,
-        batch_size=len(pairs),
         select_action_fn=select_action_batch_eval
     )
 
