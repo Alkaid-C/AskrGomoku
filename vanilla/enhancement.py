@@ -505,7 +505,7 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
             candidate_results[cand_idx]['alts'][action]['count'] += 1
 
     # Phase 5: Create off-policy rollout samples for candidates that pass the threshold
-    for cand_idx, (traj_idx, t_star, obs, mask, player, original_action, alt_actions, _, _, selected_entropy) in enumerate(candidate_info):
+    for cand_idx, (traj_idx, _, obs, mask, _, _, _, _, _, selected_entropy) in enumerate(candidate_info):
         if cand_idx not in candidate_results:
             continue
 

@@ -315,7 +315,6 @@ def probe_gradient_conflict_chunked(
 # ============================================================================
 
 def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
-                             optimizer: torch.optim.Optimizer,
                              device: torch.device,
                              num_accumulation_steps: int,
                              update: int,
@@ -430,7 +429,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         # Compute base GAE per trajectory
         gae_advantages = np.zeros(B, dtype=np.float32)
 
-        for traj_idx, traj in enumerate(trajectories):
+        for traj_idx in range(len(trajectories)):
             if not traj_value_lists[traj_idx]:
                 continue
 
@@ -646,7 +645,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     for i, chunk in enumerate(chunks):
         (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
          tactical_stats, probe_data) = _train_on_batch_internal(
-            model, chunk, optimizer, device,
+            model, chunk, device,
             num_accumulation_steps=num_chunks,
             update=update,
             ema_entropy=ema_entropy

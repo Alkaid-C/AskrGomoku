@@ -327,7 +327,7 @@ def get_local_candidate_moves(obs: np.ndarray, legal_mask: np.ndarray, radius: i
 
     for pos in legal_positions:
         r, c = pos[0], pos[1]
-        # Check if any stone within Manhattan distance
+        # Check if any stone within Chebyshev distance
         found_neighbor = False
         for dr in range(-radius, radius + 1):
             if found_neighbor:
@@ -452,7 +452,7 @@ class Trajectory:
 class GameState_InProgress:
     """Tracks state of a game in progress."""
 
-    def __init__(self, game_id: int, black_model, white_model,
+    def __init__(self, black_model, white_model,
                  current_is_black: bool, opening_id: int):
         self.board = GomokuBoard(opening_id=opening_id)
         self.black_model = black_model
@@ -490,9 +490,9 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
     if opening_ids is None:
         opening_ids = [-1] * len(black_white_pairs)
 
-    games = [GameState_InProgress(i, black, white, is_black, opening_id)
-             for i, ((black, white), is_black, opening_id) in enumerate(
-                 zip(black_white_pairs, current_is_black, opening_ids))]
+    games = [GameState_InProgress(black, white, is_black, opening_id)
+             for (black, white), is_black, opening_id in
+                 zip(black_white_pairs, current_is_black, opening_ids)]
 
     while True:
         # Get active games
@@ -547,7 +547,7 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
             # Run batched inference for each unique model
             all_actions = [None] * len(batch_games)
             all_entropies = [None] * len(batch_games)
-            for model_id, group in model_groups.items():
+            for group in model_groups.values():
                 actions, entropies = select_action_batch_fn(
                     group['model'], group['obs'], group['masks'],
                     temperature, device, deterministic

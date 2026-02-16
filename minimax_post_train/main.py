@@ -19,7 +19,6 @@ import numpy as np
 import random
 import time
 import json
-import os
 import argparse
 from typing import Optional, Tuple, Dict, List
 
@@ -113,11 +112,13 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     Returns:
         Tuple of (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
                   next_eval_update, per_opponent_win_rates,
-                  scan_event_counter, evals_since_last_scan, win_rate_ema, unfrozen_blocks) or None if no state exists
-        Note: unfrozen_blocks may be None if resuming from old state (will be recalculated)
+                  scan_event_counter, evals_since_last_scan, win_rate_ema, unfrozen_blocks) when loading succeeds.
+        Returns None only when no training state file exists.
+        Note: unfrozen_blocks may be None if resuming from old state (will be recalculated).
 
     Raises:
-        Exception if training state file exists but is corrupted or checkpoints are missing
+        Exception: If a training state file exists but is corrupt or references
+                   missing/invalid checkpoint data.
     """
     training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
     if not os.path.exists(training_state_file):
@@ -516,9 +517,6 @@ def main():
             avg_win_rate = np.mean(metric_buffer['win_rate'])
             avg_win_rate_black = np.mean(metric_buffer['win_rate_as_black'])
             avg_win_rate_white = np.mean(metric_buffer['win_rate_as_white'])
-            total_wins = sum(metric_buffer['wins'])
-            total_losses = sum(metric_buffer['losses'])
-            total_draws = sum(metric_buffer['draws'])
             avg_length = np.mean(metric_buffer['avg_length'])
             avg_time = np.mean(metric_buffer['time'])
             avg_selfplay_time = np.mean(metric_buffer['selfplay_time'])

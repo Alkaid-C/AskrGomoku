@@ -19,7 +19,6 @@ import numpy as np
 import random
 import time
 import json
-import os
 import argparse
 from typing import Optional, Tuple, Dict, List
 
@@ -114,8 +113,13 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     Returns:
         Tuple of (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
                   next_eval_update, win_miss_ema, block_miss_ema, per_opponent_win_rates,
-                  scan_event_counter, evals_since_last_scan, win_rate_ema) or None if loading fails
-        Note: opponent_pool_updates is filtered to only include successfully loaded opponents
+                  scan_event_counter, evals_since_last_scan, win_rate_ema) when loading succeeds.
+        Returns None only when no training state file exists.
+        Note: opponent_pool_updates is filtered to only include successfully loaded opponents.
+
+    Raises:
+        RuntimeError: If a training state file exists but is corrupt or references
+                      missing/invalid checkpoint data.
     """
     training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
     if not os.path.exists(training_state_file):
@@ -128,8 +132,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
         with open(training_state_file, 'r') as f:
             state = json.load(f)
     except Exception as e:
-        print(f"Error loading training state JSON: {e}")
-        return None
+        raise RuntimeError(f"Corrupt training state JSON in {training_state_file}: {e}")
 
     current_update = state['current_update']
     opponent_pool_updates = state['opponent_pool_updates']
@@ -150,15 +153,13 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
     checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{current_update}.pt")
     if not os.path.exists(checkpoint_path):
-        print(f"Error: Checkpoint not found: {checkpoint_path}")
-        return None
+        raise RuntimeError(f"Checkpoint referenced by training state not found: {checkpoint_path}")
 
     print(f"Loading checkpoint: {checkpoint_path}")
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     except Exception as e:
-        print(f"Error loading checkpoint: {e}")
-        return None
+        raise RuntimeError(f"Failed to load checkpoint {checkpoint_path}: {e}")
 
     model = GomokuPolicyNet().to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -207,8 +208,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
             continue
 
     if len(opponent_pool) == 0:
-        print("Error: No opponent models loaded from pool")
-        return None
+        raise RuntimeError("No opponent models could be loaded from pool")
 
     print(f"Successfully loaded {len(opponent_pool)} opponents")
 
@@ -493,9 +493,6 @@ def main():
             avg_win_rate = np.mean(metric_buffer['win_rate'])
             avg_win_rate_black = np.mean(metric_buffer['win_rate_as_black'])
             avg_win_rate_white = np.mean(metric_buffer['win_rate_as_white'])
-            total_wins = sum(metric_buffer['wins'])
-            total_losses = sum(metric_buffer['losses'])
-            total_draws = sum(metric_buffer['draws'])
             avg_entropy = np.mean(metric_buffer['entropy'])
             avg_value_loss = np.mean(metric_buffer['value_loss'])
             avg_raw_value_mse = np.mean(metric_buffer['raw_value_mse'])
@@ -510,7 +507,6 @@ def main():
             total_synthetic_blocks = sum(metric_buffer['tactics_synthetic_blocks'])
             total_imitation_black = sum(metric_buffer['imitation_black'])
             total_imitation_white = sum(metric_buffer['imitation_white'])
-            total_imitation = total_imitation_black + total_imitation_white
 
             latest_win_miss_ema = metric_buffer['win_miss_ema'][-1] if metric_buffer['win_miss_ema'] else 0.0
             latest_block_miss_ema = metric_buffer['block_miss_ema'][-1] if metric_buffer['block_miss_ema'] else 0.0
