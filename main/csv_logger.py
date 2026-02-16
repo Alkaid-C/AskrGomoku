@@ -89,7 +89,11 @@ class CSVLogger:
                     'shared_6_8_cos_sim', 'shared_6_8_policy_norm', 'shared_6_8_value_norm',
                     'shared_9_11_cos_sim', 'shared_9_11_policy_norm', 'shared_9_11_value_norm',
                     'dual_se_0_2_cos_sim', 'dual_se_0_2_policy_norm', 'dual_se_0_2_value_norm',
-                    'dual_se_3_5_cos_sim', 'dual_se_3_5_policy_norm', 'dual_se_3_5_value_norm'
+                    'dual_se_3_5_cos_sim', 'dual_se_3_5_policy_norm', 'dual_se_3_5_value_norm',
+                    'overall_entropy_norm', 'stem_entropy_norm',
+                    'shared_0_2_entropy_norm', 'shared_3_5_entropy_norm',
+                    'shared_6_8_entropy_norm', 'shared_9_11_entropy_norm',
+                    'dual_se_0_2_entropy_norm', 'dual_se_3_5_entropy_norm'
                 ])
 
     def log_training_update(self, update: int, metrics: dict):
@@ -151,5 +155,9 @@ class CSVLogger:
                 metrics['shared_6_8_cos_sim'], metrics['shared_6_8_policy_norm'], metrics['shared_6_8_value_norm'],
                 metrics['shared_9_11_cos_sim'], metrics['shared_9_11_policy_norm'], metrics['shared_9_11_value_norm'],
                 metrics['dual_se_0_2_cos_sim'], metrics['dual_se_0_2_policy_norm'], metrics['dual_se_0_2_value_norm'],
-                metrics['dual_se_3_5_cos_sim'], metrics['dual_se_3_5_policy_norm'], metrics['dual_se_3_5_value_norm']
+                metrics['dual_se_3_5_cos_sim'], metrics['dual_se_3_5_policy_norm'], metrics['dual_se_3_5_value_norm'],
+                metrics.get('overall_entropy_norm', 0.0), metrics.get('stem_entropy_norm', 0.0),
+                metrics.get('shared_0_2_entropy_norm', 0.0), metrics.get('shared_3_5_entropy_norm', 0.0),
+                metrics.get('shared_6_8_entropy_norm', 0.0), metrics.get('shared_9_11_entropy_norm', 0.0),
+                metrics.get('dual_se_0_2_entropy_norm', 0.0), metrics.get('dual_se_3_5_entropy_norm', 0.0)
             ])

@@ -408,7 +408,7 @@ def main():
         train_results = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
             win_boost=win_boost, block_boost=block_boost, opr_samples=opr_samples, ema_entropy=ema_entropy,
-            win_rate=win_rate_ema
+            win_rate=win_rate_ema, output_dir=output_dir
         )
         t_train = time.time() - t0
 
@@ -419,8 +419,10 @@ def main():
         # Log gradient probe if metrics collected
         if train_results['probe_metrics'] is not None:
             csv_logger.log_gradient_probe(update + 1, train_results['probe_metrics'])
-            print(f"  [Probe] Overall cos_sim={train_results['probe_metrics']['overall_cos_sim']:+.3f} | "
-                  f"Stem={train_results['probe_metrics']['stem_cos_sim']:+.3f}")
+            pm = train_results['probe_metrics']
+            print(f"  [Probe] Overall cos_sim={pm['overall_cos_sim']:+.3f} | "
+                  f"Stem={pm['stem_cos_sim']:+.3f} | "
+                  f"Entropy norm={pm['overall_entropy_norm']:.4f}")
             torch.cuda.empty_cache()
 
         # Update miss rate EMAs

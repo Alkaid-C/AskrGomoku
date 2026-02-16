@@ -89,7 +89,11 @@ class CSVLogger:
                     'blocks_6_8_cos_sim', 'blocks_6_8_policy_norm', 'blocks_6_8_value_norm',
                     'blocks_9_11_cos_sim', 'blocks_9_11_policy_norm', 'blocks_9_11_value_norm',
                     'blocks_12_14_cos_sim', 'blocks_12_14_policy_norm', 'blocks_12_14_value_norm',
-                    'blocks_15_17_cos_sim', 'blocks_15_17_policy_norm', 'blocks_15_17_value_norm'
+                    'blocks_15_17_cos_sim', 'blocks_15_17_policy_norm', 'blocks_15_17_value_norm',
+                    'overall_entropy_norm', 'stem_entropy_norm',
+                    'blocks_0_2_entropy_norm', 'blocks_3_5_entropy_norm',
+                    'blocks_6_8_entropy_norm', 'blocks_9_11_entropy_norm',
+                    'blocks_12_14_entropy_norm', 'blocks_15_17_entropy_norm'
                 ])
 
     def log_training_update(self, update: int, metrics: dict):
@@ -151,5 +155,9 @@ class CSVLogger:
                 metrics['blocks_6_8_cos_sim'], metrics['blocks_6_8_policy_norm'], metrics['blocks_6_8_value_norm'],
                 metrics['blocks_9_11_cos_sim'], metrics['blocks_9_11_policy_norm'], metrics['blocks_9_11_value_norm'],
                 metrics['blocks_12_14_cos_sim'], metrics['blocks_12_14_policy_norm'], metrics['blocks_12_14_value_norm'],
-                metrics['blocks_15_17_cos_sim'], metrics['blocks_15_17_policy_norm'], metrics['blocks_15_17_value_norm']
+                metrics['blocks_15_17_cos_sim'], metrics['blocks_15_17_policy_norm'], metrics['blocks_15_17_value_norm'],
+                metrics.get('overall_entropy_norm', 0.0), metrics.get('stem_entropy_norm', 0.0),
+                metrics.get('blocks_0_2_entropy_norm', 0.0), metrics.get('blocks_3_5_entropy_norm', 0.0),
+                metrics.get('blocks_6_8_entropy_norm', 0.0), metrics.get('blocks_9_11_entropy_norm', 0.0),
+                metrics.get('blocks_12_14_entropy_norm', 0.0), metrics.get('blocks_15_17_entropy_norm', 0.0)
             ])

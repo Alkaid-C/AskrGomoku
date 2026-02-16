@@ -8,6 +8,7 @@ Contains the core training logic:
 - Gradient conflict probing
 """
 
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -112,14 +113,17 @@ def probe_gradient_conflict_chunked(
     gae_advantages_chunks: List[torch.Tensor],
     next_values_chunks: List[Optional[torch.Tensor]],
     global_normalizers: Tuple[float, float],
-    use_value_baseline: bool
+    use_value_baseline: bool,
+    entropy_bonus_scale: float = 1.0,
+    update: int = 0,
+    output_dir: str = ''
 ) -> Dict[str, float]:
     """
     Probe gradient conflict using chunked gradient accumulation.
 
-    Computes gradients for policy and value losses separately across chunks,
-    accumulating them without retaining the full computational graph.
-    This is memory-efficient for large batches.
+    Computes 5 gradient vectors (policy_real, policy_synthetic, value_real,
+    entropy_real, entropy_synthetic) separately across chunks, saves full
+    vectors to .npz, and returns summary metrics for CSV logging.
     """
     # Save current gradients
     saved_grads = {}
@@ -127,26 +131,29 @@ def probe_gradient_conflict_chunked(
         if param.grad is not None:
             saved_grads[name] = param.grad.clone()
 
-    # Initialize accumulated gradients
-    policy_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
-    value_grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+    # Initialize 5 gradient accumulators
+    grad_keys = ['policy_real', 'policy_synthetic', 'value_real', 'entropy_real', 'entropy_synthetic']
+    grad_accum = {
+        key: {name: torch.zeros_like(param) for name, param in model.named_parameters()}
+        for key in grad_keys
+    }
 
     global_policy_entropy_normalizer, global_value_normalizer = global_normalizers
 
-    # Accumulate policy gradients across chunks
+    # --- Loop 1: policy_real ---
     model.zero_grad()
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
-        next_obs = next_obs_chunks[i]
         actions = actions_chunks[i]
         masks = masks_chunks[i]
         returns = returns_chunks[i]
-        value_targets = value_targets_chunks[i]
-        is_terminal = is_terminal_chunks[i]
         is_synthetic = is_synthetic_chunks[i]
         weights = weights_chunks[i]
         gae_advantages = gae_advantages_chunks[i]
-        next_values = next_values_chunks[i]
+
+        real_mask = ~is_synthetic
+        if not real_mask.any():
+            continue
 
         batch_size = obs.size(0)
 
@@ -161,18 +168,50 @@ def probe_gradient_conflict_chunked(
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
 
         advantages = gae_advantages if use_value_baseline else returns
-        policy_loss = -(weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
-
+        policy_loss = -(weights * real_mask.float() * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
         policy_loss.backward()
 
-        # Accumulate policy gradients
         for name, param in model.named_parameters():
             if param.grad is not None:
-                policy_grads[name] += param.grad.detach()
-
+                grad_accum['policy_real'][name] += param.grad.detach()
         model.zero_grad()
 
-    # Accumulate value gradients across chunks
+    # --- Loop 2: policy_synthetic ---
+    for i in range(len(obs_chunks)):
+        obs = obs_chunks[i]
+        actions = actions_chunks[i]
+        masks = masks_chunks[i]
+        returns = returns_chunks[i]
+        is_synthetic = is_synthetic_chunks[i]
+        weights = weights_chunks[i]
+        gae_advantages = gae_advantages_chunks[i]
+
+        synth_mask = is_synthetic
+        if not synth_mask.any():
+            continue
+
+        batch_size = obs.size(0)
+
+        logits_grid, values = model(obs)
+        logits = logits_grid.squeeze(1)
+        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
+        logits_flat = logits.view(batch_size, 225)
+
+        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
+        dist = Categorical(logits=logits_scaled, validate_args=False)
+        batch_log_probs = dist.log_prob(actions)
+        batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
+
+        advantages = gae_advantages if use_value_baseline else returns
+        policy_loss = -(weights * synth_mask.float() * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+        policy_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_accum['policy_synthetic'][name] += param.grad.detach()
+        model.zero_grad()
+
+    # --- Loop 3: value_real (already masks synthetic internally) ---
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
         next_obs = next_obs_chunks[i]
@@ -199,17 +238,115 @@ def probe_gradient_conflict_chunked(
         value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
         value_loss_mask = ~is_synthetic
         value_loss = (weights * value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
-
         value_loss.backward()
 
-        # Accumulate value gradients
         for name, param in model.named_parameters():
             if param.grad is not None:
-                value_grads[name] += param.grad.detach()
-
+                grad_accum['value_real'][name] += param.grad.detach()
         model.zero_grad()
 
-    # Compute cosine similarity helper
+    # --- Loop 4: entropy_real ---
+    for i in range(len(obs_chunks)):
+        obs = obs_chunks[i]
+        masks = masks_chunks[i]
+        is_synthetic = is_synthetic_chunks[i]
+        weights = weights_chunks[i]
+
+        real_mask = ~is_synthetic
+        if not real_mask.any():
+            continue
+
+        batch_size = obs.size(0)
+
+        logits_grid, values = model(obs)
+        logits = logits_grid.squeeze(1)
+        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
+        logits_flat = logits.view(batch_size, 225)
+
+        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
+        dist = Categorical(logits=logits_scaled, validate_args=False)
+        entropies = dist.entropy()
+
+        entropy_loss = entropy_bonus_scale * (-(weights * real_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
+        entropy_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_accum['entropy_real'][name] += param.grad.detach()
+        model.zero_grad()
+
+    # --- Loop 5: entropy_synthetic ---
+    for i in range(len(obs_chunks)):
+        obs = obs_chunks[i]
+        masks = masks_chunks[i]
+        is_synthetic = is_synthetic_chunks[i]
+        weights = weights_chunks[i]
+
+        synth_mask = is_synthetic
+        if not synth_mask.any():
+            continue
+
+        batch_size = obs.size(0)
+
+        logits_grid, values = model(obs)
+        logits = logits_grid.squeeze(1)
+        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
+        logits_flat = logits.view(batch_size, 225)
+
+        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
+        dist = Categorical(logits=logits_scaled, validate_args=False)
+        entropies = dist.entropy()
+
+        entropy_loss = entropy_bonus_scale * (-(weights * synth_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
+        entropy_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_accum['entropy_synthetic'][name] += param.grad.detach()
+        model.zero_grad()
+
+    # --- Flatten vectors & save .npz ---
+    param_names_ordered = [name for name, _ in model.named_parameters()]
+    flat_vectors = {}
+    param_offsets = []
+    offset = 0
+    for name in param_names_ordered:
+        numel = grad_accum['policy_real'][name].numel()
+        param_offsets.append(offset)
+        offset += numel
+
+    for key in grad_keys:
+        parts = [grad_accum[key][name].flatten().cpu().float().numpy() for name in param_names_ordered]
+        flat_vectors[key] = np.concatenate(parts) if parts else np.array([], dtype=np.float32)
+
+    if output_dir:
+        npz_path = os.path.join(output_dir, f'gradient_probe_{update+1:06d}.npz')
+        np.savez_compressed(
+            npz_path,
+            policy_real=flat_vectors['policy_real'],
+            policy_synthetic=flat_vectors['policy_synthetic'],
+            value_real=flat_vectors['value_real'],
+            entropy_real=flat_vectors['entropy_real'],
+            entropy_synthetic=flat_vectors['entropy_synthetic'],
+            param_names=np.array(param_names_ordered, dtype=object),
+            param_offsets=np.array(param_offsets, dtype=np.int64),
+            entropy_bonus_scale=np.float32(entropy_bonus_scale),
+            update=np.int32(update + 1)
+        )
+
+    # --- Compute CSV summary metrics ---
+    # Combined policy grads = policy_real + policy_synthetic (backward-compatible)
+    policy_grads = {
+        name: grad_accum['policy_real'][name] + grad_accum['policy_synthetic'][name]
+        for name in param_names_ordered
+    }
+    value_grads = grad_accum['value_real']
+    # Combined entropy grads = entropy_real + entropy_synthetic
+    entropy_grads = {
+        name: grad_accum['entropy_real'][name] + grad_accum['entropy_synthetic'][name]
+        for name in param_names_ordered
+    }
+
     def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
         grads_1 = []
         grads_2 = []
@@ -233,6 +370,12 @@ def probe_gradient_conflict_chunked(
         cos = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0)).item()
         return cos, norm1, norm2
 
+    def compute_norm(grad_dict: dict, param_names: List[str]) -> float:
+        parts = [grad_dict[name].flatten() for name in param_names if name in grad_dict]
+        if not parts:
+            return 0.0
+        return torch.cat(parts).norm().item()
+
     # Categorize parameters
     stem_params = []
     trunk_params = {
@@ -241,7 +384,7 @@ def probe_gradient_conflict_chunked(
     }
     all_trunk_stem_params = []
 
-    for name in policy_grads.keys():
+    for name in param_names_ordered:
         if any(x in name for x in ['conv_3x3', 'conv_directional5', 'conv_full5',
                                      'conv_directional7', 'conv_full7', 'conv_1x1',
                                      'stem_norm', 'stem_conv']):
@@ -254,7 +397,7 @@ def probe_gradient_conflict_chunked(
             trunk_params[layer_key].append(name)
             all_trunk_stem_params.append(name)
 
-    # Compute cosine similarities
+    # Compute cosine similarities (policy vs value, backward-compatible)
     overall_cos, overall_norm_p, overall_norm_v = cosine_sim(policy_grads, value_grads, all_trunk_stem_params)
     stem_cos, stem_norm_p, stem_norm_v = cosine_sim(policy_grads, value_grads, stem_params)
 
@@ -262,6 +405,14 @@ def probe_gradient_conflict_chunked(
     for layer_key in sorted(trunk_params.keys()):
         layer_cos, layer_norm_p, layer_norm_v = cosine_sim(policy_grads, value_grads, trunk_params[layer_key])
         trunk_metrics[layer_key] = (layer_cos, layer_norm_p, layer_norm_v)
+
+    # Compute entropy norms per group
+    overall_entropy_norm = compute_norm(entropy_grads, all_trunk_stem_params)
+    stem_entropy_norm = compute_norm(entropy_grads, stem_params)
+
+    trunk_entropy_norms = {}
+    for layer_key in sorted(trunk_params.keys()):
+        trunk_entropy_norms[layer_key] = compute_norm(entropy_grads, trunk_params[layer_key])
 
     # Restore original gradients
     model.zero_grad()
@@ -285,6 +436,13 @@ def probe_gradient_conflict_chunked(
         metrics[f'{prefix}_cos_sim'] = cos
         metrics[f'{prefix}_policy_norm'] = norm_p
         metrics[f'{prefix}_value_norm'] = norm_v
+
+    # Entropy norm metrics
+    metrics['overall_entropy_norm'] = overall_entropy_norm
+    metrics['stem_entropy_norm'] = stem_entropy_norm
+    for layer_key in ['blocks_0-2', 'blocks_3-5', 'blocks_6-8', 'blocks_9-11', 'blocks_12-14', 'blocks_15-17']:
+        prefix = layer_key.replace('-', '_')
+        metrics[f'{prefix}_entropy_norm'] = trunk_entropy_norms.get(layer_key, 0.0)
 
     return metrics
 
@@ -688,7 +846,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             'gae_advantages_chunks': probe_gae_advantages_chunks,
             'next_values_chunks': probe_next_values_chunks,
             'global_normalizers': (global_policy_entropy_normalizer, global_value_normalizer),
-            'use_value_baseline': use_value_baseline
+            'use_value_baseline': use_value_baseline,
+            'entropy_bonus_scale': ENTROPY_BONUS_COEFF * entropy_bonus_scale
         }
 
     return (total_loss_scalar, mean_return, total_entropy_scalar, total_value_loss_scalar,
@@ -705,7 +864,8 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    block_boost: float,
                    opr_samples: List[dict],
                    ema_entropy: float,
-                   win_rate: float) -> dict:
+                   win_rate: float,
+                   output_dir: str = '') -> dict:
     """
     Train on a batch of trajectories with gradient accumulation.
 
@@ -814,6 +974,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
         # Use global normalizers from first chunk (they should be the same across chunks)
         global_normalizers = all_probe_data[0]['global_normalizers']
         use_value_baseline = all_probe_data[0]['use_value_baseline']
+        entropy_bonus_scale = all_probe_data[0]['entropy_bonus_scale']
 
         collected_probe_metrics = probe_gradient_conflict_chunked(
             model,
@@ -829,7 +990,10 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             merged_gae_advantages_chunks,
             merged_next_values_chunks,
             global_normalizers,
-            use_value_baseline
+            use_value_baseline,
+            entropy_bonus_scale=entropy_bonus_scale,
+            update=update,
+            output_dir=output_dir
         )
 
     # Optimizer step (after all gradients accumulated)
