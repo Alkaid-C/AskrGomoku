@@ -121,6 +121,8 @@ class GomokuPolicyNet(nn.Module):
             DualSEResidualBlock(WIDTH, dilation2=TRUNK_DILATION2_SCHEDULE[N_SHARED_BLOCKS + i])
             for i in range(N_DUAL_SE_BLOCKS)
         ])
+        self.trunk_norm_policy = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
+        self.trunk_norm_value = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 
         # Policy head: dual-attention with conv refinement
         # Stage 1: fused projection (trunk → features + Q/K/V for attention 1)
@@ -233,6 +235,9 @@ class GomokuPolicyNet(nn.Module):
         for block in self.dual_se_blocks:
             x_policy, x_value = block(x_policy, x_value)
 
+        x_policy = F.silu(self.trunk_norm_policy(x_policy))
+        x_value = F.silu(self.trunk_norm_value(x_value))
+
         logits_grid = self._policy_head(x_policy)
         value = self._value_head(x_value)
         return logits_grid, value
@@ -250,6 +255,7 @@ class GomokuPolicyNet(nn.Module):
         for block in self.dual_se_blocks:
             x = block.forward_policy(x)
 
+        x = F.silu(self.trunk_norm_policy(x))
         return self._policy_head(x)
 
     def forward_value_only(self, x: torch.Tensor) -> torch.Tensor:
@@ -265,6 +271,7 @@ class GomokuPolicyNet(nn.Module):
         for block in self.dual_se_blocks:
             x = block.forward_value(x)
 
+        x = F.silu(self.trunk_norm_value(x))
         return self._value_head(x)
 
 
@@ -368,34 +375,38 @@ class DualSEResidualBlock(nn.Module):
 
     def __init__(self, channels: int, dilation2: int):
         super().__init__()
-        self.norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        # Norms are separate per stream (cheap, allows divergence);
+        # convs are shared (expensive, parameter-efficient).
+        self.norm1_policy = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        self.norm1_value = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
-        self.norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        self.norm2_policy = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
+        self.norm2_value = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=channels)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=dilation2, dilation=dilation2)
         self.se_policy = SEBlock(channels)
         self.se_value = SEBlock(channels)
 
-    def _shared_conv(self, x: torch.Tensor) -> torch.Tensor:
-        out = F.silu(self.norm1(x), inplace=True)
+    def _conv_path(self, x: torch.Tensor, norm1: nn.Module, norm2: nn.Module) -> torch.Tensor:
+        out = F.silu(norm1(x), inplace=True)
         out = self.conv1(out)
-        out = F.silu(self.norm2(out), inplace=True)
+        out = F.silu(norm2(out), inplace=True)
         out = self.conv2(out)
         return out
 
     def forward(self, x_policy: torch.Tensor, x_value: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Both streams: shared convs + independent SE + skip."""
-        out_p = self._shared_conv(x_policy)
-        out_v = self._shared_conv(x_value)
+        """Both streams: separate norms + shared convs + independent SE + skip."""
+        out_p = self._conv_path(x_policy, self.norm1_policy, self.norm2_policy)
+        out_v = self._conv_path(x_value, self.norm1_value, self.norm2_value)
         return self.se_policy(out_p) + x_policy, self.se_value(out_v) + x_value
 
     def forward_policy(self, x: torch.Tensor) -> torch.Tensor:
-        """Policy stream only: shared convs + policy SE + skip."""
-        out = self._shared_conv(x)
+        """Policy stream only: policy norms + shared convs + policy SE + skip."""
+        out = self._conv_path(x, self.norm1_policy, self.norm2_policy)
         return self.se_policy(out) + x
 
     def forward_value(self, x: torch.Tensor) -> torch.Tensor:
-        """Value stream only: shared convs + value SE + skip."""
-        out = self._shared_conv(x)
+        """Value stream only: value norms + shared convs + value SE + skip."""
+        out = self._conv_path(x, self.norm1_value, self.norm2_value)
         return self.se_value(out) + x
 
 

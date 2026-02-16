@@ -40,11 +40,11 @@ LEARNING_RATE = 1.0/8192
 MIN_LR = 0.125/8192
 LR_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Decay midpoint at 75% of training
 LR_DECAY_STEEPNESS = 0.5             # Transition spread over 50% of total training
-WEIGHT_DECAY = 1e-8
+WEIGHT_DECAY = 1.0/134217728
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
+EPISODES_PER_UPDATE = 96       # Episodes to collect before each training update
 TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
 
 # --- EMA Smoothing ---

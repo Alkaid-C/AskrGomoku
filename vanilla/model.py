@@ -37,7 +37,7 @@ class GomokuPolicyNet(nn.Module):
     - Simple stem with single 3x3 convolution
     - Residual trunk with standard residual blocks (no dilation, no SE)
     - Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1 to 1
-    - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
+    - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
     """
 
     def __init__(self, n_blocks: int):
@@ -53,6 +53,7 @@ class GomokuPolicyNet(nn.Module):
             ResidualBlock(WIDTH)
             for _ in range(n_blocks)
         ])
+        self.trunk_norm = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 
         # === Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1 ===
         self.policy_conv1 = nn.Conv2d(WIDTH, POLICY_WIDTH, kernel_size=3, padding=1)
@@ -64,7 +65,7 @@ class GomokuPolicyNet(nn.Module):
         self.policy_out = nn.Conv2d(POLICY_WIDTH, 1, kernel_size=1)
 
         # === Value head: classic design ===
-        # Conv1x1 to VALUE_HEAD_CHANNELS → GroupNorm → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
+        # Conv1x1 to VALUE_HEAD_CHANNELS → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
         self.value_conv = nn.Conv2d(WIDTH, VALUE_HEAD_CHANNELS, kernel_size=1)
         self.value_fc1 = nn.Linear(VALUE_HEAD_CHANNELS * 15 * 15, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
@@ -91,6 +92,7 @@ class GomokuPolicyNet(nn.Module):
         for block in self.blocks:
             x = block(x)
 
+        x = F.silu(self.trunk_norm(x))
         trunk_features = x
         batch_size = trunk_features.size(0)
 
@@ -103,7 +105,7 @@ class GomokuPolicyNet(nn.Module):
         p = F.silu(self.policy_norm3(p))
         logits_grid = self.policy_out(p)  # [B, 1, 15, 15]
 
-        # Value head: Conv1x1 → GroupNorm → SiLU → flatten → FC → SiLU → FC → tanh
+        # Value head: Conv1x1 → SiLU → flatten → FC → SiLU → FC → tanh
         value_features = self.value_conv(trunk_features)  # [B, VALUE_HEAD_CHANNELS, 15, 15]
         value_features = F.silu(value_features)
         value_features = value_features.view(batch_size, -1)  # [B, VALUE_HEAD_CHANNELS*15*15]
