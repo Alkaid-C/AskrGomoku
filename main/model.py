@@ -41,7 +41,8 @@ TRUNK_DILATION2_SCHEDULE = [
 
 # Head architecture
 POLICY_HEAD_D = 64             # Policy head intermediate channels (d_p)
-POLICY_HEAD_MLP_HIDDEN = 192   # Policy head global MLP hidden size (h)
+POLICY_HEAD_GROUPS = 4         # GroupNorm groups for 64-ch policy tensors
+POLICY_HEAD_NUM_HEADS = 4      # Attention heads in policy head
 VALUE_HEAD_C1 = 128            # Layer 1: 96 -> 128
 VALUE_HEAD_C2_SPLIT = 128      # Layer 2: 128 -> 128(d1) + 128(d2) = 256
 VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
@@ -70,7 +71,7 @@ class GomokuPolicyNet(nn.Module):
     Architecture:
     - Mixed stem with dilated convolution branches
     - Residual trunk with configurable depth and dilation schedule
-    - Policy head: FiLM-based (local conv tower + global FiLM modulation)
+    - Policy head: Dual-attention (two attention blocks with conv refinement)
     - Value head: 2x 3x3 valid convs (15->11) + 1x1 reduction + 2-layer MLP
     """
 
@@ -121,34 +122,33 @@ class GomokuPolicyNet(nn.Module):
             for i in range(N_DUAL_SE_BLOCKS)
         ])
 
-        # Policy head: FiLM-based (Feature-wise Linear Modulation)
-        # Local feature tower: 3x3 -> 3x3 (reduce) -> 3x3
-        self.policy_conv1 = nn.Conv2d(WIDTH, WIDTH, kernel_size=3, stride=1, padding=1)
-        self.policy_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
-        self.policy_conv2 = nn.Conv2d(WIDTH, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
-        self.policy_norm2 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_HEAD_D)
-        self.policy_conv3 = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, kernel_size=3, stride=1, padding=1)
-        self.policy_norm3 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=POLICY_HEAD_D)
-        # FiLM parameter generator
-        self.policy_film_fc1 = nn.Linear(WIDTH, POLICY_HEAD_MLP_HIDDEN)
-        self.policy_film_fc2 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, POLICY_HEAD_MLP_HIDDEN)
-        self.policy_film_fc3 = nn.Linear(POLICY_HEAD_MLP_HIDDEN, 2 * POLICY_HEAD_D)
+        # Policy head: dual-attention with conv refinement
+        # Stage 1: fused projection (trunk → features + Q/K/V for attention 1)
+        self.policy_fused_proj = nn.Conv2d(WIDTH, POLICY_HEAD_D * 4, kernel_size=1, bias=False)
+        self.policy_fused_norm = nn.GroupNorm(POLICY_HEAD_GROUPS * 4, POLICY_HEAD_D * 4)
 
-        # FiLM bias initialization: gamma ≈ 1, beta ≈ 0 on average
-        # Weight keeps default Kaiming init so FiLM is board-dependent from the start
-        with torch.no_grad():
-            D = POLICY_HEAD_D
-            self.policy_film_fc3.bias[:D].fill_(1.0)   # gamma init -> 1
-            self.policy_film_fc3.bias[D:].zero_()      # beta init -> 0
+        # Stage 1: first attention
+        self.policy_attn1 = AttentionCore(POLICY_HEAD_D, POLICY_HEAD_NUM_HEADS)
+
+        # Stage 2: conv refinement pair (with residual)
+        self.policy_refine_conv1 = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, 3, padding=1, bias=False)
+        self.policy_refine_norm1 = nn.GroupNorm(POLICY_HEAD_GROUPS, POLICY_HEAD_D)
+        self.policy_refine_conv2 = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, 3, padding=1, bias=False)
+        self.policy_refine_norm2 = nn.GroupNorm(POLICY_HEAD_GROUPS, POLICY_HEAD_D)
+
+        # Stage 3: Q/K/V projection for attention 2
+        self.policy_qkv_proj = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D * 3, kernel_size=1, bias=False)
+        self.policy_qkv_norm = nn.GroupNorm(POLICY_HEAD_GROUPS * 3, POLICY_HEAD_D * 3)
+
+        # Stage 3: second attention
+        self.policy_attn2 = AttentionCore(POLICY_HEAD_D, POLICY_HEAD_NUM_HEADS)
+
+        # Stage 4: final refinement + logits
+        self.policy_final_conv = nn.Conv2d(POLICY_HEAD_D, POLICY_HEAD_D, 3, padding=1, bias=False)
+        self.policy_final_norm = nn.GroupNorm(POLICY_HEAD_GROUPS, POLICY_HEAD_D)
 
         # Logits output
         self.policy_logits = nn.Conv2d(POLICY_HEAD_D, 1, kernel_size=1, stride=1, padding=0)
-
-        # No-FiLM bypass path (safety mechanism for spatial detail preservation)
-        self.policy_logits_bypass = nn.Conv2d(POLICY_HEAD_D, 1, kernel_size=1, bias=False)
-        # Use sigmoid to constrain alpha ∈ (0, 1)
-        # Initialize alpha_raw to -2.0, so sigmoid(-2.0) ≈ 0.12 (small but non-zero)
-        self.policy_bypass_alpha = nn.Parameter(torch.tensor(-2.0))
 
         # Value head: conv & channel expansion + GAP + FC
         #Conv Layer 1
@@ -182,30 +182,28 @@ class GomokuPolicyNet(nn.Module):
         return x
 
     def _policy_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
-        """Policy head: FiLM-based. Returns logits_grid [B, 1, 15, 15]."""
-        # 1. Local feature tower
-        E1 = F.silu(self.policy_norm1(self.policy_conv1(trunk_features)))
-        E2 = F.silu(self.policy_norm2(self.policy_conv2(E1)))
-        H = F.silu(self.policy_norm3(self.policy_conv3(E2)))  # [B, d_p, 15, 15]
+        """Policy head: dual-attention with conv refinement. Returns logits_grid [B, 1, 15, 15]."""
+        # Stage 1: fused projection → split into features + Q/K/V
+        fused = self.policy_fused_norm(self.policy_fused_proj(trunk_features))
+        x_1_raw, q1, k1, v1 = torch.split(fused, POLICY_HEAD_D, dim=1)
+        x_1 = F.silu(x_1_raw)
 
-        # 2. Global state extraction
-        g = trunk_features.mean(dim=(2, 3))  # [B, WIDTH] - Global Average Pooling
+        # Stage 1: first attention (residual)
+        x_2 = x_1 + self.policy_attn1(q1, k1, v1)
 
-        # 3. FiLM parameter generation
-        film_params = F.silu(self.policy_film_fc1(g))  # [B, h]
-        film_params = F.silu(self.policy_film_fc2(film_params))  # [B, h]
-        film_params = self.policy_film_fc3(film_params)  # [B, 2*d_p]
-        gamma, beta = film_params.chunk(2, dim=1)  # [B, d_p], [B, d_p]
+        # Stage 2: conv refinement pair (residual)
+        x_3 = F.silu(self.policy_refine_norm1(self.policy_refine_conv1(x_2)))
+        x_4 = F.silu(self.policy_refine_norm2(self.policy_refine_conv2(x_3)))
+        x_5 = x_2 + x_4
 
-        # 4. FiLM modulation: H' = γ ⊙ H + β
-        H_modulated = gamma[:, :, None, None] * H + beta[:, :, None, None]  # [B, d_p, 15, 15]
+        # Stage 3: second attention (residual)
+        qkv = self.policy_qkv_norm(self.policy_qkv_proj(x_5))
+        q2, k2, v2 = torch.split(qkv, POLICY_HEAD_D, dim=1)
+        x_6 = x_5 + self.policy_attn2(q2, k2, v2)
 
-        # 5. Logits output (with bypass path for spatial detail preservation)
-        logits_film = self.policy_logits(H_modulated)  # FiLM-modulated path [B, 1, 15, 15]
-        logits_bypass = self.policy_logits_bypass(H)   # Pre-FiLM bypass path [B, 1, 15, 15]
-        alpha = torch.sigmoid(self.policy_bypass_alpha)
-        logits_grid = logits_film + alpha * logits_bypass  # Combined output
-        return logits_grid
+        # Stage 4: final refinement → logits
+        x_7 = F.silu(self.policy_final_norm(self.policy_final_conv(x_6)))
+        return self.policy_logits(x_7)
 
     def _value_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
         """Value head: conv + GAP + FC. Returns value [B, 1]."""
@@ -285,6 +283,58 @@ class SEBlock(nn.Module):
         y = F.silu(self.fc1(y), inplace=True)
         y = torch.sigmoid(self.fc2(y))
         return x * y.view(b, c, 1, 1)
+
+
+class AttentionCore(nn.Module):
+    """Multi-head self-attention with dihedral-symmetric 2D relative positional bias.
+
+    Reusable module for the policy head. Does NOT add a residual connection —
+    the caller handles that.
+    """
+
+    def __init__(self, channels: int, num_heads: int):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = channels // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.out_proj = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        nn.init.zeros_(self.out_proj.weight)
+
+        self.relative_bias_table = nn.Parameter(torch.zeros(num_heads, 120))
+
+        # Precompute dihedral-symmetric relative position index buffer
+        coords = torch.arange(15)
+        y, x = torch.meshgrid(coords, coords, indexing='ij')
+        coords_flat = torch.stack([y.flatten(), x.flatten()], dim=-1)   # [225, 2]
+        rel = coords_flat[:, None, :] - coords_flat[None, :, :]         # [225, 225, 2]
+        abs_rel = rel.abs()
+        big = abs_rel.max(dim=-1).values     # [225, 225]
+        small = abs_rel.min(dim=-1).values   # [225, 225]
+        index = big * (big + 1) // 2 + small  # [225, 225], values in [0, 119]
+        self.register_buffer("rel_index", index)
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+        B, C, H, W = q.shape
+        N = H * W  # 225
+
+        # Reshape to [B, heads, N, head_dim]
+        q = q.reshape(B, self.num_heads, self.head_dim, N).permute(0, 1, 3, 2)
+        k = k.reshape(B, self.num_heads, self.head_dim, N).permute(0, 1, 3, 2)
+        v = v.reshape(B, self.num_heads, self.head_dim, N).permute(0, 1, 3, 2)
+
+        # Scaled dot-product attention + relative positional bias
+        scores = (q @ k.transpose(-2, -1)) * self.scale   # [B, heads, N, N]
+        bias = self.relative_bias_table[:, self.rel_index]  # [heads, 225, 225]
+        scores = scores + bias
+
+        attn = torch.softmax(scores, dim=-1)
+        out = attn @ v  # [B, heads, N, head_dim]
+
+        # Reshape back to [B, C, H, W]
+        out = out.permute(0, 1, 3, 2).reshape(B, C, H, W)
+        out = self.out_proj(out)
+        return out
 
 
 class ResidualBlock(nn.Module):
