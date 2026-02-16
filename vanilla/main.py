@@ -34,7 +34,7 @@ from enhancement import (
 from training import (
     train_on_batch, compute_entropy_schedule,
     TOTAL_UPDATES, LEARNING_RATE, MIN_LR, LR_DECAY_MIDPOINT_PERCENTAGE, LR_DECAY_STEEPNESS, WEIGHT_DECAY,
-    EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE,
+    EPISODES_PER_UPDATE,
     ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
     ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
     VALUE_LOSS_COEFF_EARLY, VALUE_LOSS_COEFF_GAE, GAE_LAMBDA, VALUE_BASELINE_START,
@@ -238,27 +238,19 @@ def main():
     print(f"Output directory: {output_dir}")
     print()
 
-    effective_chunk_size = min(EPISODES_CHUNK_SIZE, EPISODES_PER_UPDATE)
-    if EPISODES_PER_UPDATE < EPISODES_CHUNK_SIZE:
-        print(f"NOTE: EPISODES_PER_UPDATE ({EPISODES_PER_UPDATE}) < EPISODES_CHUNK_SIZE ({EPISODES_CHUNK_SIZE})")
-        print(f"  Using chunk size = {effective_chunk_size} (no gradient accumulation)")
-        print()
-
     print(f"Using device: {DEVICE}")
     print(f"Model architecture:")
     print(f"  Stem: 3x3 conv -> {WIDTH} channels")
     print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels (standard pre-activation, no dilation, no SE)")
     print(f"  Policy head: 3x Conv3x3 -> {POLICY_WIDTH}ch (GroupNorm+SiLU) -> Conv1x1 -> 1")
     print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
-    num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
-
     print(f"Training configuration:")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
     print(f"    Target entropy: {ENTROPY_TARGET_START} -> {ENTROPY_TARGET_END} nats (sigmoid: mid={ENTROPY_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={ENTROPY_DECAY_STEEPNESS:.0%})")
     print(f"    Bonus: coeff={ENTROPY_BONUS_COEFF}")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
-    print(f"  Episodes per update: {EPISODES_PER_UPDATE} (chunks: {effective_chunk_size} x {num_accumulation_steps} accumulation steps)")
+    print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
     print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
     print(f"  Value head: ENABLED (phase 1 weight: {VALUE_LOSS_COEFF_EARLY}, targets: TD(0))")
@@ -404,7 +396,7 @@ def main():
 
         t0 = time.time()
         train_results = train_on_batch(
-            current_policy, trajectories, optimizer, DEVICE, chunk_size=effective_chunk_size, update=update,
+            current_policy, trajectories, optimizer, DEVICE, update=update,
             win_boost=win_boost, block_boost=block_boost, opr_samples=opr_samples, ema_entropy=ema_entropy,
             win_rate=win_rate_ema, output_dir=output_dir
         )

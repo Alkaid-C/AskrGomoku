@@ -46,7 +46,6 @@ GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
 EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
-EPISODES_CHUNK_SIZE = 32       # Chunk size for gradient accumulation (saves VRAM)
 TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
 
 # --- EMA Smoothing ---
@@ -455,7 +454,6 @@ def probe_gradient_conflict_chunked(
 
 def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                              device: torch.device,
-                             num_accumulation_steps: int,
                              update: int,
                              win_boost: float,
                              block_boost: float,
@@ -813,7 +811,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         value_loss_coeff = VALUE_LOSS_COEFF_GAE if use_value_baseline else VALUE_LOSS_COEFF_EARLY
-        loss_mb = (policy_loss_mb + value_loss_coeff * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb) / num_accumulation_steps
+        loss_mb = policy_loss_mb + value_loss_coeff * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb
         loss_mb.backward()
 
         accumulated_loss += loss_mb.item()
@@ -859,7 +857,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    optimizer: torch.optim.Optimizer,
                    device: torch.device,
-                   chunk_size: int,
                    update: int,
                    win_boost: float,
                    block_boost: float,
@@ -868,154 +865,61 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
                    win_rate: float,
                    output_dir: str = '') -> dict:
     """
-    Train on a batch of trajectories with gradient accumulation.
+    Train on a batch of trajectories.
 
     Returns:
         Dictionary with training statistics
     """
-    num_chunks = (len(trajectories) + chunk_size - 1) // chunk_size
-    chunks = [trajectories[i * chunk_size:(i + 1) * chunk_size] for i in range(num_chunks)]
-
     optimizer.zero_grad()
 
-    total_loss = 0.0
-    total_returns = []
-    total_entropy = 0.0
-    total_value_loss = 0.0
-    total_raw_value_mse = 0.0
-    total_tactical_stats = TacticalStats()
-    total_imitation_black = 0
-    total_imitation_white = 0
-    total_opr_samples = 0
-    num_chunks_processed = 0
+    (loss, mean_return, entropy, value_loss, raw_value_mse,
+     tactical_stats, num_imitation_black, num_imitation_white,
+     num_opr, probe_data) = _train_on_batch_internal(
+        model, trajectories, device,
+        update=update,
+        win_boost=win_boost,
+        block_boost=block_boost,
+        opr_samples=opr_samples,
+        ema_entropy=ema_entropy,
+        win_rate=win_rate
+    )
+
+    # Run gradient probe (before optimizer step)
     collected_probe_metrics = None
-
-    # Collect probe data from all chunks
-    should_probe = PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0
-    all_probe_data = [] if should_probe else None
-
-    for i, chunk in enumerate(chunks):
-
-        # Pass off-policy rollout samples only to first chunk to avoid duplicating them
-        chunk_opr_samples = opr_samples if i == 0 else None
-
-        (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
-         tactical_stats, num_imitation_black, num_imitation_white,
-         num_opr, probe_data) = _train_on_batch_internal(
-            model, chunk, device,
-            num_accumulation_steps=num_chunks,
-            update=update,
-            win_boost=win_boost,
-            block_boost=block_boost,
-            opr_samples=chunk_opr_samples,
-            ema_entropy=ema_entropy,
-            win_rate=win_rate
-        )
-
-        # Collect probe data from each chunk
-        if should_probe and probe_data is not None:
-            all_probe_data.append(probe_data)
-
-        total_loss += loss * num_chunks
-        total_entropy += mean_entropy
-        total_value_loss += value_loss
-        total_raw_value_mse += raw_value_mse
-
-        # Aggregate tactical stats
-        total_tactical_stats.wins_found += tactical_stats.wins_found
-        total_tactical_stats.blocks_found += tactical_stats.blocks_found
-        total_tactical_stats.synthetic_wins_eq += tactical_stats.synthetic_wins_eq
-        total_tactical_stats.synthetic_wins_missed += tactical_stats.synthetic_wins_missed
-        total_tactical_stats.synthetic_blocks += tactical_stats.synthetic_blocks
-        total_tactical_stats.win_opportunities += tactical_stats.win_opportunities
-        total_tactical_stats.win_misses += tactical_stats.win_misses
-        total_tactical_stats.block_opportunities += tactical_stats.block_opportunities
-        total_tactical_stats.block_misses += tactical_stats.block_misses
-
-        total_imitation_black += num_imitation_black
-        total_imitation_white += num_imitation_white
-        total_opr_samples += num_opr
-        num_chunks_processed += 1
-
-        for traj in chunk:
-            returns = compute_returns(traj)
-            for z_t, is_current in zip(returns, traj.is_current_policy):
-                if is_current:
-                    total_returns.append(z_t)
-
-    # Run gradient probe on full update (after all chunks processed, before optimizer step)
-    if should_probe and all_probe_data:
-        # Merge probe data from all chunks
-        merged_obs_chunks = []
-        merged_next_obs_chunks = []
-        merged_actions_chunks = []
-        merged_masks_chunks = []
-        merged_returns_chunks = []
-        merged_value_targets_chunks = []
-        merged_is_terminal_chunks = []
-        merged_is_synthetic_chunks = []
-        merged_weights_chunks = []
-        merged_gae_advantages_chunks = []
-        merged_next_values_chunks = []
-
-        # Concatenate chunks from all episode chunks
-        for probe_data in all_probe_data:
-            merged_obs_chunks.extend(probe_data['obs_chunks'])
-            merged_next_obs_chunks.extend(probe_data['next_obs_chunks'])
-            merged_actions_chunks.extend(probe_data['actions_chunks'])
-            merged_masks_chunks.extend(probe_data['masks_chunks'])
-            merged_returns_chunks.extend(probe_data['returns_chunks'])
-            merged_value_targets_chunks.extend(probe_data['value_targets_chunks'])
-            merged_is_terminal_chunks.extend(probe_data['is_terminal_chunks'])
-            merged_is_synthetic_chunks.extend(probe_data['is_synthetic_chunks'])
-            merged_weights_chunks.extend(probe_data['weights_chunks'])
-            merged_gae_advantages_chunks.extend(probe_data['gae_advantages_chunks'])
-            merged_next_values_chunks.extend(probe_data['next_values_chunks'])
-
-        # Use global normalizers from first chunk (they should be the same across chunks)
-        global_normalizers = all_probe_data[0]['global_normalizers']
-        use_value_baseline = all_probe_data[0]['use_value_baseline']
-        entropy_bonus_scale = all_probe_data[0]['entropy_bonus_scale']
-
+    if probe_data is not None:
         collected_probe_metrics = probe_gradient_conflict_chunked(
             model,
-            merged_obs_chunks,
-            merged_next_obs_chunks,
-            merged_actions_chunks,
-            merged_masks_chunks,
-            merged_returns_chunks,
-            merged_value_targets_chunks,
-            merged_is_terminal_chunks,
-            merged_is_synthetic_chunks,
-            merged_weights_chunks,
-            merged_gae_advantages_chunks,
-            merged_next_values_chunks,
-            global_normalizers,
-            use_value_baseline,
-            entropy_bonus_scale=entropy_bonus_scale,
+            probe_data['obs_chunks'],
+            probe_data['next_obs_chunks'],
+            probe_data['actions_chunks'],
+            probe_data['masks_chunks'],
+            probe_data['returns_chunks'],
+            probe_data['value_targets_chunks'],
+            probe_data['is_terminal_chunks'],
+            probe_data['is_synthetic_chunks'],
+            probe_data['weights_chunks'],
+            probe_data['gae_advantages_chunks'],
+            probe_data['next_values_chunks'],
+            probe_data['global_normalizers'],
+            probe_data['use_value_baseline'],
+            entropy_bonus_scale=probe_data['entropy_bonus_scale'],
             update=update,
             output_dir=output_dir
         )
 
-    # Optimizer step (after all gradients accumulated)
+    # Optimizer step
     nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
     optimizer.step()
 
-    avg_loss = total_loss / num_chunks_processed
-    avg_entropy = total_entropy / num_chunks_processed
-    avg_value_loss = total_value_loss / num_chunks_processed
-    avg_raw_value_mse = total_raw_value_mse / num_chunks_processed
-    mean_return = np.mean(total_returns) if total_returns else 0.0
-
     return {
-        'loss': avg_loss,
+        'loss': loss,
         'mean_return': mean_return,
-        'entropy': avg_entropy,
-        'value_loss': avg_value_loss,
-        'raw_value_mse': avg_raw_value_mse,
-        'tactical_stats': total_tactical_stats,
-        'imitation_black': total_imitation_black,
-        'imitation_white': total_imitation_white,
-        'opr_samples': total_opr_samples,
+        'entropy': entropy,
+        'value_loss': value_loss,
+        'raw_value_mse': raw_value_mse,
+        'tactical_stats': tactical_stats,
+        'imitation_black': num_imitation_black,
+        'imitation_white': num_imitation_white,
+        'opr_samples': num_opr,
         'probe_metrics': collected_probe_metrics
     }
