@@ -24,7 +24,6 @@ from enum import Enum
 # Inference Constants
 # ============================================================================
 
-BATCH_INFERENCE_SIZE = 1024      # Positions processed simultaneously during self-play
 TEMPERATURE_TRAIN = 1.0        # Softmax temperature for training (>1 flattens, <1 sharpens)
 SEED_PROBABILITY = 0.25        # Probability of starting from a Renju opening
 LOG_PROB_MIN = -10.0           # Minimum log probability
@@ -275,6 +274,10 @@ class GomokuBoard:
 # Helper Functions
 # ============================================================================
 
+_BOARD_MASK = np.ones((15, 15), dtype=np.uint8)
+_BOARD_MASK.flags.writeable = False
+
+
 def encode_observation(c0: np.ndarray, c1: np.ndarray) -> np.ndarray:
     """
     Encode board state into a numpy array.
@@ -292,8 +295,7 @@ def encode_observation(c0: np.ndarray, c1: np.ndarray) -> np.ndarray:
     # Channel 2 is a board mask: all 1s within the valid board region.
     # This allows convolutions to distinguish "empty cell inside board" (0,0,1)
     # from "padding region outside board" (0,0,0).
-    board_mask = np.ones((15, 15), dtype=np.uint8)
-    return np.stack([c0, c1, board_mask], axis=0)
+    return np.stack([c0, c1, _BOARD_MASK], axis=0)
 
 
 def idx_to_pos(idx: int) -> Tuple[int, int]:
@@ -489,7 +491,6 @@ class GameState_InProgress:
 def play_episodes_batched(black_white_pairs: List[Tuple],
                           current_is_black: List[bool],
                           temperature: float, device: torch.device,
-                          batch_size: int,
                           select_action_batch_fn,
                           opening_ids: Optional[List[int]],
                           deterministic: bool = False) -> List[Trajectory]:
@@ -501,7 +502,6 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
         current_is_black: List indicating if current_policy plays as BLACK
         temperature: Sampling temperature
         device: torch device
-        batch_size: Maximum batch size for inference
         select_action_batch_fn: Function to select actions for a batch
         opening_ids: List of opening IDs for each game (-1 for empty board,
                      >= 0 for Renju opening). If None, all games start empty.
@@ -518,78 +518,90 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
              for (black, white), is_black, opening_id in
                  zip(black_white_pairs, current_is_black, opening_ids)]
 
-    while True:
-        # Get active games
-        active_games = [g for g in games if not g.done]
-        if len(active_games) == 0:
-            break
+    n_games = len(games)
 
-        # Process in batches
-        for batch_start in range(0, len(active_games), batch_size):
-            batch_games = active_games[batch_start:batch_start + batch_size]
+    # Precompute per-model game indices. Model assignments (black_model,
+    # white_model) are fixed per game, so we build the mapping once and
+    # filter by active + turn color each step, avoiding per-step dict rebuilds.
+    # model_id -> (model, black_game_indices, white_game_indices)
+    model_game_map = {}
+    for i, game in enumerate(games):
+        bid = id(game.black_model)
+        if bid not in model_game_map:
+            model_game_map[bid] = (game.black_model, [], [])
+        model_game_map[bid][1].append(i)
+
+        wid = id(game.white_model)
+        if wid not in model_game_map:
+            model_game_map[wid] = (game.white_model, [], [])
+        model_game_map[wid][2].append(i)
+
+    active_mask = [True] * n_games
+    n_active = n_games
+
+    while n_active > 0:
+        all_actions = [None] * n_games
+        all_entropies = [None] * n_games
+
+        for model, black_indices, white_indices in model_game_map.values():
+            # Collect active games where this model is to move
+            batch_indices = [i for i in black_indices
+                            if active_mask[i] and games[i].board.who_to_play == Player.BLACK]
+            batch_indices.extend(i for i in white_indices
+                                if active_mask[i] and games[i].board.who_to_play == Player.WHITE)
+            if not batch_indices:
+                continue
 
             # Collect observations and masks
             obs_list = []
             mask_list = []
-            models_list = []
-
-            for game in batch_games:
+            for i in batch_indices:
+                game = games[i]
                 legal_mask, next_player = game.board.GetLegalMoves()
                 c0, c1, _ = game.board.GetBoardState()
                 obs = encode_observation(c0, c1)
 
-                # Store for trajectory
                 game.traj.observations.append(obs)
                 game.traj.legal_masks.append(legal_mask)
                 game.traj.players.append(next_player)
 
-                # Track if current_policy is moving
                 is_current_moving = (
                     (next_player == Player.BLACK and game.current_is_black) or
                     (next_player == Player.WHITE and not game.current_is_black)
                 )
                 game.traj.is_current_policy.append(is_current_moving)
 
-                # Collect for batched inference
                 obs_list.append(obs)
                 mask_list.append(legal_mask)
 
-                # Select appropriate model
-                model = game.black_model if next_player == Player.BLACK else game.white_model
-                models_list.append(model)
+            # Batched inference for this model group
+            actions, entropies = select_action_batch_fn(
+                model, obs_list, mask_list,
+                temperature, device, deterministic
+            )
 
-            # Group by model to enable batching
-            model_groups = {}
-            for i, model in enumerate(models_list):
-                model_id = id(model)
-                if model_id not in model_groups:
-                    model_groups[model_id] = {'model': model, 'indices': [], 'obs': [], 'masks': []}
-                model_groups[model_id]['indices'].append(i)
-                model_groups[model_id]['obs'].append(obs_list[i])
-                model_groups[model_id]['masks'].append(mask_list[i])
+            for i, action, entropy in zip(batch_indices, actions, entropies):
+                all_actions[i] = action
+                all_entropies[i] = entropy
 
-            # Run batched inference for each unique model
-            all_actions = [None] * len(batch_games)
-            all_entropies = [None] * len(batch_games)
-            for group in model_groups.values():
-                actions, entropies = select_action_batch_fn(
-                    group['model'], group['obs'], group['masks'],
-                    temperature, device, deterministic
-                )
-                for idx, action, entropy in zip(group['indices'], actions, entropies):
-                    all_actions[idx] = action
-                    all_entropies[idx] = entropy
+        # Execute moves for all active games
+        for i in range(n_games):
+            if not active_mask[i]:
+                continue
+            game = games[i]
+            action = all_actions[i]
+            entropy = all_entropies[i]
 
-            # Execute moves
-            for game, action, entropy in zip(batch_games, all_actions, all_entropies):
-                game.traj.actions.append(action)
-                game.traj.entropies.append(entropy)
-                row, col = idx_to_pos(action)
-                outcome = game.board.Move((row, col))
+            game.traj.actions.append(action)
+            game.traj.entropies.append(entropy)
+            row, col = idx_to_pos(action)
+            outcome = game.board.Move((row, col))
 
-                if outcome != GameState.CONTINUE:
-                    game.traj.outcome = outcome
-                    game.done = True
+            if outcome != GameState.CONTINUE:
+                game.traj.outcome = outcome
+                game.done = True
+                active_mask[i] = False
+                n_active -= 1
 
     return [g.traj for g in games]
 
@@ -614,7 +626,6 @@ class EvalGameState:
 def play_eval_games(black_white_pairs: List[Tuple],
                     current_is_black: List[bool],
                     temperature: float, device: torch.device,
-                    batch_size: int,
                     select_action_fn) -> List[Tuple[GameState, bool]]:
     """
     Play evaluation games - returns only (outcome, current_is_black) pairs.
@@ -627,7 +638,6 @@ def play_eval_games(black_white_pairs: List[Tuple],
         current_is_black: List indicating if current_policy plays as BLACK
         temperature: Sampling temperature
         device: torch device
-        batch_size: Maximum batch size for inference
         select_action_fn: Function to select actions (should return List[int])
 
     Returns:
@@ -636,55 +646,62 @@ def play_eval_games(black_white_pairs: List[Tuple],
     games = [EvalGameState(black, white, is_black)
              for (black, white), is_black in zip(black_white_pairs, current_is_black)]
 
-    while True:
-        active_games = [g for g in games if not g.done]
-        if not active_games:
-            break
+    n_games = len(games)
 
-        for batch_start in range(0, len(active_games), batch_size):
-            batch_games = active_games[batch_start:batch_start + batch_size]
+    # Precompute per-model game indices (same pattern as play_episodes_batched)
+    model_game_map = {}
+    for i, game in enumerate(games):
+        bid = id(game.black_model)
+        if bid not in model_game_map:
+            model_game_map[bid] = (game.black_model, [], [])
+        model_game_map[bid][1].append(i)
+
+        wid = id(game.white_model)
+        if wid not in model_game_map:
+            model_game_map[wid] = (game.white_model, [], [])
+        model_game_map[wid][2].append(i)
+
+    active_mask = [True] * n_games
+    n_active = n_games
+
+    while n_active > 0:
+        all_actions = [None] * n_games
+
+        for model, black_indices, white_indices in model_game_map.values():
+            batch_indices = [i for i in black_indices
+                            if active_mask[i] and games[i].board.who_to_play == Player.BLACK]
+            batch_indices.extend(i for i in white_indices
+                                if active_mask[i] and games[i].board.who_to_play == Player.WHITE)
+            if not batch_indices:
+                continue
 
             obs_list = []
             mask_list = []
-            models_list = []
-
-            for game in batch_games:
-                legal_mask, next_player = game.board.GetLegalMoves()
+            for i in batch_indices:
+                game = games[i]
+                legal_mask, _ = game.board.GetLegalMoves()
                 c0, c1, _ = game.board.GetBoardState()
-                obs = encode_observation(c0, c1)
-
-                obs_list.append(obs)
+                obs_list.append(encode_observation(c0, c1))
                 mask_list.append(legal_mask)
-                model = game.black_model if next_player == Player.BLACK else game.white_model
-                models_list.append(model)
 
-            # Group by model for batching
-            model_groups = {}
-            for i, model in enumerate(models_list):
-                model_id = id(model)
-                if model_id not in model_groups:
-                    model_groups[model_id] = {'model': model, 'indices': [], 'obs': [], 'masks': []}
-                model_groups[model_id]['indices'].append(i)
-                model_groups[model_id]['obs'].append(obs_list[i])
-                model_groups[model_id]['masks'].append(mask_list[i])
+            actions = select_action_fn(
+                model, obs_list, mask_list,
+                temperature, device
+            )
+            for i, action in zip(batch_indices, actions):
+                all_actions[i] = action
 
-            # Batched inference - no log_probs needed
-            all_actions = [None] * len(batch_games)
-            for group in model_groups.values():
-                actions = select_action_fn(
-                    group['model'], group['obs'], group['masks'],
-                    temperature, device
-                )
-                for idx, action in zip(group['indices'], actions):
-                    all_actions[idx] = action
-
-            # Execute moves
-            for game, action in zip(batch_games, all_actions):
-                row, col = idx_to_pos(action)
-                outcome = game.board.Move((row, col))
-                if outcome != GameState.CONTINUE:
-                    game.outcome = outcome
-                    game.done = True
+        for i in range(n_games):
+            if not active_mask[i]:
+                continue
+            game = games[i]
+            row, col = idx_to_pos(all_actions[i])
+            outcome = game.board.Move((row, col))
+            if outcome != GameState.CONTINUE:
+                game.outcome = outcome
+                game.done = True
+                active_mask[i] = False
+                n_active -= 1
 
     return [(g.outcome, g.current_is_black) for g in games]
 
@@ -730,7 +747,7 @@ class OffPolicyRolloutState:
 
 
 def play_offpolicy_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Player, int, object, object]],
-                                    temperature: float, device, batch_size: int,
+                                    temperature: float, device,
                                     select_action_fn) -> List[bool]:
     """
     Play off-policy rollout games in batches.
@@ -742,7 +759,6 @@ def play_offpolicy_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Play
         rollout_configs: List of (obs, next_player, first_action, black_model, white_model) tuples
         temperature: Rollout temperature
         device: torch device
-        batch_size: Batch size for inference
         select_action_fn: Function to select actions (should return List[int])
 
     Returns:
@@ -752,59 +768,66 @@ def play_offpolicy_rollouts_batched(rollout_configs: List[Tuple[np.ndarray, Play
     games = [OffPolicyRolloutState(obs, player, action, black_model, white_model)
              for obs, player, action, black_model, white_model in rollout_configs]
 
-    while True:
-        active_games = [g for g in games if not g.done]
-        if not active_games:
-            break
+    n_games = len(games)
 
-        for batch_start in range(0, len(active_games), batch_size):
-            batch_games = active_games[batch_start:batch_start + batch_size]
+    # Precompute per-model game indices (same pattern as play_episodes_batched)
+    model_game_map = {}
+    for i, game in enumerate(games):
+        bid = id(game.black_model)
+        if bid not in model_game_map:
+            model_game_map[bid] = (game.black_model, [], [])
+        model_game_map[bid][1].append(i)
+
+        wid = id(game.white_model)
+        if wid not in model_game_map:
+            model_game_map[wid] = (game.white_model, [], [])
+        model_game_map[wid][2].append(i)
+
+    active_mask = [True] * n_games
+    n_active = n_games
+
+    while n_active > 0:
+        all_actions = [None] * n_games
+
+        for model, black_indices, white_indices in model_game_map.values():
+            batch_indices = [i for i in black_indices
+                            if active_mask[i] and games[i].board.who_to_play == Player.BLACK]
+            batch_indices.extend(i for i in white_indices
+                                if active_mask[i] and games[i].board.who_to_play == Player.WHITE)
+            if not batch_indices:
+                continue
 
             obs_list = []
             mask_list = []
-            models_list = []
-
-            for game in batch_games:
-                legal_mask, next_player = game.board.GetLegalMoves()
+            for i in batch_indices:
+                game = games[i]
+                legal_mask, _ = game.board.GetLegalMoves()
                 c0, c1, _ = game.board.GetBoardState()
-                obs = encode_observation(c0, c1)
-
-                obs_list.append(obs)
+                obs_list.append(encode_observation(c0, c1))
                 mask_list.append(legal_mask)
-                model = game.black_model if next_player == Player.BLACK else game.white_model
-                models_list.append(model)
 
-            # Group by model for batching
-            model_groups = {}
-            for i, model in enumerate(models_list):
-                model_id = id(model)
-                if model_id not in model_groups:
-                    model_groups[model_id] = {'model': model, 'indices': [], 'obs': [], 'masks': []}
-                model_groups[model_id]['indices'].append(i)
-                model_groups[model_id]['obs'].append(obs_list[i])
-                model_groups[model_id]['masks'].append(mask_list[i])
+            actions = select_action_fn(
+                model, obs_list, mask_list,
+                temperature, device
+            )
+            for i, action in zip(batch_indices, actions):
+                all_actions[i] = action
 
-            # Batched inference
-            all_actions = [None] * len(batch_games)
-            for group in model_groups.values():
-                actions = select_action_fn(
-                    group['model'], group['obs'], group['masks'],
-                    temperature, device
-                )
-                for idx, action in zip(group['indices'], actions):
-                    all_actions[idx] = action
-
-            # Execute moves
-            for game, action in zip(batch_games, all_actions):
-                row, col = idx_to_pos(action)
-                outcome = game.board.Move((row, col))
-                if outcome != GameState.CONTINUE:
-                    game.done = True
-                    if outcome == GameState.DRAW:
-                        game.won = False
-                    else:
-                        game.won = (outcome == GameState.BLACK_WIN and game.first_player == Player.BLACK) or \
-                                   (outcome == GameState.WHITE_WIN and game.first_player == Player.WHITE)
+        for i in range(n_games):
+            if not active_mask[i]:
+                continue
+            game = games[i]
+            row, col = idx_to_pos(all_actions[i])
+            outcome = game.board.Move((row, col))
+            if outcome != GameState.CONTINUE:
+                game.done = True
+                active_mask[i] = False
+                n_active -= 1
+                if outcome == GameState.DRAW:
+                    game.won = False
+                else:
+                    game.won = (outcome == GameState.BLACK_WIN and game.first_player == Player.BLACK) or \
+                               (outcome == GameState.WHITE_WIN and game.first_player == Player.WHITE)
 
     return [g.won for g in games]
 

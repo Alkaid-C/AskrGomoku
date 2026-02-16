@@ -32,7 +32,7 @@ from model import (
 from gomoku import (
     play_episodes_batched, select_action_batch, compute_outcome_stats,
     play_episodes_with_search, GameState,
-    BATCH_INFERENCE_SIZE, TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES,
+    TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES,
     SEARCH_DEPTH, ROOT_TOP_K, ROOT_RANDOM_K, INTERNAL_TOP_K, INTERNAL_RANDOM_K, SAMPLING_TAU
 )
 from enhancement import probe_tactical_accuracy, probe_tactical_accuracy_search
