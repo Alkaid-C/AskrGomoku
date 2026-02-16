@@ -614,10 +614,13 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     B = len(all_obs)  # Original batch size before augmentation
 
     # Always compute 8-fold averaged values and GAE, then blend with raw returns via alpha
+    # Process in chunks to avoid OOM on the full B*8 tensor
+    aug_values_list = []
     with torch.no_grad():
-        aug_values_all = model.forward_value_only(aug_obs)  # [B*8, 1]
-
-    aug_values_all = aug_values_all.squeeze(1)  # [B*8]
+        for chunk_start in range(0, len(aug_obs), TRAIN_BATCH_SIZE):
+            chunk = aug_obs[chunk_start:chunk_start + TRAIN_BATCH_SIZE]
+            aug_values_list.append(model.forward_value_only(chunk).squeeze(1))
+    aug_values_all = torch.cat(aug_values_list)  # [B*8]
 
     # Reshape to separate augmentations: [8, B]
     values_per_aug = aug_values_all.view(8, B)
@@ -682,9 +685,13 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
     aug_gae_advantages = advantages_tensor.repeat(8)
 
-    # Also average next_values for consistent TD targets
+    # Also average next_values for consistent TD targets (chunked to match VRAM)
+    aug_next_values_list = []
     with torch.no_grad():
-        aug_next_values_all = model.forward_value_only(aug_next_obs).squeeze(1)  # [B*8]
+        for chunk_start in range(0, len(aug_next_obs), TRAIN_BATCH_SIZE):
+            chunk = aug_next_obs[chunk_start:chunk_start + TRAIN_BATCH_SIZE]
+            aug_next_values_list.append(model.forward_value_only(chunk).squeeze(1))
+    aug_next_values_all = torch.cat(aug_next_values_list)  # [B*8]
     next_values_per_aug = aug_next_values_all.view(8, B)
     avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
     aug_next_values_averaged = avg_next_values.repeat(8)
