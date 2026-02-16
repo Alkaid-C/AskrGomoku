@@ -45,7 +45,7 @@ WEIGHT_DECAY = 1e-8
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 64       # Episodes to collect before each training update
+EPISODES_PER_UPDATE = 128      # Episodes to collect before each training update
 TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
 
 # --- EMA Smoothing ---

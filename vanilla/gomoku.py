@@ -28,6 +28,7 @@ TEMPERATURE_TRAIN = 1.0        # Softmax temperature for training (>1 flattens, 
 SEED_PROBABILITY = 0.25        # Probability of starting from a Renju opening
 LOG_PROB_MIN = -10.0           # Minimum log probability
 LOGIT_MASK_VALUE = -1e9
+OPENING_OFFSET_RANGE = 4       # Random offset ±N for Renju opening placement
 
 
 # ============================================================================
@@ -105,9 +106,9 @@ class GomokuBoard:
 
         if opening_id >= 0:
             # Apply Renju opening with random offset
-            # Offset: first move can be anywhere in center ±3 (rows/cols 4-10)
-            offset_r = random.randint(-3, 3)
-            offset_c = random.randint(-3, 3)
+            # Offset: first move biased towards center via triangular distribution
+            offset_r = round(random.triangular(-OPENING_OFFSET_RANGE, OPENING_OFFSET_RANGE, 0))
+            offset_c = round(random.triangular(-OPENING_OFFSET_RANGE, OPENING_OFFSET_RANGE, 0))
             base_r, base_c = 7 + offset_r, 7 + offset_c
 
             for rel_r, rel_c in RENJU_OPENING_SEQUENCES[opening_id]:
