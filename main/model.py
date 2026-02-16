@@ -31,12 +31,10 @@ SE_REDUCTION = 4                  # Squeeze-and-Excitation channel reduction rat
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
 TRUNK_DILATION2_SCHEDULE = [
     # Shared blocks (12)
-    1, 1, 2, 3,
-    1, 1, 2, 3,
-    1, 1, 2, 3,
+    1, 2, 1, 2, 1, 3,
+    1, 2, 1, 2, 1, 3,
     # Dual-SE blocks (6)
-    1, 1, 2, 3,
-    1, 1,
+    1, 2, 1, 3, 1, 1
 ]
 
 # Head architecture
