@@ -41,8 +41,9 @@ TRUNK_DILATION2_SCHEDULE = [
 POLICY_HEAD_D = 64             # Policy head intermediate channels (d_p)
 POLICY_HEAD_GROUPS = 4         # GroupNorm groups for 64-ch policy tensors
 POLICY_HEAD_NUM_HEADS = 4      # Attention heads in policy head
-VALUE_HEAD_C1 = 128            # Layer 1: 96 -> 128
-VALUE_HEAD_C2_SPLIT = 128      # Layer 2: 128 -> 128(d1) + 128(d2) = 256
+VALUE_HEAD_C1 = 64             # Layer 1: 1x1 96 -> 64
+VALUE_HEAD_C2 = 256            # Layer 2: grouped 3x3 (64 -> 256, groups=2)
+VALUE_HEAD_GROUPS = 2          # Groups for grouped conv
 VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
 
 
@@ -150,17 +151,14 @@ class GomokuPolicyNet(nn.Module):
         # Logits output
         self.policy_logits = nn.Conv2d(POLICY_HEAD_D, 1, kernel_size=1, stride=1, padding=0)
 
-        # Value head: conv & channel expansion + GAP + FC
-        #Conv Layer 1
-        self.value_conv1 = nn.Conv2d(WIDTH, VALUE_HEAD_C1, kernel_size=3, stride=1, padding=1, bias=False)
-        self.value_norm1 = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=VALUE_HEAD_C1)
-        # Conv Layer 2
-        # Branch A: Dilation 1 (Dense)
-        self.value_conv2a = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=1, dilation=1)
-        # Branch B: Dilation 2 (Sparse/Wide) - Padding=2 for Dilation=2
-        self.value_conv2b = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, kernel_size=3, stride=1, padding=2, dilation=2)
-        # FC Layers (Input -> Hidden -> Out 1)
-        self.value_fc1 = nn.Linear(VALUE_HEAD_C2_SPLIT * 2, VALUE_HEAD_HIDDEN)
+        # Value head: 1x1 projection + grouped 3x3 expansion + LSE/GAP mix + FC
+        self.value_conv1 = nn.Conv2d(WIDTH, VALUE_HEAD_C1, kernel_size=1, bias=False)
+        self.value_norm1 = nn.GroupNorm(num_groups=VALUE_HEAD_GROUPS, num_channels=VALUE_HEAD_C1)
+        self.value_norm2 = nn.GroupNorm(num_groups=VALUE_HEAD_GROUPS, num_channels=VALUE_HEAD_C1)
+        self.value_conv2 = nn.Conv2d(VALUE_HEAD_C1, VALUE_HEAD_C2, kernel_size=3, stride=1, padding=1, groups=VALUE_HEAD_GROUPS)
+        self.value_pool_temp_raw = nn.Parameter(torch.zeros(VALUE_HEAD_C2))  # softplus → per-channel temperature for log-mean-exp
+        self.value_norm3 = nn.LayerNorm(VALUE_HEAD_C2, bias=False)
+        self.value_fc1 = nn.Linear(VALUE_HEAD_C2, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
     def _stem_and_shared_trunk(self, x: torch.Tensor) -> torch.Tensor:
@@ -206,14 +204,13 @@ class GomokuPolicyNet(nn.Module):
         return self.policy_logits(x_7)
 
     def _value_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
-        """Value head: conv + GAP + FC. Returns value [B, 1]."""
+        """Value head: 1x1 + grouped 3x3 + temp-scaled log-mean-exp + FC. Returns value [B, 1]."""
         vx = F.silu(self.value_norm1(self.value_conv1(trunk_features)))
-        v_d1 = self.value_conv2a(vx)
-        v_d2 = self.value_conv2b(vx)
-        vx = torch.cat([v_d1, v_d2], dim=1)
-        vx = F.silu(vx)
-        vx = vx.mean(dim=(2, 3))
-        vx = F.silu(self.value_fc1(vx))
+        vx = F.silu(self.value_conv2(self.value_norm2(vx)))
+        # Per-channel temperature log-mean-exp: τ→0 = max, τ→∞ = mean
+        tau = F.softplus(self.value_pool_temp_raw)                        # [C], positive
+        vx = tau * (torch.logsumexp(vx / tau[None, :, None, None], dim=(2, 3)) - 5.4161)  # log(225)=5.4161
+        vx = F.silu(self.value_fc1(self.value_norm3(vx)))
         value = torch.tanh(self.value_fc2(vx))
         return value
 

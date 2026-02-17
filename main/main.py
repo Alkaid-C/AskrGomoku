@@ -27,7 +27,7 @@ from model import (
     STEM_3X3_CHANNELS, STEM_DIRECTIONAL_5X5_CHANNELS, STEM_FULL_5X5_CHANNELS,
     STEM_DIRECTIONAL_7X7_CHANNELS, STEM_FULL_7X7_CHANNELS,
     TRUNK_DILATION2_SCHEDULE, N_SHARED_BLOCKS, N_DUAL_SE_BLOCKS,
-    POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN
+    POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2, VALUE_HEAD_GROUPS, VALUE_HEAD_HIDDEN
 )
 from gomoku import (
     play_episodes_batched, select_action_batch, compute_outcome_stats,
@@ -256,7 +256,7 @@ def main():
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
     print(f"    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
     print(f"  Policy head: {WIDTH} -> dual-attention ({POLICY_HEAD_D}ch, 2x attn + conv refine) -> 225")
-    print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
+    print(f"  Value head: {WIDTH} -> 1x1 {VALUE_HEAD_C1} -> grouped 3x3 {VALUE_HEAD_C2}(g={VALUE_HEAD_GROUPS}) -> log-mean-exp(τ) -> fc{VALUE_HEAD_HIDDEN} -> 1")
     print(f"Training configuration:")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
