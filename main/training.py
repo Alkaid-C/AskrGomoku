@@ -393,9 +393,10 @@ def probe_gradient_conflict_chunked(
             trunk_params[layer_key].append(name)
             all_trunk_stem_params.append(name)
         elif 'dual_se_blocks.' in name:
-            # Skip head-specific SE params: se_policy only gets policy grads,
-            # se_value only gets value grads, so they'd bias cosine sim toward 0
-            if '.se_policy.' in name or '.se_value.' in name:
+            # Skip stream-specific params (se_policy, se_value, norm1_policy, norm2_policy,
+            # norm1_value, norm2_value): each only receives grads from one head, so including
+            # them inflates the norm without contributing to the dot product, biasing cos sim toward 0.
+            if '_policy.' in name or '_value.' in name:
                 continue
             block_idx = int(name.split('dual_se_blocks.')[1].split('.')[0])
             layer_start = (block_idx // 3) * 3
