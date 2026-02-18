@@ -3,3 +3,6 @@
 !*.py
 !report.md
 !.gitignore
+!*.html
+!*.css
+!*.js
