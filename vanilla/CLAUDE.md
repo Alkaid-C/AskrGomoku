@@ -13,7 +13,7 @@
 
 ## Model Architecture (`model.py`)
 
-Single-pass `forward()` only — no `forward_policy_only()` or `forward_value_only()` (value inference in `training.py` uses `model(chunk)[1]`). Constructor takes `n_blocks` argument: `GomokuPolicyNet(n_blocks=N_BLOCKS)`.
+Constructor takes `n_blocks` argument: `GomokuPolicyNet(n_blocks=N_BLOCKS)`. Same three-method API as `main/model.py`: `forward()` (both heads), `forward_policy_only()` (self-play/eval), `forward_value_only()` (GAE).
 
 ### Stem
 

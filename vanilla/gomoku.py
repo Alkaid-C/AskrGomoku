@@ -378,7 +378,7 @@ def select_action_batch(model: torch.nn.Module, obs_list: List[np.ndarray],
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(1)
 
         logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
@@ -415,7 +415,7 @@ def select_action_batch_eval(model: torch.nn.Module, obs_list: List[np.ndarray],
         obs_tensor = obs_batch_to_tensor(obs_list, device)
         mask_tensor = mask_batch_to_tensor(mask_list, device)
 
-        logits_grid, _ = model(obs_tensor)
+        logits_grid = model.forward_policy_only(obs_tensor)
         logits = logits_grid.squeeze(1)
         logits = logits.masked_fill(~mask_tensor, LOGIT_MASK_VALUE)
 

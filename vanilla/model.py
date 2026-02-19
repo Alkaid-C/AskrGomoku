@@ -70,49 +70,56 @@ class GomokuPolicyNet(nn.Module):
         self.value_fc1 = nn.Linear(VALUE_HEAD_CHANNELS * 15 * 15, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
+    def _trunk(self, x: torch.Tensor) -> torch.Tensor:
+        """Stem + trunk blocks + norm. Returns trunk features."""
+        x = self.stem_conv(x)
+        x = self.stem_norm(x)
+        x = F.silu(x)
+        for block in self.blocks:
+            x = block(x)
+        return F.silu(self.trunk_norm(x))
+
+    def _policy_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
+        """Policy head. Returns logits_grid [B, 1, 15, 15]."""
+        p = F.silu(self.policy_norm1(self.policy_conv1(trunk_features)))
+        p = F.silu(self.policy_norm2(self.policy_conv2(p)))
+        p = F.silu(self.policy_norm3(self.policy_conv3(p)))
+        return self.policy_out(p)
+
+    def _value_head(self, trunk_features: torch.Tensor) -> torch.Tensor:
+        """Value head. Returns value [B, 1]."""
+        v = F.silu(self.value_conv(trunk_features))
+        v = v.view(v.size(0), -1)
+        v = F.silu(self.value_fc1(v))
+        return torch.tanh(self.value_fc2(v))
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass.
-
-        Args:
-            x: Input tensor [B, 3, 15, 15] where:
-               - Channel 0: Current player's pieces
-               - Channel 1: Opponent's pieces
-               - Channel 2: Board mask (all 1s within valid board region)
+        Both heads. Used for training step, gradient probing.
 
         Returns:
             Tuple of (logits_grid [B, 1, 15, 15], value [B, 1])
         """
-        # Stem
-        x = self.stem_conv(x)
-        x = self.stem_norm(x)
-        x = F.silu(x)
+        trunk_features = self._trunk(x)
+        return self._policy_head(trunk_features), self._value_head(trunk_features)
 
-        # Trunk
-        for block in self.blocks:
-            x = block(x)
+    def forward_policy_only(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Policy head only. Used for self-play and evaluation inference.
 
-        x = F.silu(self.trunk_norm(x))
-        trunk_features = x
-        batch_size = trunk_features.size(0)
+        Returns:
+            logits_grid [B, 1, 15, 15]
+        """
+        return self._policy_head(self._trunk(x))
 
-        # Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1
-        p = self.policy_conv1(trunk_features)  # [B, POLICY_WIDTH, 15, 15]
-        p = F.silu(self.policy_norm1(p))
-        p = self.policy_conv2(p)
-        p = F.silu(self.policy_norm2(p))
-        p = self.policy_conv3(p)
-        p = F.silu(self.policy_norm3(p))
-        logits_grid = self.policy_out(p)  # [B, 1, 15, 15]
+    def forward_value_only(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Value head only. Used for GAE computation.
 
-        # Value head: Conv1x1 → SiLU → flatten → FC → SiLU → FC → tanh
-        value_features = self.value_conv(trunk_features)  # [B, VALUE_HEAD_CHANNELS, 15, 15]
-        value_features = F.silu(value_features)
-        value_features = value_features.view(batch_size, -1)  # [B, VALUE_HEAD_CHANNELS*15*15]
-        value = F.silu(self.value_fc1(value_features))  # [B, VALUE_HEAD_HIDDEN]
-        value = torch.tanh(self.value_fc2(value))  # [B, 1]
-
-        return logits_grid, value
+        Returns:
+            value [B, 1]
+        """
+        return self._value_head(self._trunk(x))
 
 
 class ResidualBlock(nn.Module):

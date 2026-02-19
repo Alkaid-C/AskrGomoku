@@ -215,12 +215,12 @@ def probe_gradient_conflict_chunked(
         weights = weights_chunks[i]
         next_values = next_values_chunks[i]
 
-        _, values = model(obs)
+        values = model.forward_value_only(obs)
         values = values.squeeze(1)
 
         if next_values is None:
             with torch.no_grad():
-                _, next_values_computed = model(next_obs)
+                next_values_computed = model.forward_value_only(next_obs)
             next_values = next_values_computed.squeeze(1)
 
         effective_value_targets = torch.where(
@@ -607,7 +607,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     with torch.no_grad():
         for chunk_start in range(0, len(aug_obs), TRAIN_BATCH_SIZE):
             chunk = aug_obs[chunk_start:chunk_start + TRAIN_BATCH_SIZE]
-            aug_values_list.append(model(chunk)[1].squeeze(1))
+            aug_values_list.append(model.forward_value_only(chunk).squeeze(1))
     aug_values_all = torch.cat(aug_values_list)  # [B*8]
 
     # Reshape to separate augmentations: [8, B]
@@ -678,7 +678,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     with torch.no_grad():
         for chunk_start in range(0, len(aug_next_obs), TRAIN_BATCH_SIZE):
             chunk = aug_next_obs[chunk_start:chunk_start + TRAIN_BATCH_SIZE]
-            aug_next_values_list.append(model(chunk)[1].squeeze(1))
+            aug_next_values_list.append(model.forward_value_only(chunk).squeeze(1))
     aug_next_values_all = torch.cat(aug_next_values_list)  # [B*8]
     next_values_per_aug = aug_next_values_all.view(8, B)
     avg_next_values = next_values_per_aug.mean(dim=0)  # [B]

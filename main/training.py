@@ -35,11 +35,11 @@ WEIGHT_DECAY = 1.0/134217728
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 128      # Episodes to collect before each training update
+EPISODES_PER_UPDATE = 96       # Episodes to collect before each training update
 TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
 
 # --- EMA Smoothing ---
-EMA_WINDOW = 96                # Effective window for per-update EMA tracking (alpha = 1/window)
+EMA_WINDOW = 64                # Effective window for per-update EMA tracking (alpha = 1/window)
 EVAL_WIN_RATE_EMA_WINDOW = 2   # Effective window for evaluation win rate EMA (evals happen less frequently)
 
 # --- Entropy Bonus ---
