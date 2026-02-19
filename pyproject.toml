@@ -1,0 +1,13 @@
+[tool.ruff]
+line-length = 225
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # line-too-long (handled by line-length setting, but some lines are intentionally long)
+    "UP006",  # non-pep585-annotation (e.g. List[] -> list[]) — noisy, low value
+    "UP035",  # deprecated-import (e.g. typing.List) — same as above
+    "SIM108", # if-else-block-instead-of-if-exp — ternary often less readable
+    "UP045",  # non-pep604-annotation-optional — same as UP006/UP035
+    "B905",   # zip-without-explicit-strict — noisy for ML code with matched-length iterables
+]

@@ -1,8 +1,22 @@
+# whitelist styled gitignore
 *
 !*/
-!*.py
-!report.md
+
+# metadata and project setup file
 !.gitignore
+!pyproject.toml
+!*CLAUDE.md
+
+# code
+!*.py
+
+# deploy code
 !*.html
 !*.css
 !*.js
+
+# documentation
+!report.md
+!README.md
+
+# commonly ignored file type: binary data (*.pt, *.npz), training log (*.log, *.csv), internal/temporary documents (*.md).
