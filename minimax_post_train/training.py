@@ -638,7 +638,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     should_probe = PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0
     all_probe_data = [] if should_probe else None
 
-    for i, chunk in enumerate(chunks):
+    for _i, chunk in enumerate(chunks):
         (loss, mean_return, mean_entropy, value_loss, raw_value_mse,
          tactical_stats, probe_data) = _train_on_batch_internal(
             model, chunk, device,
@@ -909,7 +909,6 @@ def compute_ranking_inside_loss(logits_flat: torch.Tensor,
     Returns:
         Scalar ranking inside loss
     """
-    B = logits_flat.size(0)
     device = logits_flat.device
 
     # Gather logits for c1, c2, c3, c4, c5

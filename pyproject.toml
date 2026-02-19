@@ -10,4 +10,8 @@ ignore = [
     "SIM108", # if-else-block-instead-of-if-exp — ternary often less readable
     "UP045",  # non-pep604-annotation-optional — same as UP006/UP035
     "B905",   # zip-without-explicit-strict — noisy for ML code with matched-length iterables
+    "RUF003", # ambiguous-unicode-chars-comment — intentional math notation (×, γ, ⊙)
+    "RUF005", # collection-literal-concatenation — stylistic, low value
+    "E402",   # module-level-import-not-at-top — intentional grouping near usage
+    "SIM109", # compare-to-multiple-values — chained == often clearer than `in (...)`
 ]

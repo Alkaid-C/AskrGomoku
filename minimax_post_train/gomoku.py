@@ -1180,7 +1180,7 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
     # Level 0 (root) - not stored, we process directly to level 1
     level_1_nodes = []
 
-    for i, action in enumerate(root_candidates):
+    for _i, action in enumerate(root_candidates):
         child_board = board_from_observation(root_obs, root_player)
         row, col = idx_to_pos(action)
         outcome = child_board.Move((row, col))
@@ -1249,7 +1249,6 @@ def negamax_batched(root_obs: np.ndarray, root_mask: np.ndarray,
         for i, idx in enumerate(expand_indices):
             parent_node = current_level[idx]
             obs = expand_obs[i]
-            mask = expand_masks[i]
             player = parent_node['player']
             candidates = candidates_list[i]
 

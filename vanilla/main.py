@@ -140,7 +140,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
         with open(training_state_file) as f:
             state = json.load(f)
     except Exception as e:
-        raise RuntimeError(f"Corrupt training state JSON in {training_state_file}: {e}")
+        raise RuntimeError(f"Corrupt training state JSON in {training_state_file}: {e}") from e
 
     current_update = state['current_update']
     opponent_pool_updates = state['opponent_pool_updates']
@@ -167,7 +167,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     except Exception as e:
-        raise RuntimeError(f"Failed to load checkpoint {checkpoint_path}: {e}")
+        raise RuntimeError(f"Failed to load checkpoint {checkpoint_path}: {e}") from e
 
     model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
     model.load_state_dict(checkpoint['model_state_dict'])

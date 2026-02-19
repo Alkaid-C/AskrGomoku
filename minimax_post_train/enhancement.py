@@ -208,7 +208,7 @@ def probe_tactical_accuracy(trajectories: List[Trajectory],
     """
     stats = TacticalStats()
 
-    for traj, is_black in zip(trajectories, current_is_black):
+    for traj, _is_black in zip(trajectories, current_is_black):
         for t in range(len(traj.observations)):
             # Only check current policy's moves
             if not traj.is_current_policy[t]:

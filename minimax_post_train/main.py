@@ -280,8 +280,6 @@ def main():
     print("    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
     print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (+SiLU) -> 225")
     print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
-    num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
-
     print("Training configuration (POST-TRAINING MODE - Search Supervision):")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print("  Search parameters:")
@@ -576,7 +574,6 @@ def main():
                 else:
                     return f"{secs}s"
 
-            elapsed_str = format_time(elapsed_time)
             eta_str = format_time(eta_seconds)
 
             print(f"Update {update + 1:5d}/{TOTAL_UPDATES} | "

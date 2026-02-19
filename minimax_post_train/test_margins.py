@@ -270,7 +270,7 @@ def main():
     print("=" * 80)
 
     all_results = []
-    for i, (obs, legal_mask, move_count) in enumerate(positions):
+    for i, (obs, legal_mask, _move_count) in enumerate(positions):
         result = analyze_position(model, device, obs, legal_mask)
         all_results.append(result)
 

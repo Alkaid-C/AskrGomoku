@@ -99,8 +99,7 @@ def get_eval_interval(update: int) -> int:
 
 def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
                     device: torch.device,
-                    opponent_pool_updates: List[int],
-                    num_rounds: int = None) -> Tuple[float, Dict[str, Dict[str, float]]]:
+                    opponent_pool_updates: List[int]) -> Tuple[float, Dict[str, Dict[str, float]]]:
     """
     Evaluate current policy against opponents from the pool.
 
@@ -109,9 +108,7 @@ def evaluate_policy(current_model: nn.Module, opponent_pool: deque,
         opponent update number (as string) to {'wins': int, 'draws': int, 'games': int, 'win_rate': float}
     """
     current_model.eval()
-
-    if num_rounds is None:
-        num_rounds = EVAL_ROUNDS
+    num_rounds = EVAL_ROUNDS
 
     total_wins = 0
     total_draws = 0
