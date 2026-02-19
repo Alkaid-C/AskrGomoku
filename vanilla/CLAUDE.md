@@ -13,7 +13,7 @@
 
 ## Model Architecture (`model.py`)
 
-Constructor takes `n_blocks` argument: `GomokuPolicyNet(n_blocks=N_BLOCKS)`. Same three-method API as `main/model.py`: `forward()` (both heads), `forward_policy_only()` (self-play/eval), `forward_value_only()` (GAE).
+Same three-method API as `main/model.py`: `forward()` (both heads), `forward_policy_only()` (self-play/eval), `forward_value_only()` (GAE). Block count is read from the `N_BLOCKS` constant — not a constructor argument.
 
 ### Stem
 

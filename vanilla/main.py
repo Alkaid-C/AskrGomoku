@@ -169,7 +169,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     except Exception as e:
         raise RuntimeError(f"Failed to load checkpoint {checkpoint_path}: {e}") from e
 
-    model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+    model = GomokuPolicyNet().to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.train()
 
@@ -204,7 +204,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
         try:
             pool_checkpoint = torch.load(pool_checkpoint_path, map_location=device, weights_only=False)
-            pool_model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+            pool_model = GomokuPolicyNet().to(device)
             pool_model.load_state_dict(pool_checkpoint['model_state_dict'])
             pool_model.eval()
             opponent_pool.append(pool_model)
@@ -304,7 +304,7 @@ def main():
 
         start_update = -1
 
-        current_policy = GomokuPolicyNet(n_blocks=N_BLOCKS).to(DEVICE)
+        current_policy = GomokuPolicyNet().to(DEVICE)
         current_policy.train()
 
         optimizer = torch.optim.AdamW(

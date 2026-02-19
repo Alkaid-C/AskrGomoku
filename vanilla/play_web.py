@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from flask import Flask, jsonify, request
 from gomoku import encode_observation, idx_to_pos
-from model import N_BLOCKS, GomokuPolicyNet
+from model import GomokuPolicyNet
 
 app = Flask(__name__)
 
@@ -1140,7 +1140,7 @@ def load_checkpoint(checkpoint_path):
 
     try:
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
-        model = GomokuPolicyNet(n_blocks=N_BLOCKS)
+        model = GomokuPolicyNet()
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
 

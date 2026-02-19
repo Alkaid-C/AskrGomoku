@@ -772,7 +772,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         policy_loss_mb = -(batch_weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         # Adaptive entropy bonus (ratio-based: schedule / current)
-        entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8) if ema_entropy is not None else 1.0
+        entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8)
         entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         value_loss_coeff = VALUE_LOSS_COEFF_START + (VALUE_LOSS_COEFF_END - VALUE_LOSS_COEFF_START) * alpha

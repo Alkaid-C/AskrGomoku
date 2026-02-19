@@ -40,7 +40,7 @@ class GomokuPolicyNet(nn.Module):
     - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
     """
 
-    def __init__(self, n_blocks: int):
+    def __init__(self):
         super().__init__()
 
         # === Stem: simple 3x3 convolution ===
@@ -51,7 +51,7 @@ class GomokuPolicyNet(nn.Module):
         # === Trunk: standard residual blocks (no dilation, no SE) ===
         self.blocks = nn.ModuleList([
             ResidualBlock(WIDTH)
-            for _ in range(n_blocks)
+            for _ in range(N_BLOCKS)
         ])
         self.trunk_norm = nn.GroupNorm(num_groups=GROUPNORM_GROUPS, num_channels=WIDTH)
 

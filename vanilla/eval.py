@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 import torch.nn as nn
 from gomoku import GameState, play_eval_games, select_action_batch_eval
-from model import N_BLOCKS, GomokuPolicyNet
+from model import GomokuPolicyNet
 
 # ============================================================================
 # Evaluation Constants
@@ -58,13 +58,13 @@ MINING_MODEL_BATCH = 16            # Max models to load simultaneously during mi
 
 def create_random_policy(device: torch.device) -> nn.Module:
     """Create a policy network with random weights."""
-    model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+    model = GomokuPolicyNet().to(device)
     return model
 
 
 def copy_model(model: nn.Module, device: torch.device) -> nn.Module:
     """Create a deep copy of a model."""
-    model_copy = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+    model_copy = GomokuPolicyNet().to(device)
     model_copy.load_state_dict(copy.deepcopy(model.state_dict()))
     model_copy.eval()
     return model_copy
@@ -74,7 +74,7 @@ def load_checkpoint_model(checkpoint_path: str, device: torch.device) -> Optiona
     """Load a model from a checkpoint file."""
     try:
         checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        model = GomokuPolicyNet(n_blocks=N_BLOCKS).to(device)
+        model = GomokuPolicyNet().to(device)
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
         return model
