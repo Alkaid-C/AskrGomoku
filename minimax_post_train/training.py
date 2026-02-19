@@ -1018,7 +1018,7 @@ def train_on_search_samples(model: nn.Module,
     Returns:
         Dictionary with training metrics
     """
-    from enhancement import augment_batch_8fold, augment_candidates_8fold
+    from enhancement import augment_batch_8fold
 
     if not samples:
         return {
@@ -1070,26 +1070,18 @@ def train_on_search_samples(model: nn.Module,
     aug_obs, _, aug_masks = augment_batch_8fold(obs_tensor, actions_dummy, masks_tensor)
     aug_V_targets = V_targets_tensor.repeat(8)
 
-    B = len(all_samples)
+    # Augment candidates using vectorized coordinate transforms
+    sorted_t = torch.tensor(sorted_cands_list, dtype=torch.long, device=device)  # [B, 5]
+    all_t = torch.tensor(all_cands_list, dtype=torch.long, device=device)  # [B, 6]
 
-    # Augment candidates for each symmetry
-    aug_sorted_cands = []
-    aug_all_cands = []
+    def _augment_coords(t: torch.Tensor) -> torch.Tensor:
+        r, c = t // 15, t % 15
+        new_rows = torch.stack([r, c, 14 - r, 14 - c, r, 14 - r, c, 14 - c])
+        new_cols = torch.stack([c, 14 - r, 14 - c, r, 14 - c, c, r, 14 - r])
+        return (new_rows * 15 + new_cols).reshape(-1, t.size(1))
 
-    for sym_id in range(8):
-        for sample_idx in range(B):
-            # Transform sorted candidates (top 5)
-            sorted_cands = sorted_cands_list[sample_idx]
-            aug_sorted = augment_candidates_8fold(sorted_cands, sym_id)
-            aug_sorted_cands.append(aug_sorted)
-
-            # Transform all candidates (6)
-            all_cands = all_cands_list[sample_idx]
-            aug_all = augment_candidates_8fold(all_cands, sym_id)
-            aug_all_cands.append(aug_all)
-
-    aug_sorted_cands_tensor = torch.tensor(aug_sorted_cands, dtype=torch.long, device=device)  # [B*8, 5]
-    aug_all_cands_tensor = torch.tensor(aug_all_cands, dtype=torch.long, device=device)  # [B*8, 6]
+    aug_sorted_cands_tensor = _augment_coords(sorted_t)  # [B*8, 5]
+    aug_all_cands_tensor = _augment_coords(all_t)  # [B*8, 6]
 
     # Compute Q_norm for each sample using actual Q values
     from gomoku import Q_NORM_EPSILON

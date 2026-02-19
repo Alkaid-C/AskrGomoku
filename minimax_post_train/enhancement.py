@@ -299,92 +299,24 @@ def augment_batch_8fold(obs_batch: torch.Tensor, actions: torch.Tensor,
     Returns:
         Tuple of (aug_obs [B*8, 3, 15, 15], aug_actions [B*8], aug_masks [B*8, 15, 15])
     """
-    B = obs_batch.size(0)
-    device = obs_batch.device
+    r, c = actions // 15, actions % 15
 
-    # Convert actions to 2D coordinates
-    action_rows = actions // 15
-    action_cols = actions % 15
+    # Reusable transforms
+    obs_t = obs_batch.transpose(-2, -1)
+    obs_r180 = obs_batch.flip(-2, -1)
+    masks_t = masks_batch.transpose(-2, -1)
+    masks_r180 = masks_batch.flip(-2, -1)
 
-    # Pre-allocate output tensors
-    all_obs = torch.empty(B * 8, 3, 15, 15, dtype=obs_batch.dtype, device=device)
-    all_actions = torch.empty(B * 8, dtype=torch.long, device=device)
-    all_masks = torch.empty(B * 8, 15, 15, dtype=torch.bool, device=device)
+    # All 8 dihedral symmetries at once
+    # Order: identity, rot90, rot180, rot270, flip-H, flip-V, transpose, anti-transpose
+    all_obs = torch.cat([obs_batch, obs_t.flip(-1), obs_r180, obs_t.flip(-2),
+                         obs_batch.flip(-1), obs_batch.flip(-2), obs_t, obs_r180.transpose(-2, -1)])
+    all_masks = torch.cat([masks_batch, masks_t.flip(-1), masks_r180, masks_t.flip(-2),
+                           masks_batch.flip(-1), masks_batch.flip(-2), masks_t, masks_r180.transpose(-2, -1)])
 
-    for sym_id in range(8):
-        start_idx = sym_id * B
-        end_idx = (sym_id + 1) * B
-
-        if sym_id == 0:  # Identity
-            all_obs[start_idx:end_idx] = obs_batch
-            all_masks[start_idx:end_idx] = masks_batch
-            new_rows, new_cols = action_rows, action_cols
-        elif sym_id == 1:  # Rotate 90° CW
-            all_obs[start_idx:end_idx] = obs_batch.transpose(-2, -1).flip(-1)
-            all_masks[start_idx:end_idx] = masks_batch.transpose(-2, -1).flip(-1)
-            new_rows, new_cols = action_cols, 14 - action_rows
-        elif sym_id == 2:  # Rotate 180°
-            all_obs[start_idx:end_idx] = obs_batch.flip(-2).flip(-1)
-            all_masks[start_idx:end_idx] = masks_batch.flip(-2).flip(-1)
-            new_rows, new_cols = 14 - action_rows, 14 - action_cols
-        elif sym_id == 3:  # Rotate 270° CW
-            all_obs[start_idx:end_idx] = obs_batch.transpose(-2, -1).flip(-2)
-            all_masks[start_idx:end_idx] = masks_batch.transpose(-2, -1).flip(-2)
-            new_rows, new_cols = 14 - action_cols, action_rows
-        elif sym_id == 4:  # Flip horizontal
-            all_obs[start_idx:end_idx] = obs_batch.flip(-1)
-            all_masks[start_idx:end_idx] = masks_batch.flip(-1)
-            new_rows, new_cols = action_rows, 14 - action_cols
-        elif sym_id == 5:  # Flip vertical
-            all_obs[start_idx:end_idx] = obs_batch.flip(-2)
-            all_masks[start_idx:end_idx] = masks_batch.flip(-2)
-            new_rows, new_cols = 14 - action_rows, action_cols
-        elif sym_id == 6:  # Transpose
-            all_obs[start_idx:end_idx] = obs_batch.transpose(-2, -1)
-            all_masks[start_idx:end_idx] = masks_batch.transpose(-2, -1)
-            new_rows, new_cols = action_cols, action_rows
-        elif sym_id == 7:  # Anti-transpose
-            all_obs[start_idx:end_idx] = obs_batch.flip(-2).flip(-1).transpose(-2, -1)
-            all_masks[start_idx:end_idx] = masks_batch.flip(-2).flip(-1).transpose(-2, -1)
-            new_rows, new_cols = 14 - action_cols, 14 - action_rows
-
-        all_actions[start_idx:end_idx] = new_rows * 15 + new_cols
+    # Action coordinate transforms: [8, B] → flatten to [8*B]
+    new_rows = torch.stack([r, c, 14 - r, 14 - c, r, 14 - r, c, 14 - c])
+    new_cols = torch.stack([c, 14 - r, 14 - c, r, 14 - c, c, r, 14 - r])
+    all_actions = (new_rows * 15 + new_cols).reshape(-1)
 
     return all_obs, all_actions, all_masks
-
-
-def augment_candidates_8fold(candidates: List[int], sym_id: int) -> List[int]:
-    """
-    Transform candidate action indices using the same symmetry transform.
-
-    Args:
-        candidates: List of flat action indices
-        sym_id: Symmetry ID (0-7)
-
-    Returns:
-        List of transformed action indices
-    """
-    result = []
-    for action in candidates:
-        row, col = action // 15, action % 15
-
-        if sym_id == 0:  # Identity
-            new_row, new_col = row, col
-        elif sym_id == 1:  # Rotate 90° CW
-            new_row, new_col = col, 14 - row
-        elif sym_id == 2:  # Rotate 180°
-            new_row, new_col = 14 - row, 14 - col
-        elif sym_id == 3:  # Rotate 270° CW
-            new_row, new_col = 14 - col, row
-        elif sym_id == 4:  # Flip horizontal
-            new_row, new_col = row, 14 - col
-        elif sym_id == 5:  # Flip vertical
-            new_row, new_col = 14 - row, col
-        elif sym_id == 6:  # Transpose
-            new_row, new_col = col, row
-        elif sym_id == 7:  # Anti-transpose
-            new_row, new_col = 14 - col, 14 - row
-
-        result.append(new_row * 15 + new_col)
-
-    return result
