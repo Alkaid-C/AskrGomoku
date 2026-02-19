@@ -8,19 +8,18 @@ Contains:
 - Checkpoint loading utilities
 """
 
+import copy
+import glob
+import os
+import random
+import re
+from collections import deque
+from typing import Dict, List, Optional, Tuple
+
 import torch
 import torch.nn as nn
-from collections import deque
-import copy
-import os
-import glob
-import re
-import random
-from typing import List, Tuple, Optional, Dict
-
-from model import GomokuPolicyNet, N_BLOCKS
 from gomoku import GameState, play_eval_games, select_action_batch_eval
-
+from model import N_BLOCKS, GomokuPolicyNet
 
 # ============================================================================
 # Evaluation Constants
@@ -363,7 +362,7 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
 
     all_checkpoints = discover_historical_checkpoints(output_dir, min_update=0)
     if not all_checkpoints:
-        print(f"  No historical checkpoints found")
+        print("  No historical checkpoints found")
         return [], 0, 0
 
     candidates = get_bucket_candidates(scan_event_num, all_checkpoints)

@@ -13,43 +13,57 @@ import os
 # This helps avoid OOM errors when there is reserved but unallocated memory
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
-import torch
-from collections import deque
-import numpy as np
+import argparse
+import json
 import random
 import time
-import json
-import argparse
-from typing import Optional, Tuple, Dict, List
+from collections import deque
+from typing import Dict, List, Optional, Tuple
 
-from model import GomokuPolicyNet, N_BLOCKS, WIDTH, POLICY_WIDTH, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN
-from gomoku import (
-    play_episodes_batched, select_action_batch, compute_outcome_stats,
-    TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES
-)
-from enhancement import (
-    generate_offpolicy_rollout_samples, compute_adaptive_boosts, update_miss_rate_ema,
-    IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
-)
-from training import (
-    train_on_batch, compute_entropy_schedule,
-    TOTAL_UPDATES, LEARNING_RATE, MIN_LR, LR_DECAY_MIDPOINT_PERCENTAGE, LR_DECAY_STEEPNESS, WEIGHT_DECAY,
-    EPISODES_PER_UPDATE,
-    ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
-    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
-    VALUE_LOSS_COEFF_START, VALUE_LOSS_COEFF_END, GAE_LAMBDA, BASELINE_RAMP_END,
-    PRINT_INTERVAL
-)
-from eval import (
-    create_random_policy, load_checkpoint_model,
-    get_eval_interval, evaluate_policy, sample_opponent_weighted,
-    add_opponent_to_pool, scan_historical_exploiters,
-    OPPONENT_POOL_SIZE, EVAL_ROUNDS, WIN_RATE_THRESHOLD,
-    SCAN_START_UPDATE, SCAN_PERIOD, NUM_SCAN_BUCKETS
-)
-
+import numpy as np
+import torch
 from csv_logger import CSVLogger
-
+from enhancement import IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE, compute_adaptive_boosts, generate_offpolicy_rollout_samples, update_miss_rate_ema
+from eval import (
+    EVAL_ROUNDS,
+    NUM_SCAN_BUCKETS,
+    OPPONENT_POOL_SIZE,
+    SCAN_PERIOD,
+    SCAN_START_UPDATE,
+    WIN_RATE_THRESHOLD,
+    add_opponent_to_pool,
+    create_random_policy,
+    evaluate_policy,
+    get_eval_interval,
+    load_checkpoint_model,
+    sample_opponent_weighted,
+    scan_historical_exploiters,
+)
+from gomoku import RENJU_OPENING_SEQUENCES, SEED_PROBABILITY, TEMPERATURE_TRAIN, compute_outcome_stats, play_episodes_batched, select_action_batch
+from model import N_BLOCKS, POLICY_WIDTH, VALUE_HEAD_CHANNELS, VALUE_HEAD_HIDDEN, WIDTH, GomokuPolicyNet
+from training import (
+    BASELINE_RAMP_END,
+    EMA_WINDOW,
+    ENTROPY_BONUS_COEFF,
+    ENTROPY_DECAY_MIDPOINT_PERCENTAGE,
+    ENTROPY_DECAY_STEEPNESS,
+    ENTROPY_TARGET_END,
+    ENTROPY_TARGET_START,
+    EPISODES_PER_UPDATE,
+    EVAL_WIN_RATE_EMA_WINDOW,
+    GAE_LAMBDA,
+    LEARNING_RATE,
+    LR_DECAY_MIDPOINT_PERCENTAGE,
+    LR_DECAY_STEEPNESS,
+    MIN_LR,
+    PRINT_INTERVAL,
+    TOTAL_UPDATES,
+    VALUE_LOSS_COEFF_END,
+    VALUE_LOSS_COEFF_START,
+    WEIGHT_DECAY,
+    compute_entropy_schedule,
+    train_on_batch,
+)
 
 # ============================================================================
 # PyTorch Performance Settings
@@ -123,7 +137,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     print(f"Found training state file: {training_state_file}")
 
     try:
-        with open(training_state_file, 'r') as f:
+        with open(training_state_file) as f:
             state = json.load(f)
     except Exception as e:
         raise RuntimeError(f"Corrupt training state JSON in {training_state_file}: {e}")
@@ -185,7 +199,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
         pool_checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{pool_update}.pt")
         if not os.path.exists(pool_checkpoint_path):
             print(f"Warning: Opponent pool checkpoint not found: {pool_checkpoint_path}")
-            print(f"Skipping this opponent")
+            print("Skipping this opponent")
             continue
 
         try:
@@ -239,31 +253,31 @@ def main():
     print()
 
     print(f"Using device: {DEVICE}")
-    print(f"Model architecture:")
+    print("Model architecture:")
     print(f"  Stem: 3x3 conv -> {WIDTH} channels")
     print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels (standard pre-activation, no dilation, no SE)")
     print(f"  Policy head: 3x Conv3x3 -> {POLICY_WIDTH}ch (GroupNorm+SiLU) -> Conv1x1 -> 1")
     print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
-    print(f"Training configuration:")
+    print("Training configuration:")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
     print(f"    Target entropy: {ENTROPY_TARGET_START} -> {ENTROPY_TARGET_END} nats (sigmoid: mid={ENTROPY_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={ENTROPY_DECAY_STEEPNESS:.0%})")
     print(f"    Bonus: coeff={ENTROPY_BONUS_COEFF}")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
     print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
-    print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
+    print("  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
     print(f"  Value head: ENABLED (loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END} via cosine ramp over [0, {BASELINE_RAMP_END}])")
     print(f"  GAE: lambda={GAE_LAMBDA}")
     print(f"  Baseline transition: cosine ramp alpha over [0, {BASELINE_RAMP_END}]")
-    print(f"    - Advantages: (1-alpha)*max(0,R) + alpha*max(0,GAE) + tactical boost")
+    print("    - Advantages: (1-alpha)*max(0,R) + alpha*max(0,GAE) + tactical boost")
     print(f"    - Value loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END}")
-    print(f"    - Tactical bonuses prevent terminal state learning collapse")
+    print("    - Tactical bonuses prevent terminal state learning collapse")
     print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")
     print(f"  Eval interval: {get_eval_interval(0)} (early) -> {get_eval_interval(512)} (mid) -> {get_eval_interval(8192)} (late)")
-    print(f"  Pool eviction: evict-easiest (by current win rate)")
-    print(f"  Historical exploiter scanning:")
+    print("  Pool eviction: evict-easiest (by current win rate)")
+    print("  Historical exploiter scanning:")
     print(f"    - Starts at update {SCAN_START_UPDATE}, every {SCAN_PERIOD} evals")
     print(f"    - {NUM_SCAN_BUCKETS} buckets for round-robin coverage")
     print(f"  Total updates: {TOTAL_UPDATES}")
@@ -292,7 +306,7 @@ def main():
 
         current_policy = GomokuPolicyNet(n_blocks=N_BLOCKS).to(DEVICE)
         current_policy.train()
-    
+
         optimizer = torch.optim.AdamW(
             current_policy.parameters(),
             lr=LEARNING_RATE,
@@ -619,7 +633,7 @@ def main():
                     print(f"  Pool: +current -{evicted}")
                     per_opponent_win_rates.pop(str(evicted), None)
                 else:
-                    print(f"  Pool: +current")
+                    print("  Pool: +current")
             else:
                 print(f"  Pool: no change (WR {win_rate:.1%} < {WIN_RATE_THRESHOLD:.1%})")
 
@@ -726,7 +740,7 @@ def main():
         output_dir, TOTAL_UPDATES, opponent_pool_updates, win_miss_ema, block_miss_ema,
         per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema
     )
-    print(f"Final training state saved")
+    print("Final training state saved")
 
 
 if __name__ == "__main__":

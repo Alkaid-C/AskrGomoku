@@ -5,8 +5,8 @@ Manages CSV logging for training updates, evaluation summaries, opponent details
 historical exploiter mining, and gradient conflict probing.
 """
 
-import os
 import csv
+import os
 
 
 class CSVLogger:

@@ -9,25 +9,15 @@ Contains the core training logic:
 """
 
 import os
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from enhancement import EPISODE_WEIGHT_ALPHA, IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE, TacticalStats, apply_tactical_enhancements, augment_batch_8fold
+from gomoku import LOG_PROB_MIN, LOGIT_MASK_VALUE, TEMPERATURE_TRAIN, Trajectory, compute_returns, mask_batch_to_tensor, obs_batch_to_tensor
 from torch.distributions import Categorical
-import numpy as np
-from typing import List, Tuple, Optional, Dict
-
-from model import N_SHARED_BLOCKS, N_DUAL_SE_BLOCKS
-from gomoku import (
-    Trajectory,
-    obs_batch_to_tensor, mask_batch_to_tensor,
-    compute_returns, TEMPERATURE_TRAIN, LOG_PROB_MIN, LOGIT_MASK_VALUE
-)
-from enhancement import (
-    apply_tactical_enhancements, augment_batch_8fold,
-    TacticalStats, EPISODE_WEIGHT_ALPHA,
-    IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE
-)
-
 
 # ============================================================================
 # Training Constants

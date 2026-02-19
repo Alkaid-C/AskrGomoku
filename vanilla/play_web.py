@@ -7,15 +7,15 @@ Allows humans to play against AI and explore model predictions.
 All HTML, CSS, and JavaScript are embedded in this file for portability.
 """
 
-import os
 import glob
-from flask import Flask, jsonify, request
+import os
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-import numpy as np
-
-from model import GomokuPolicyNet, N_BLOCKS
+from flask import Flask, jsonify, request
 from gomoku import encode_observation, idx_to_pos
+from model import N_BLOCKS, GomokuPolicyNet
 
 app = Flask(__name__)
 

@@ -5,11 +5,11 @@ Contains ONLY the neural network architecture (GomokuPolicyNet) and architecture
 This module rarely needs changes unless network structure is modified.
 """
 
+from typing import Tuple
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple
-
 
 # ============================================================================
 # Model Architecture Constants

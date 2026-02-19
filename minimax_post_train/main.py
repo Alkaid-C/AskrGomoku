@@ -13,50 +13,85 @@ import os
 # This helps avoid OOM errors when there is reserved but unallocated memory
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
-import torch
-from collections import deque
-import numpy as np
+import argparse
+import json
 import random
 import time
-import json
-import argparse
-from typing import Optional, Tuple, Dict, List
+from collections import deque
+from typing import Dict, List, Optional, Tuple
 
-from model import GomokuPolicyNet, N_BLOCKS, zero_center_taps, WIDTH
-from model import (
-    STEM_3X3_CHANNELS, STEM_DIRECTIONAL_5X5_CHANNELS, STEM_FULL_5X5_CHANNELS,
-    STEM_DIRECTIONAL_7X7_CHANNELS, STEM_FULL_7X7_CHANNELS,
-    TRUNK_DILATION2_SCHEDULE, N_SHARED_BLOCKS, N_DUAL_SE_BLOCKS,
-    POLICY_HEAD_D, VALUE_HEAD_C1, VALUE_HEAD_C2_SPLIT, VALUE_HEAD_HIDDEN
+import numpy as np
+import torch
+from csv_logger import CSVLogger
+from enhancement import probe_tactical_accuracy_search
+from eval import (
+    EVAL_ROUNDS,
+    NUM_SCAN_BUCKETS,
+    OPPONENT_POOL_SIZE,
+    SCAN_PERIOD,
+    SCAN_START_UPDATE,
+    WIN_RATE_THRESHOLD,
+    add_opponent_to_pool,
+    create_random_policy,
+    evaluate_policy,
+    get_eval_interval,
+    load_checkpoint_model,
+    scan_historical_exploiters,
 )
 from gomoku import (
-    play_episodes_batched, select_action_batch, compute_outcome_stats,
-    play_episodes_with_search, GameState,
-    TEMPERATURE_TRAIN, SEED_PROBABILITY, RENJU_OPENING_SEQUENCES,
-    SEARCH_DEPTH, ROOT_TOP_K, ROOT_RANDOM_K, INTERNAL_TOP_K, INTERNAL_RANDOM_K, SAMPLING_TAU
+    INTERNAL_RANDOM_K,
+    INTERNAL_TOP_K,
+    RENJU_OPENING_SEQUENCES,
+    ROOT_RANDOM_K,
+    ROOT_TOP_K,
+    SAMPLING_TAU,
+    SEARCH_DEPTH,
+    SEED_PROBABILITY,
+    GameState,
+    play_episodes_with_search,
 )
-from enhancement import probe_tactical_accuracy, probe_tactical_accuracy_search
+from model import (
+    N_BLOCKS,
+    N_DUAL_SE_BLOCKS,
+    N_SHARED_BLOCKS,
+    POLICY_HEAD_D,
+    STEM_3X3_CHANNELS,
+    STEM_DIRECTIONAL_5X5_CHANNELS,
+    STEM_DIRECTIONAL_7X7_CHANNELS,
+    STEM_FULL_5X5_CHANNELS,
+    STEM_FULL_7X7_CHANNELS,
+    TRUNK_DILATION2_SCHEDULE,
+    VALUE_HEAD_C1,
+    VALUE_HEAD_C2_SPLIT,
+    VALUE_HEAD_HIDDEN,
+    WIDTH,
+    GomokuPolicyNet,
+    zero_center_taps,
+)
 from training import (
-    train_on_batch, compute_entropy_schedule,
-    train_on_search_samples, apply_freeze_schedule, create_optimizer_for_unfrozen, maybe_update_optimizer,
-    TOTAL_UPDATES, LEARNING_RATE, MIN_LR, LR_DECAY_MIDPOINT_PERCENTAGE, LR_DECAY_STEEPNESS, WEIGHT_DECAY,
-    EPISODES_PER_UPDATE, EPISODES_CHUNK_SIZE,
-    ENTROPY_TARGET_START, ENTROPY_TARGET_END, ENTROPY_BONUS_COEFF,
-    ENTROPY_DECAY_MIDPOINT_PERCENTAGE, ENTROPY_DECAY_STEEPNESS, EMA_WINDOW, EVAL_WIN_RATE_EMA_WINDOW,
-    VALUE_LOSS_COEFF, GAE_LAMBDA, VALUE_BASELINE_START,
-    PRINT_INTERVAL, PROBE_INTERVAL,
-    HEADS_ONLY_UPDATES, BLOCK_UNFREEZE_INTERVAL, M_RANK, M_SEP, ALPHA_SEP, LAMBDA_V
+    ALPHA_SEP,
+    BLOCK_UNFREEZE_INTERVAL,
+    EMA_WINDOW,
+    EPISODES_CHUNK_SIZE,
+    EPISODES_PER_UPDATE,
+    EVAL_WIN_RATE_EMA_WINDOW,
+    HEADS_ONLY_UPDATES,
+    LAMBDA_V,
+    LEARNING_RATE,
+    LR_DECAY_MIDPOINT_PERCENTAGE,
+    LR_DECAY_STEEPNESS,
+    M_RANK,
+    M_SEP,
+    MIN_LR,
+    PRINT_INTERVAL,
+    PROBE_INTERVAL,
+    TOTAL_UPDATES,
+    WEIGHT_DECAY,
+    apply_freeze_schedule,
+    create_optimizer_for_unfrozen,
+    maybe_update_optimizer,
+    train_on_search_samples,
 )
-from eval import (
-    create_random_policy, load_checkpoint_model,
-    get_eval_interval, evaluate_policy, sample_opponent_weighted,
-    add_opponent_to_pool, scan_historical_exploiters,
-    OPPONENT_POOL_SIZE, EVAL_ROUNDS, WIN_RATE_THRESHOLD,
-    SCAN_START_UPDATE, SCAN_PERIOD, NUM_SCAN_BUCKETS
-)
-
-from csv_logger import CSVLogger
-
 
 # ============================================================================
 # PyTorch Performance Settings
@@ -128,7 +163,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     print(f"Found training state file: {training_state_file}")
 
     # Let JSON errors propagate - corrupted state file should crash
-    with open(training_state_file, 'r') as f:
+    with open(training_state_file) as f:
         state = json.load(f)
 
     current_update = state['current_update']
@@ -234,40 +269,40 @@ def main():
         print()
 
     print(f"Using device: {DEVICE}")
-    print(f"Model architecture:")
-    print(f"  Stem (dilated design):")
+    print("Model architecture:")
+    print("  Stem (dilated design):")
     print(f"    - 3x3: {STEM_3X3_CHANNELS}ch")
     print(f"    - 5x5 directional (d1+d2): {STEM_DIRECTIONAL_5X5_CHANNELS}ch, 5x5 full: {STEM_FULL_5X5_CHANNELS}ch")
     print(f"    - 7x7 directional (d1+d2+d3): {STEM_DIRECTIONAL_7X7_CHANNELS}ch, 7x7 full: {STEM_FULL_7X7_CHANNELS}ch")
     print(f"    - Total: {WIDTH} channels (center taps zeroed for d>1)")
     print(f"  Residual blocks: {N_BLOCKS} total ({N_SHARED_BLOCKS} shared + {N_DUAL_SE_BLOCKS} dual-SE) x {WIDTH} channels")
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
-    print(f"    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
+    print("    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
     print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (+SiLU) -> 225")
     print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
     num_accumulation_steps = (EPISODES_PER_UPDATE + effective_chunk_size - 1) // effective_chunk_size
 
-    print(f"Training configuration (POST-TRAINING MODE - Search Supervision):")
+    print("Training configuration (POST-TRAINING MODE - Search Supervision):")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
-    print(f"  Search parameters:")
+    print("  Search parameters:")
     print(f"    - Depth: {SEARCH_DEPTH}")
     print(f"    - Root candidates: {ROOT_TOP_K} top + {ROOT_RANDOM_K} random = {ROOT_TOP_K + ROOT_RANDOM_K}")
     print(f"    - Internal candidates: {INTERNAL_TOP_K} top + {INTERNAL_RANDOM_K} random = {INTERNAL_TOP_K + INTERNAL_RANDOM_K}")
     print(f"    - Sampling temperature: {SAMPLING_TAU}")
     print(f"  Loss weights: ranking margin={M_RANK}, separation margin={M_SEP}, alpha_sep={ALPHA_SEP}, lambda_v={LAMBDA_V}")
-    print(f"  Progressive unfreezing:")
+    print("  Progressive unfreezing:")
     print(f"    - Heads only: updates [0, {HEADS_ONLY_UPDATES})")
     print(f"    - Unfreeze blocks: every {BLOCK_UNFREEZE_INTERVAL} updates (from trunk end toward stem)")
-    print(f"    - Stem unfreezes after all blocks")
+    print("    - Stem unfreezes after all blocks")
     print(f"  EMA windows: per-update={EMA_WINDOW}, eval win_rate={EVAL_WIN_RATE_EMA_WINDOW}")
     print(f"  Episodes per update: {EPISODES_PER_UPDATE}")
-    print(f"  Data augmentation: 8-fold symmetry (rot + flip)")
+    print("  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Tactical probe: every {PROBE_INTERVAL} updates (metrics only)")
     print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")
     print(f"  Eval interval: {get_eval_interval(0)} (early) -> {get_eval_interval(512)} (mid) -> {get_eval_interval(8192)} (late)")
-    print(f"  Pool eviction: evict-easiest (by current win rate)")
-    print(f"  Historical exploiter scanning:")
+    print("  Pool eviction: evict-easiest (by current win rate)")
+    print("  Historical exploiter scanning:")
     print(f"    - Starts at update {SCAN_START_UPDATE}, every {SCAN_PERIOD} evals")
     print(f"    - {NUM_SCAN_BUCKETS} buckets for round-robin coverage")
     print(f"  Total updates: {TOTAL_UPDATES}")
@@ -641,7 +676,7 @@ def main():
                     print(f"  Pool: +current -{evicted}")
                     per_opponent_win_rates.pop(str(evicted), None)
                 else:
-                    print(f"  Pool: +current")
+                    print("  Pool: +current")
             else:
                 print(f"  Pool: no change (WR {win_rate:.1%} < {WIN_RATE_THRESHOLD:.1%})")
 
@@ -750,7 +785,7 @@ def main():
         per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
         unfrozen_blocks
     )
-    print(f"Final training state saved")
+    print("Final training state saved")
 
 
 if __name__ == "__main__":

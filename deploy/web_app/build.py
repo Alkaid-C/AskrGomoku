@@ -15,7 +15,7 @@ from pathlib import Path
 
 def inline_css(html_content: str) -> str:
     """Replace CSS link with inline style tag."""
-    with open('styles.css', 'r', encoding='utf-8') as f:
+    with open('styles.css', encoding='utf-8') as f:
         css_content = f.read()
 
     # Replace <link rel="stylesheet" href="styles.css"> with <style>...</style>
@@ -33,7 +33,7 @@ def inline_js(html_content: str) -> str:
     """Replace JS script tags with inline scripts."""
     def replace_script(match):
         filename = match.group(1)
-        with open(f'js/{filename}', 'r', encoding='utf-8') as f:
+        with open(f'js/{filename}', encoding='utf-8') as f:
             js_content = f.read()
         return f'<script>\n{js_content}\n    </script>'
 
@@ -52,7 +52,7 @@ def build():
     print('Building gomoku-standalone.html...')
 
     # Read the development HTML
-    with open('index.html', 'r', encoding='utf-8') as f:
+    with open('index.html', encoding='utf-8') as f:
         html = f.read()
 
     # Inline CSS

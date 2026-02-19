@@ -10,19 +10,14 @@ Contains sample enhancement logic that modifies or generates training samples:
 All enhancements are "sample generators/modifiers" with clean interfaces.
 """
 
+import random
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-import random
-from typing import List, Tuple, Optional
-from dataclasses import dataclass
-
-from gomoku import (
-    GameState, Trajectory,
-    get_local_candidate_moves,
-    play_offpolicy_rollouts_batched, select_action_batch_eval
-)
-
+from gomoku import GameState, Trajectory, get_local_candidate_moves, play_offpolicy_rollouts_batched, select_action_batch_eval
 
 # ============================================================================
 # Enhancement Constants

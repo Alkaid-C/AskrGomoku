@@ -12,14 +12,14 @@ Requirements:
 """
 
 import argparse
-import torch
-import torch.nn as nn
-import onnx
-import onnxruntime as ort
-import numpy as np
 from pathlib import Path
 
-from model import GomokuPolicyNet, N_BLOCKS
+import numpy as np
+import onnx
+import onnxruntime as ort
+import torch
+import torch.nn as nn
+from model import N_BLOCKS, GomokuPolicyNet
 
 
 class GomokuModelForExport(nn.Module):
@@ -86,7 +86,7 @@ def load_checkpoint(checkpoint_path: str) -> GomokuPolicyNet:
 
 def export_to_onnx(model: nn.Module, output_path: str):
     """Export model to ONNX with raw logits (no softmax, no temperature)."""
-    print(f"\nExporting to ONNX (opset=21, raw logits)...")
+    print("\nExporting to ONNX (opset=21, raw logits)...")
 
     # Wrap model for export (adds batch dim + mask channel)
     wrapped_model = GomokuModelForExport(model)
@@ -180,11 +180,11 @@ Temperature and softmax are applied on the JS side after masking illegal moves.
     # Report file size
     output_path = Path(args.output)
     size_mb = output_path.stat().st_size / (1024 * 1024)
-    print(f"\n✓ Export complete!")
+    print("\n✓ Export complete!")
     print(f"  Output: {args.output}")
     print(f"  Size: {size_mb:.2f} MB")
-    print(f"  Format: raw logits (apply temperature + softmax on JS side)")
-    print(f"\nReady for deployment with onnxruntime-web (WASM backend)")
+    print("  Format: raw logits (apply temperature + softmax on JS side)")
+    print("\nReady for deployment with onnxruntime-web (WASM backend)")
 
 
 if __name__ == "__main__":

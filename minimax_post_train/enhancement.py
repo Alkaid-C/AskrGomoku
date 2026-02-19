@@ -7,13 +7,12 @@ Contains:
 - Local candidate position utilities for negamax search
 """
 
-import torch
-import numpy as np
-from typing import List, Tuple, Optional
 from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
-from gomoku import Trajectory, GameState, SearchSample
-
+import numpy as np
+import torch
+from gomoku import SearchSample, Trajectory
 
 # ============================================================================
 # Stats Dataclasses

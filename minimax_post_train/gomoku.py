@@ -10,15 +10,14 @@ This module provides the stable game engine and self-play infrastructure:
 This module rarely needs changes unless game rules are modified.
 """
 
+import random
+from enum import Enum
+from typing import List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.distributions import Categorical
-import numpy as np
-import random
-from typing import List, Tuple, Optional
-from enum import Enum
-
-
 
 # ============================================================================
 # Inference Constants
@@ -611,7 +610,7 @@ def play_episodes_batched(black_white_pairs: List[Tuple],
 
 class EvalGameState:
     """Minimal state for evaluation games - no trajectory storage."""
-    __slots__ = ['board', 'black_model', 'white_model', 'current_is_black', 'done', 'outcome']
+    __slots__ = ['black_model', 'board', 'current_is_black', 'done', 'outcome', 'white_model']
 
     def __init__(self, black_model, white_model, current_is_black: bool):
         self.board = GomokuBoard()
@@ -711,7 +710,7 @@ def play_eval_games(black_white_pairs: List[Tuple],
 
 class OffPolicyRolloutState:
     """Minimal state for off-policy rollout games."""
-    __slots__ = ['board', 'black_model', 'white_model', 'first_player', 'done', 'won']
+    __slots__ = ['black_model', 'board', 'done', 'first_player', 'white_model', 'won']
 
     def __init__(self, obs: np.ndarray, next_player: Player, first_action: int,
                  black_model, white_model):
@@ -922,6 +921,7 @@ def compute_outcome_stats(trajectories: List[Trajectory], current_is_black: List
 # ============================================================================
 
 from dataclasses import dataclass
+
 
 @dataclass
 class SearchSample:
@@ -1399,8 +1399,15 @@ def sample_move_from_q(candidates: List[int], Q_search: dict,
 
 class SearchGameState:
     """Tracks state of a game using search-based move selection."""
-    __slots__ = ['board', 'black_model', 'white_model', 'current_is_black',
-                 'samples', 'done', 'outcome']
+    __slots__ = [
+        'black_model',
+        'board',
+        'current_is_black',
+        'done',
+        'outcome',
+        'samples',
+        'white_model',
+    ]
 
     def __init__(self, black_model, white_model, current_is_black: bool, opening_id: int = -1):
         self.board = GomokuBoard(opening_id=opening_id)

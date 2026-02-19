@@ -8,15 +8,13 @@ This script:
 4. Analyzes logit distributions to recommend margin values
 """
 
-import torch
-import numpy as np
 import random
 from typing import List, Tuple
+
+import numpy as np
+import torch
+from gomoku import LOGIT_MASK_VALUE, GomokuBoard, encode_observation, get_local_candidate_moves, idx_to_pos
 from model import GomokuPolicyNet
-from gomoku import (
-    GomokuBoard, encode_observation, idx_to_pos,
-    get_local_candidate_moves, LOGIT_MASK_VALUE
-)
 
 
 def generate_test_positions(model, device: torch.device, num_games: int = 10) -> List[Tuple[np.ndarray, np.ndarray, int]]:
@@ -58,7 +56,6 @@ def generate_test_positions(model, device: torch.device, num_games: int = 10) ->
 
             # Execute move
             row, col = idx_to_pos(action)
-            from gomoku import GameState
             outcome = board.Move((row, col))
             move_count += 1
 
@@ -329,13 +326,13 @@ def main():
     m_rank, m_sep = recommend_margins(stats)
 
     print(f"\nRecommended m_rank: {m_rank:.4f}")
-    print(f"  Rationale: Should be smaller than typical inter-candidate gaps")
-    print(f"             to allow flexibility, but enforce ordering when gaps")
-    print(f"             are small. Targets 10th-25th percentile range.")
+    print("  Rationale: Should be smaller than typical inter-candidate gaps")
+    print("             to allow flexibility, but enforce ordering when gaps")
+    print("             are small. Targets 10th-25th percentile range.")
 
     print(f"\nRecommended m_sep:  {m_sep:.4f}")
-    print(f"  Rationale: Should prevent non-candidates from getting close to c4.")
-    print(f"             Targets lower percentile to catch marginal cases.")
+    print("  Rationale: Should prevent non-candidates from getting close to c4.")
+    print("             Targets lower percentile to catch marginal cases.")
 
     print("\n" + "=" * 80)
     print("INTERPRETATION GUIDE")

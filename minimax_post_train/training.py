@@ -8,23 +8,19 @@ Contains the core training logic:
 - Gradient conflict probing
 """
 
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Categorical
-import numpy as np
-from typing import List, Tuple, Optional, Dict
-
-from model import N_BLOCKS, N_SHARED_BLOCKS
-from gomoku import (
-    Trajectory,
-    obs_batch_to_tensor, mask_batch_to_tensor,
-    compute_returns, TEMPERATURE_TRAIN, LOG_PROB_MIN, LOGIT_MASK_VALUE
-)
 from enhancement import (
-    augment_batch_8fold,
     TacticalStats,
+    augment_batch_8fold,
 )
+from gomoku import LOG_PROB_MIN, LOGIT_MASK_VALUE, TEMPERATURE_TRAIN, Trajectory, compute_returns, mask_batch_to_tensor, obs_batch_to_tensor
+from model import N_BLOCKS, N_SHARED_BLOCKS
+from torch.distributions import Categorical
 
 # Sample weight exponent for per-episode weighting (0=per-step, 1=per-episode equal)
 EPISODE_WEIGHT_ALPHA = 0.25
@@ -252,7 +248,7 @@ def probe_gradient_conflict_chunked(
     }
     all_trunk_stem_params = []
 
-    for name in policy_grads.keys():
+    for name in policy_grads:
         if any(x in name for x in ['conv_3x3', 'conv_directional5', 'conv_full5',
                                      'conv_directional7', 'conv_full7', 'conv_1x1',
                                      'stem_norm']):
@@ -880,11 +876,7 @@ def maybe_update_optimizer(model: nn.Module, optimizer: torch.optim.Optimizer,
     # Check if unfreezing schedule changed
     need_new_optimizer = False
 
-    if current_unfrozen_blocks != prev_unfrozen_blocks:
-        need_new_optimizer = True
-    elif update == stem_unfreeze_update:
-        need_new_optimizer = True
-    elif update == HEADS_ONLY_UPDATES:
+    if current_unfrozen_blocks != prev_unfrozen_blocks or update == stem_unfreeze_update or update == HEADS_ONLY_UPDATES:
         need_new_optimizer = True
 
     if need_new_optimizer:
@@ -1027,7 +1019,6 @@ def train_on_search_samples(model: nn.Module,
     Returns:
         Dictionary with training metrics
     """
-    from gomoku import SearchSample
     from enhancement import augment_batch_8fold, augment_candidates_8fold
 
     if not samples:
