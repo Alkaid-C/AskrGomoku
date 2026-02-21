@@ -31,8 +31,6 @@ BLOCK_MAX_BOOST = 0.75         # Maximum boost for blocking (when miss rate is 1
 
 SYNTHETIC_WIN_BOOST = 2.0      # Signal for missed win-in-1 (synthetic examples)
 SYNTHETIC_BLOCKING_BOOST = 1.5 # Signal for missed blocks (synthetic examples)
-MAX_SYNTHETIC_WINS = 4096       # Max synthetic win-in-1 examples per batch
-MAX_SYNTHETIC_BLOCKS = 4096     # Max synthetic blocking examples per batch
 
 # --- Imitation Learning ---
 IMITATION_MAX_WEIGHT = 1.5      # Maximum weight for imitation learning (at 0% win rate)
@@ -567,7 +565,7 @@ def apply_tactical_enhancements(
 
                 # Add synthetic samples for other winning moves
                 for other_win in winning_moves:
-                    if other_win != all_actions[i] and (stats.synthetic_wins_eq + stats.synthetic_wins_missed) < MAX_SYNTHETIC_WINS:
+                    if other_win != all_actions[i]:
                         all_obs.append(all_obs[i])
                         all_actions.append(other_win)
                         all_masks.append(all_masks[i])
@@ -582,17 +580,16 @@ def apply_tactical_enhancements(
                 stats.win_misses += 1
                 # Add synthetic samples for all winning moves
                 for winning_move in winning_moves:
-                    if (stats.synthetic_wins_eq + stats.synthetic_wins_missed) < MAX_SYNTHETIC_WINS:
-                        all_obs.append(all_obs[i])
-                        all_actions.append(winning_move)
-                        all_masks.append(all_masks[i])
-                        all_returns.append(all_returns[i])  # Use original return, not boosted
-                        all_value_targets.append(0.0)
-                        all_is_synthetic.append(True)
-                        synthetic_advantages.append(SYNTHETIC_WIN_BOOST)
-                        all_weights.append(all_weights[i])
-                        all_is_terminal.append(True)
-                        stats.synthetic_wins_missed += 1
+                    all_obs.append(all_obs[i])
+                    all_actions.append(winning_move)
+                    all_masks.append(all_masks[i])
+                    all_returns.append(all_returns[i])  # Use original return, not boosted
+                    all_value_targets.append(0.0)
+                    all_is_synthetic.append(True)
+                    synthetic_advantages.append(SYNTHETIC_WIN_BOOST)
+                    all_weights.append(all_weights[i])
+                    all_is_terminal.append(True)
+                    stats.synthetic_wins_missed += 1
         else:
             blocking_moves = find_blocking_moves(all_obs[i], all_masks[i])
             if blocking_moves is not None:
@@ -604,17 +601,16 @@ def apply_tactical_enhancements(
                     stats.blocks_found += 1
                 else:
                     stats.block_misses += 1
-                    if stats.synthetic_blocks < MAX_SYNTHETIC_BLOCKS:
-                        all_obs.append(all_obs[i])
-                        all_actions.append(blocking_moves[0])
-                        all_masks.append(all_masks[i])
-                        all_returns.append(all_returns[i])  # Use original return, not boosted
-                        all_value_targets.append(0.0)
-                        all_is_synthetic.append(True)
-                        synthetic_advantages.append(SYNTHETIC_BLOCKING_BOOST)
-                        all_weights.append(all_weights[i])
-                        all_is_terminal.append(False)
-                        stats.synthetic_blocks += 1
+                    all_obs.append(all_obs[i])
+                    all_actions.append(blocking_moves[0])
+                    all_masks.append(all_masks[i])
+                    all_returns.append(all_returns[i])  # Use original return, not boosted
+                    all_value_targets.append(0.0)
+                    all_is_synthetic.append(True)
+                    synthetic_advantages.append(SYNTHETIC_BLOCKING_BOOST)
+                    all_weights.append(all_weights[i])
+                    all_is_terminal.append(False)
+                    stats.synthetic_blocks += 1
 
     boost_info = TacticalBoostInfo(
         sample_boosts=sample_boosts,
