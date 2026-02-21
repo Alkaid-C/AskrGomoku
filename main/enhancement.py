@@ -521,7 +521,6 @@ def apply_tactical_enhancements(
     all_weights: List[float],
     all_value_targets: List[float],
     all_is_synthetic: List[bool],
-    all_next_obs: List[np.ndarray],
     all_is_terminal: List[bool],
     win_boost: float,
     block_boost: float
@@ -540,7 +539,6 @@ def apply_tactical_enhancements(
         all_weights: List of weights (extended with synthetic)
         all_value_targets: List of value targets (extended with synthetic)
         all_is_synthetic: List of synthetic flags (extended)
-        all_next_obs: List of next observations (extended with synthetic)
         all_is_terminal: List of terminal flags (extended)
         win_boost: Boost for win-in-1 situations
         block_boost: Boost for blocking situations
@@ -578,7 +576,6 @@ def apply_tactical_enhancements(
                         all_is_synthetic.append(True)
                         synthetic_advantages.append(win_boost)
                         all_weights.append(all_weights[i])
-                        all_next_obs.append(np.zeros_like(all_obs[i]))
                         all_is_terminal.append(True)
                         stats.synthetic_wins_eq += 1
             else:
@@ -594,7 +591,6 @@ def apply_tactical_enhancements(
                         all_is_synthetic.append(True)
                         synthetic_advantages.append(SYNTHETIC_WIN_BOOST)
                         all_weights.append(all_weights[i])
-                        all_next_obs.append(np.zeros_like(all_obs[i]))
                         all_is_terminal.append(True)
                         stats.synthetic_wins_missed += 1
         else:
@@ -617,7 +613,6 @@ def apply_tactical_enhancements(
                         all_is_synthetic.append(True)
                         synthetic_advantages.append(SYNTHETIC_BLOCKING_BOOST)
                         all_weights.append(all_weights[i])
-                        all_next_obs.append(np.zeros_like(all_obs[i]))
                         all_is_terminal.append(False)
                         stats.synthetic_blocks += 1
 

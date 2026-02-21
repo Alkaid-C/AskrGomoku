@@ -100,7 +100,6 @@ def compute_baseline_alpha(update: int) -> float:
 def probe_gradient_conflict_chunked(
     model: nn.Module,
     obs_chunks: List[torch.Tensor],
-    next_obs_chunks: List[torch.Tensor],
     actions_chunks: List[torch.Tensor],
     masks_chunks: List[torch.Tensor],
     value_targets_chunks: List[torch.Tensor],
@@ -109,7 +108,7 @@ def probe_gradient_conflict_chunked(
     is_value_only_chunks: List[torch.Tensor],
     weights_chunks: List[torch.Tensor],
     gae_advantages_chunks: List[torch.Tensor],
-    next_values_chunks: List[Optional[torch.Tensor]],
+    next_values_chunks: List[torch.Tensor],
     global_normalizers: Tuple[float, float],
     entropy_bonus_scale: float = 1.0,
     update: int = 0,
@@ -206,7 +205,6 @@ def probe_gradient_conflict_chunked(
     # --- Loop 3: value_real (already masks synthetic internally) ---
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
-        next_obs = next_obs_chunks[i]
         value_targets = value_targets_chunks[i]
         is_terminal = is_terminal_chunks[i]
         is_synthetic = is_synthetic_chunks[i]
@@ -215,11 +213,6 @@ def probe_gradient_conflict_chunked(
 
         values = model.forward_value_only(obs)
         values = values.squeeze(1)
-
-        if next_values is None:
-            with torch.no_grad():
-                next_values_computed = model.forward_value_only(next_obs)
-            next_values = next_values_computed.squeeze(1)
 
         effective_value_targets = torch.where(
             is_terminal,
@@ -357,7 +350,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     # Deferred collection: advantages are computed AFTER augmentation (no placeholder pattern)
     all_obs = []
-    all_next_obs = []
     all_actions = []
     all_masks = []
     all_returns = []
@@ -403,13 +395,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_weights.append(current_weight)
                 all_returns_for_logging.append(z_t)
                 sample_to_traj.append((traj_idx, step_idx))
-
-                if step_idx + 1 < len(traj.observations):
-                    all_next_obs.append(traj.observations[step_idx + 1])
-                    all_is_terminal.append(False)
-                else:
-                    all_next_obs.append(np.zeros_like(obs))
-                    all_is_terminal.append(True)
+                all_is_terminal.append(step_idx + 1 >= len(traj.observations))
 
             elif imitation_enabled and z_t > 0:
                 all_obs.append(obs)
@@ -421,6 +407,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_is_value_only.append(False)
                 all_weights.append(imitation_weight)
                 sample_to_traj.append((traj_idx, step_idx))
+                all_is_terminal.append(step_idx + 1 >= len(traj.observations))
                 pieces_self = np.sum(obs[0])
                 pieces_opponent = np.sum(obs[1])
                 if pieces_self == pieces_opponent:
@@ -428,20 +415,13 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 else:
                     num_imitation_white += 1
 
-                if step_idx + 1 < len(traj.observations):
-                    all_next_obs.append(traj.observations[step_idx + 1])
-                    all_is_terminal.append(False)
-                else:
-                    all_next_obs.append(np.zeros_like(obs))
-                    all_is_terminal.append(True)
-
     # Track original length before tactical enhancements (which adds synthetic samples)
     num_samples_before_tactical = len(all_obs)
 
     # Apply tactical enhancements (returns boost info for applying after GAE)
     tactical_stats, tactical_boost_info = apply_tactical_enhancements(
         all_obs, all_actions, all_masks, all_returns,
-        all_weights, all_value_targets, all_is_synthetic, all_next_obs, all_is_terminal,
+        all_weights, all_value_targets, all_is_synthetic, all_is_terminal,
         win_boost, block_boost
     )
 
@@ -466,7 +446,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             all_is_synthetic.append(True)
             opr_advantages.append(sample['strength'])  # Track for later
             all_weights.append(sample['weight'])
-            all_next_obs.append(np.zeros_like(sample['obs']))
             all_is_terminal.append(True)
             sample_to_traj.append((-1, -1))  # Mark as synthetic
             all_is_value_only.append(False)
@@ -495,17 +474,10 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_is_value_only.append(True)
                 all_weights.append(current_weight)
                 sample_to_traj.append((traj_idx, step_idx))
-
-                if step_idx + 1 < len(traj.observations):
-                    all_next_obs.append(traj.observations[step_idx + 1])
-                    all_is_terminal.append(False)
-                else:
-                    all_next_obs.append(np.zeros_like(obs))
-                    all_is_terminal.append(True)
+                all_is_terminal.append(step_idx + 1 >= len(traj.observations))
 
     # Convert to GPU tensors
     obs_tensor = obs_batch_to_tensor(all_obs, device)
-    next_obs_tensor = obs_batch_to_tensor(all_next_obs, device)
     actions_tensor = torch.tensor(all_actions, dtype=torch.long, device=device)
     masks_tensor = mask_batch_to_tensor(all_masks, device)
     returns_tensor = torch.tensor(all_returns, dtype=torch.float32, device=device)
@@ -517,8 +489,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     # Apply all 8 symmetries
     aug_obs, aug_actions, aug_masks = augment_batch_8fold(obs_tensor, actions_tensor, masks_tensor)
-    dummy_masks = torch.ones_like(masks_tensor)
-    aug_next_obs, _, _ = augment_batch_8fold(next_obs_tensor, actions_tensor, dummy_masks)
 
     aug_value_targets = value_targets_tensor.repeat(8)
     aug_is_synthetic = is_synthetic_tensor.repeat(8)
@@ -601,16 +571,24 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
     aug_gae_advantages = advantages_tensor.repeat(8)
 
-    # Also average next_values for consistent TD targets (chunked to match VRAM)
-    aug_next_values_list = []
-    with torch.no_grad():
-        for chunk_start in range(0, len(aug_next_obs), TRAIN_BATCH_SIZE):
-            chunk = aug_next_obs[chunk_start:chunk_start + TRAIN_BATCH_SIZE]
-            aug_next_values_list.append(model.forward_value_only(chunk).squeeze(1))
-    aug_next_values_all = torch.cat(aug_next_values_list)  # [B*8]
-    next_values_per_aug = aug_next_values_all.view(8, B)
-    avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
-    aug_next_values_averaged = avg_next_values.repeat(8)
+    # Compute next-step values via index lookup into avg_values (eliminates a B*8 forward pass).
+    # Every non-terminal sample's next_obs is another sample's obs (opponent steps are collected
+    # as imitation or value-only samples), so their averaged values are already in avg_values.
+    step_to_sample = {}
+    for sample_idx, (ti, si) in enumerate(sample_to_traj):
+        if ti >= 0:  # Not synthetic
+            step_to_sample[(ti, si)] = sample_idx
+
+    avg_next_values_np = np.zeros(B, dtype=np.float32)
+    for sample_idx in range(B):
+        if all_is_terminal[sample_idx]:
+            continue
+        ti, si = sample_to_traj[sample_idx]
+        if ti < 0:
+            continue  # Synthetic (value masked out anyway)
+        avg_next_values_np[sample_idx] = avg_values[step_to_sample[(ti, si + 1)]]
+
+    aug_next_values_averaged = torch.from_numpy(avg_next_values_np).to(device).repeat(8)
 
     aug_policy_mask = ~aug_is_value_only
     global_policy_entropy_normalizer = (aug_weights * aug_policy_mask.float()).sum().item()
@@ -631,7 +609,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Collect data for chunked gradient probing (if needed)
     should_probe = PROBE_INTERVAL > 0 and (update + 1) % PROBE_INTERVAL == 0
     probe_obs_chunks = [] if should_probe else None
-    probe_next_obs_chunks = [] if should_probe else None
     probe_actions_chunks = [] if should_probe else None
     probe_masks_chunks = [] if should_probe else None
     probe_value_targets_chunks = [] if should_probe else None
@@ -647,7 +624,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_end = min(batch_start + TRAIN_BATCH_SIZE, len(aug_obs))
 
         batch_obs = aug_obs[batch_start:batch_end]
-        batch_next_obs = aug_next_obs[batch_start:batch_end]
         batch_actions = aug_actions[batch_start:batch_end]
         batch_masks = aug_masks[batch_start:batch_end]
         batch_value_targets = aug_value_targets[batch_start:batch_end]
@@ -661,7 +637,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         # Collect chunks for gradient probing (detached copies to avoid graph retention)
         if should_probe:
             probe_obs_chunks.append(batch_obs.detach())
-            probe_next_obs_chunks.append(batch_next_obs.detach())
             probe_actions_chunks.append(batch_actions.detach())
             probe_masks_chunks.append(batch_masks.detach())
             probe_value_targets_chunks.append(batch_value_targets.detach())
@@ -732,7 +707,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     if should_probe:
         probe_data = {
             'obs_chunks': probe_obs_chunks,
-            'next_obs_chunks': probe_next_obs_chunks,
             'actions_chunks': probe_actions_chunks,
             'masks_chunks': probe_masks_chunks,
             'value_targets_chunks': probe_value_targets_chunks,
@@ -786,7 +760,6 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
         probe_gradient_conflict_chunked(
             model,
             probe_data['obs_chunks'],
-            probe_data['next_obs_chunks'],
             probe_data['actions_chunks'],
             probe_data['masks_chunks'],
             probe_data['value_targets_chunks'],

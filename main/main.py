@@ -86,7 +86,7 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
 TRAINING_STATE_FILE = "training_state.json"
 RNG_STATE_FILE = "rng_state.pt"
-SEED: Optional[int] = None
+SEED = 42
 
 
 # ============================================================================
@@ -99,7 +99,7 @@ def seed_everything(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.deterministic = False
     torch.backends.cudnn.benchmark = False
 
 
