@@ -9,7 +9,10 @@ All HTML, CSS, and JavaScript are embedded in this file for portability.
 
 import glob
 import os
+import sys
 
+# Ensure imports resolve from cwd (needed when this file is symlinked from another directory)
+sys.path.insert(0, os.getcwd())
 import numpy as np
 import torch
 import torch.nn.functional as F
