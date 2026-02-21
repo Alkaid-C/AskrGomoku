@@ -85,6 +85,46 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 # ============================================================================
 
 TRAINING_STATE_FILE = "training_state.json"
+RNG_STATE_FILE = "rng_state.pt"
+SEED: Optional[int] = None
+
+
+# ============================================================================
+# Reproducibility
+# ============================================================================
+
+def seed_everything(seed: int) -> None:
+    """Seed all RNGs and enable deterministic CUDA operations."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def save_rng_state(output_dir: str) -> None:
+    """Save all RNG states alongside training state for resume reproducibility."""
+    rng_path = os.path.join(output_dir, RNG_STATE_FILE)
+    torch.save({
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch_cpu': torch.get_rng_state(),
+        'torch_cuda': torch.cuda.get_rng_state_all(),
+    }, rng_path)
+
+
+def load_rng_state(output_dir: str) -> bool:
+    """Restore all RNG states from saved file. Returns True if successful."""
+    rng_path = os.path.join(output_dir, RNG_STATE_FILE)
+    if not os.path.exists(rng_path):
+        return False
+    state = torch.load(rng_path, map_location='cpu', weights_only=False)
+    random.setstate(state['python'])
+    np.random.set_state(state['numpy'])
+    torch.set_rng_state(state['torch_cpu'])
+    torch.cuda.set_rng_state_all(state['torch_cuda'])
+    return True
 
 
 # ============================================================================
@@ -97,7 +137,8 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
                         per_opponent_win_rates: Dict[str, float],
                         scan_event_counter: int,
                         evals_since_last_scan: int,
-                        win_rate_ema: float) -> None:
+                        win_rate_ema: float,
+                        seed: Optional[int] = None) -> None:
     """Save training state to JSON for resume capability."""
     state = {
         'current_update': update,
@@ -108,7 +149,8 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
         'per_opponent_win_rates': per_opponent_win_rates,
         'scan_event_counter': scan_event_counter,
         'evals_since_last_scan': evals_since_last_scan,
-        'win_rate_ema': win_rate_ema
+        'win_rate_ema': win_rate_ema,
+        'seed': seed
     }
 
     training_state_file = os.path.join(output_dir, TRAINING_STATE_FILE)
@@ -155,6 +197,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     scan_event_counter = state.get('scan_event_counter', 0)
     evals_since_last_scan = state.get('evals_since_last_scan', 0)
     win_rate_ema = state.get('win_rate_ema', 0.5)
+    seed = state.get('seed', None)
 
     print(f"Resuming from update {current_update}")
     print(f"Opponent pool has {len(opponent_pool_updates)} models: {opponent_pool_updates}")
@@ -225,12 +268,21 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
 
     next_eval_update = current_update + get_eval_interval(current_update)
 
+    if seed is not None:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        if load_rng_state(output_dir):
+            print(f"Restored RNG state (seed={seed})")
+        else:
+            print(f"Warning: RNG state file not found, re-seeding with seed={seed}+update={current_update}")
+            seed_everything(seed + current_update)
+
     print(f"Next evaluation scheduled at update {next_eval_update}")
     print(f"Resume training starting from update {current_update + 1}")
     print()
 
     return (model, optimizer, scheduler, opponent_pool, loaded_opponent_updates, current_update - 1, next_eval_update,
-            win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema)
+            win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema, seed)
 
 
 # ============================================================================
@@ -250,6 +302,7 @@ def main():
 
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
+    seed = SEED
 
     # Initialize CSV logger
     csv_logger = CSVLogger(output_dir)
@@ -293,7 +346,11 @@ def main():
     if resume_result is not None:
         (current_policy, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
          next_eval_update, win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter,
-         evals_since_last_scan, win_rate_ema) = resume_result
+         evals_since_last_scan, win_rate_ema, saved_seed) = resume_result
+        if saved_seed is not None:
+            if seed is not None and seed != saved_seed:
+                print(f"Warning: SEED={seed} differs from saved seed {saved_seed}, using saved seed")
+            seed = saved_seed
         print("=" * 60)
         print("Successfully resumed training!")
         print("=" * 60)
@@ -302,6 +359,11 @@ def main():
         print("Starting fresh training (no existing state found)")
         print("=" * 60)
         print()
+
+        if seed is not None:
+            seed_everything(seed)
+            print(f"Random seed: {seed} (deterministic mode)")
+            print()
 
         start_update = -1
 
@@ -719,8 +781,11 @@ def main():
             # Save training state
             save_training_state(
                 output_dir, update + 1, opponent_pool_updates, win_miss_ema, block_miss_ema,
-                per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema
+                per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
+                seed=seed
             )
+            if seed is not None:
+                save_rng_state(output_dir)
 
             eval_interval = get_eval_interval(update + 1)
             next_eval_update = (update + 1) + eval_interval
@@ -735,8 +800,11 @@ def main():
 
     save_training_state(
         output_dir, TOTAL_UPDATES, opponent_pool_updates, win_miss_ema, block_miss_ema,
-        per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema
+        per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
+        seed=seed
     )
+    if seed is not None:
+        save_rng_state(output_dir)
     print("Final training state saved")
 
 
