@@ -121,6 +121,14 @@ class GomokuPolicyNet(nn.Module):
         """
         return self._value_head(self._trunk(x))
 
+    @staticmethod
+    def print_topology() -> None:
+        """Print model architecture summary."""
+        print(f"  Stem: 3x3 conv -> {WIDTH} channels")
+        print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels (standard pre-activation, no dilation, no SE)")
+        print(f"  Policy head: 3x Conv3x3 -> {POLICY_WIDTH}ch (GroupNorm+SiLU) -> Conv1x1 -> 1")
+        print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
+
 
 class ResidualBlock(nn.Module):
     """Standard pre-activation residual block."""

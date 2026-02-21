@@ -40,25 +40,7 @@ from eval import (
     scan_historical_exploiters,
 )
 from gomoku import RENJU_OPENING_SEQUENCES, SEED_PROBABILITY, TEMPERATURE_TRAIN, compute_outcome_stats, play_episodes_batched, select_action_batch
-from model import (
-    N_BLOCKS,
-    N_DUAL_SE_BLOCKS,
-    N_SHARED_BLOCKS,
-    POLICY_HEAD_D,
-    STEM_3X3_CHANNELS,
-    STEM_DIRECTIONAL_5X5_CHANNELS,
-    STEM_DIRECTIONAL_7X7_CHANNELS,
-    STEM_FULL_5X5_CHANNELS,
-    STEM_FULL_7X7_CHANNELS,
-    TRUNK_DILATION2_SCHEDULE,
-    VALUE_HEAD_C1,
-    VALUE_HEAD_C2,
-    VALUE_HEAD_GROUPS,
-    VALUE_HEAD_HIDDEN,
-    WIDTH,
-    GomokuPolicyNet,
-    zero_center_taps,
-)
+from model import GomokuPolicyNet
 from training import (
     BASELINE_RAMP_END,
     EMA_WINDOW,
@@ -190,7 +172,6 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     model = GomokuPolicyNet().to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.train()
-    zero_center_taps(model)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -273,16 +254,7 @@ def main():
 
     print(f"Using device: {DEVICE}")
     print("Model architecture:")
-    print("  Stem (dilated design):")
-    print(f"    - 3x3: {STEM_3X3_CHANNELS}ch")
-    print(f"    - 5x5 directional (d1+d2): {STEM_DIRECTIONAL_5X5_CHANNELS}ch, 5x5 full: {STEM_FULL_5X5_CHANNELS}ch")
-    print(f"    - 7x7 directional (d1+d2+d3): {STEM_DIRECTIONAL_7X7_CHANNELS}ch, 7x7 full: {STEM_FULL_7X7_CHANNELS}ch")
-    print(f"    - Total: {WIDTH} channels (center taps zeroed for d>1)")
-    print(f"  Residual blocks: {N_BLOCKS} total ({N_SHARED_BLOCKS} shared + {N_DUAL_SE_BLOCKS} dual-SE) x {WIDTH} channels")
-    print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
-    print("    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
-    print(f"  Policy head: {WIDTH} -> dual-attention ({POLICY_HEAD_D}ch, 2x attn + conv refine) -> 225")
-    print(f"  Value head: {WIDTH} -> 1x1 {VALUE_HEAD_C1} -> grouped 3x3 {VALUE_HEAD_C2}(g={VALUE_HEAD_GROUPS}) -> log-mean-exp(τ) -> fc{VALUE_HEAD_HIDDEN} -> 1")
+    GomokuPolicyNet.print_topology()
     print("Training configuration:")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print(f"  Exploration (hybrid): Temperature={TEMPERATURE_TRAIN} (behavior) + Entropy bonus (gradient)")
@@ -331,7 +303,6 @@ def main():
 
         current_policy = GomokuPolicyNet().to(DEVICE)
         current_policy.train()
-        zero_center_taps(current_policy)
 
         optimizer = torch.optim.AdamW(
             current_policy.parameters(),

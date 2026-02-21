@@ -161,6 +161,10 @@ class GomokuPolicyNet(nn.Module):
         self.value_fc1 = nn.Linear(VALUE_HEAD_C2, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)
 
+        # Zero center taps for d>1 directional convolutions (d1 already covers center).
+        self._zero_center_taps()
+        self.register_load_state_dict_post_hook(lambda m, _: m._zero_center_taps())
+
     def _stem_and_shared_trunk(self, x: torch.Tensor) -> torch.Tensor:
         """Stem + shared trunk (first 12 blocks). Returns features for branching."""
         branch_3x3 = self.conv_3x3(x)
@@ -268,6 +272,27 @@ class GomokuPolicyNet(nn.Module):
 
         x = F.silu(self.trunk_norm_value(x))
         return self._value_head(x)
+
+    def _zero_center_taps(self) -> None:
+        """Zero center taps in d>1 directional stem convolutions."""
+        with torch.no_grad():
+            self.conv_directional5_d2.weight[:, :, 1, 1] = 0
+            self.conv_directional7_d2.weight[:, :, 1, 1] = 0
+            self.conv_directional7_d3.weight[:, :, 1, 1] = 0
+
+    @staticmethod
+    def print_topology() -> None:
+        """Print model architecture summary."""
+        print("  Stem (dilated design):")
+        print(f"    - 3x3: {STEM_3X3_CHANNELS}ch")
+        print(f"    - 5x5 directional (d1+d2): {STEM_DIRECTIONAL_5X5_CHANNELS}ch, 5x5 full: {STEM_FULL_5X5_CHANNELS}ch")
+        print(f"    - 7x7 directional (d1+d2+d3): {STEM_DIRECTIONAL_7X7_CHANNELS}ch, 7x7 full: {STEM_FULL_7X7_CHANNELS}ch")
+        print(f"    - Total: {WIDTH} channels (center taps zeroed for d>1)")
+        print(f"  Residual blocks: {N_BLOCKS} total ({N_SHARED_BLOCKS} shared + {N_DUAL_SE_BLOCKS} dual-SE) x {WIDTH} channels")
+        print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
+        print("    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
+        print(f"  Policy head: {WIDTH} -> dual-attention ({POLICY_HEAD_D}ch, 2x attn + conv refine) -> 225")
+        print(f"  Value head: {WIDTH} -> 1x1 {VALUE_HEAD_C1} -> grouped 3x3 {VALUE_HEAD_C2}(g={VALUE_HEAD_GROUPS}) -> log-mean-exp(τ) -> fc{VALUE_HEAD_HIDDEN} -> 1")
 
 
 class SEBlock(nn.Module):
@@ -403,17 +428,3 @@ class DualSEResidualBlock(nn.Module):
         """Value stream only: value norms + shared convs + value SE + skip."""
         out = self._conv_path(x, self.norm1_value, self.norm2_value)
         return self.se_value(out) + x
-
-
-def zero_center_taps(model: nn.Module) -> None:
-    """
-    Zero out center taps in directional stem convolutions (d>1).
-
-    The center position is already covered by d1; higher-dilation convs must not
-    duplicate it. Called once after model init. Gradient hooks in __init__ keep
-    these weights at zero during training, so no need to call after optimizer.step().
-    """
-    with torch.no_grad():
-        model.conv_directional5_d2.weight[:, :, 1, 1] = 0
-        model.conv_directional7_d2.weight[:, :, 1, 1] = 0
-        model.conv_directional7_d3.weight[:, :, 1, 1] = 0

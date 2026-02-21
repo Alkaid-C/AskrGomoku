@@ -55,6 +55,7 @@ from model import (
     N_DUAL_SE_BLOCKS,
     N_SHARED_BLOCKS,
     POLICY_HEAD_D,
+    POLICY_HEAD_NUM_HEADS,
     STEM_3X3_CHANNELS,
     STEM_DIRECTIONAL_5X5_CHANNELS,
     STEM_DIRECTIONAL_7X7_CHANNELS,
@@ -62,11 +63,11 @@ from model import (
     STEM_FULL_7X7_CHANNELS,
     TRUNK_DILATION2_SCHEDULE,
     VALUE_HEAD_C1,
-    VALUE_HEAD_C2_SPLIT,
+    VALUE_HEAD_C2,
+    VALUE_HEAD_GROUPS,
     VALUE_HEAD_HIDDEN,
     WIDTH,
     GomokuPolicyNet,
-    zero_center_taps,
 )
 from training import (
     ALPHA_SEP,
@@ -193,7 +194,6 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     model = GomokuPolicyNet().to(device)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.train()
-    zero_center_taps(model)
 
     # Create optimizer with only unfrozen parameters (applies freeze schedule internally)
     # Note: We don't restore optimizer state dict because param groups may differ
@@ -278,8 +278,8 @@ def main():
     print(f"  Residual blocks: {N_BLOCKS} total ({N_SHARED_BLOCKS} shared + {N_DUAL_SE_BLOCKS} dual-SE) x {WIDTH} channels")
     print(f"    - Dilation schedule (conv2): {TRUNK_DILATION2_SCHEDULE}")
     print("    - Shared blocks: no SE | Dual-SE blocks: independent policy/value SE gates")
-    print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (+SiLU) -> 225")
-    print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2_SPLIT*2} -> GAP -> fc{VALUE_HEAD_HIDDEN} -> 1")
+    print(f"  Policy head: {WIDTH} -> {POLICY_HEAD_D} (dual-attn, {POLICY_HEAD_NUM_HEADS} heads) -> 225")
+    print(f"  Value head: {WIDTH} -> {VALUE_HEAD_C1} -> {VALUE_HEAD_C2} (groups={VALUE_HEAD_GROUPS}) -> LME -> fc{VALUE_HEAD_HIDDEN} -> 1")
     print("Training configuration (POST-TRAINING MODE - Search Supervision):")
     print(f"  Learning rate: {LEARNING_RATE} (tanh decay: mid={LR_DECAY_MIDPOINT_PERCENTAGE:.0%}, steep={LR_DECAY_STEEPNESS:.0%}, min: {MIN_LR})")
     print("  Search parameters:")
@@ -329,7 +329,6 @@ def main():
 
         current_policy = GomokuPolicyNet().to(DEVICE)
         current_policy.train()
-        zero_center_taps(current_policy)
 
         # Apply initial freeze schedule (heads only at start)
         unfrozen_blocks = apply_freeze_schedule(current_policy, update=0)
