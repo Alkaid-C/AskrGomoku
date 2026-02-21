@@ -8,6 +8,10 @@ Entry point for Gomoku self-play training. Contains:
 """
 
 import os
+import sys
+
+# Ensure imports resolve from cwd (needed when this file is symlinked from another directory)
+sys.path.insert(0, os.getcwd())
 
 # Enable expandable segments to reduce CUDA memory fragmentation
 # This helps avoid OOM errors when there is reserved but unallocated memory
