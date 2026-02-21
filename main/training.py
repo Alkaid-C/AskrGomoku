@@ -106,6 +106,7 @@ def probe_gradient_conflict_chunked(
     value_targets_chunks: List[torch.Tensor],
     is_terminal_chunks: List[torch.Tensor],
     is_synthetic_chunks: List[torch.Tensor],
+    is_value_only_chunks: List[torch.Tensor],
     weights_chunks: List[torch.Tensor],
     gae_advantages_chunks: List[torch.Tensor],
     next_values_chunks: List[Optional[torch.Tensor]],
@@ -143,10 +144,11 @@ def probe_gradient_conflict_chunked(
         actions = actions_chunks[i]
         masks = masks_chunks[i]
         is_synthetic = is_synthetic_chunks[i]
+        is_value_only = is_value_only_chunks[i]
         weights = weights_chunks[i]
         gae_advantages = gae_advantages_chunks[i]
 
-        real_mask = ~is_synthetic
+        real_mask = ~is_synthetic & ~is_value_only
         if not real_mask.any():
             continue
 
@@ -240,9 +242,10 @@ def probe_gradient_conflict_chunked(
         obs = obs_chunks[i]
         masks = masks_chunks[i]
         is_synthetic = is_synthetic_chunks[i]
+        is_value_only = is_value_only_chunks[i]
         weights = weights_chunks[i]
 
-        real_mask = ~is_synthetic
+        real_mask = ~is_synthetic & ~is_value_only
         if not real_mask.any():
             continue
 
@@ -363,6 +366,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     all_is_terminal = []
     all_weights = []
     all_returns_for_logging = []
+    all_is_value_only = []
 
     # Track trajectory structure for GAE computation
     sample_to_traj = []  # Maps sample index to (traj_idx, step_idx)
@@ -395,6 +399,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_returns.append(z_t)
                 all_value_targets.append(z_t)
                 all_is_synthetic.append(False)
+                all_is_value_only.append(False)
                 all_weights.append(current_weight)
                 all_returns_for_logging.append(z_t)
                 sample_to_traj.append((traj_idx, step_idx))
@@ -413,6 +418,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_returns.append(z_t)
                 all_value_targets.append(z_t)
                 all_is_synthetic.append(False)
+                all_is_value_only.append(False)
                 all_weights.append(imitation_weight)
                 sample_to_traj.append((traj_idx, step_idx))
                 pieces_self = np.sum(obs[0])
@@ -443,6 +449,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     num_tactical_synthetic = len(all_obs) - num_samples_before_tactical
     for _ in range(num_tactical_synthetic):
         sample_to_traj.append((-1, -1))  # Mark as synthetic
+        all_is_value_only.append(False)
 
     # Track off-policy rollout sample advantages
     opr_advantages = []
@@ -462,7 +469,39 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             all_next_obs.append(np.zeros_like(sample['obs']))
             all_is_terminal.append(True)
             sample_to_traj.append((-1, -1))  # Mark as synthetic
+            all_is_value_only.append(False)
             num_opr_samples += 1
+
+    # Pass 2: Collect value-only opponent steps for correct GAE
+    for traj_idx, traj in enumerate(trajectories):
+        returns = compute_returns(traj)
+        current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
+        if current_steps == 0:
+            continue
+
+        imitation_enabled = IMITATION_MAX_WEIGHT > 0 and update >= IMITATION_START_UPDATE
+        current_weight = (1.0 / (current_steps ** EPISODE_WEIGHT_ALPHA)) / 8.0
+
+        for step_idx, (obs, action, legal_mask, z_t, is_current) in enumerate(zip(
+            traj.observations, traj.actions, traj.legal_masks, returns, traj.is_current_policy
+        )):
+            if not is_current and (not imitation_enabled or z_t <= 0):
+                all_obs.append(obs)
+                all_actions.append(action)
+                all_masks.append(legal_mask)
+                all_returns.append(z_t)
+                all_value_targets.append(z_t)
+                all_is_synthetic.append(False)
+                all_is_value_only.append(True)
+                all_weights.append(current_weight)
+                sample_to_traj.append((traj_idx, step_idx))
+
+                if step_idx + 1 < len(traj.observations):
+                    all_next_obs.append(traj.observations[step_idx + 1])
+                    all_is_terminal.append(False)
+                else:
+                    all_next_obs.append(np.zeros_like(obs))
+                    all_is_terminal.append(True)
 
     # Convert to GPU tensors
     obs_tensor = obs_batch_to_tensor(all_obs, device)
@@ -474,6 +513,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     is_synthetic_tensor = torch.tensor(all_is_synthetic, dtype=torch.bool, device=device)
     is_terminal_tensor = torch.tensor(all_is_terminal, dtype=torch.bool, device=device)
     weights_tensor = torch.tensor(all_weights, dtype=torch.float32, device=device)
+    is_value_only_tensor = torch.tensor(all_is_value_only, dtype=torch.bool, device=device)
 
     # Apply all 8 symmetries
     aug_obs, aug_actions, aug_masks = augment_batch_8fold(obs_tensor, actions_tensor, masks_tensor)
@@ -484,6 +524,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     aug_is_synthetic = is_synthetic_tensor.repeat(8)
     aug_is_terminal = is_terminal_tensor.repeat(8)
     aug_weights = weights_tensor.repeat(8)
+    aug_is_value_only = is_value_only_tensor.repeat(8)
 
     # Compute advantages after augmentation (deferred collection - no placeholder pattern)
     B = len(all_obs)  # Original batch size before augmentation
@@ -503,38 +544,37 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Average across augmentations (dim=0) to get ensemble estimate
     avg_values = values_per_aug.mean(dim=0).cpu().numpy()  # [B] numpy array
 
-    # Build per-trajectory value lists
-    traj_value_lists = [[] for _ in trajectories]
-    traj_sample_indices = [[] for _ in trajectories]
+    # Build per-trajectory entries sorted by step_idx for correct GAE
+    traj_entries: list[list[tuple[int, int, float]]] = [[] for _ in trajectories]
 
     for sample_idx in range(B):
         traj_idx, step_idx = sample_to_traj[sample_idx]
         if traj_idx >= 0:  # Not synthetic
-            traj_value_lists[traj_idx].append(avg_values[sample_idx])
-            traj_sample_indices[traj_idx].append(sample_idx)
+            traj_entries[traj_idx].append((step_idx, sample_idx, float(avg_values[sample_idx])))
+
+    for entries in traj_entries:
+        entries.sort(key=lambda e: e[0])
 
     # Compute base GAE per trajectory
     gae_advantages = np.zeros(B, dtype=np.float32)
 
     for traj_idx in range(len(trajectories)):
-        if not traj_value_lists[traj_idx]:
+        entries = traj_entries[traj_idx]
+        if not entries:
             continue
 
-        values = np.array(traj_value_lists[traj_idx])
-        sample_indices = traj_sample_indices[traj_idx]
+        values = [e[2] for e in entries]
+        sample_indices = [e[1] for e in entries]
 
-        # GAE backward recursion
+        # GAE backward recursion (negamax: consecutive steps alternate players)
         gae = 0.0
         for i in reversed(range(len(values))):
             sample_idx = sample_indices[i]
             z_t = all_returns[sample_idx]
 
-            # Compute delta
             if i == len(values) - 1:
-                # Terminal step
                 delta = z_t - values[i]
             else:
-                # Non-terminal: use next value
                 delta = -values[i + 1] - values[i]
 
             gae = delta - GAE_LAMBDA * gae
@@ -572,7 +612,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     avg_next_values = next_values_per_aug.mean(dim=0)  # [B]
     aug_next_values_averaged = avg_next_values.repeat(8)
 
-    global_policy_entropy_normalizer = aug_weights.sum().item()
+    aug_policy_mask = ~aug_is_value_only
+    global_policy_entropy_normalizer = (aug_weights * aug_policy_mask.float()).sum().item()
     value_loss_mask_global = ~aug_is_synthetic
     global_value_normalizer = (aug_weights * value_loss_mask_global.float()).sum().item()
 
@@ -599,6 +640,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     probe_weights_chunks = [] if should_probe else None
     probe_gae_advantages_chunks = [] if should_probe else None
     probe_next_values_chunks = [] if should_probe else None
+    probe_is_value_only_chunks = [] if should_probe else None
 
     # Process in micro-batches
     for batch_start in range(0, len(aug_obs), TRAIN_BATCH_SIZE):
@@ -613,6 +655,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_is_synthetic = aug_is_synthetic[batch_start:batch_end]
         batch_is_terminal = aug_is_terminal[batch_start:batch_end]
         batch_weights = aug_weights[batch_start:batch_end]
+        batch_is_value_only = aug_is_value_only[batch_start:batch_end]
         batch_size = batch_end - batch_start
 
         # Collect chunks for gradient probing (detached copies to avoid graph retention)
@@ -626,6 +669,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             probe_is_synthetic_chunks.append(batch_is_synthetic.detach())
             probe_weights_chunks.append(batch_weights.detach())
             probe_gae_advantages_chunks.append(batch_gae_advantages.detach())
+            probe_is_value_only_chunks.append(batch_is_value_only.detach())
 
         logits_grid, values = model(batch_obs)
         logits = logits_grid.squeeze(1)
@@ -657,11 +701,12 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_value_loss_mask = ~batch_is_synthetic
         value_loss_mb = (batch_weights * batch_value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
 
-        policy_loss_mb = -(batch_weights * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
+        batch_policy_mask = ~batch_is_value_only
+        policy_loss_mb = -(batch_weights * batch_policy_mask.float() * advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         # Adaptive entropy bonus (ratio-based: schedule / current)
         entropy_bonus_scale = entropy_schedule / max(ema_entropy, 1e-8)
-        entropy_loss_mb = -(batch_weights * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
+        entropy_loss_mb = -(batch_weights * batch_policy_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0)
 
         value_loss_coeff = VALUE_LOSS_COEFF_START + (VALUE_LOSS_COEFF_END - VALUE_LOSS_COEFF_START) * alpha
         loss_mb = policy_loss_mb + value_loss_coeff * value_loss_mb + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss_mb
@@ -669,8 +714,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         accumulated_loss += loss_mb.item()
         accumulated_value_loss += value_loss_mb.item()
-        accumulated_weighted_entropy_sum += (batch_weights * entropies).sum().item()
-        accumulated_weight_sum += batch_weights.sum().item()
+        accumulated_weighted_entropy_sum += (batch_weights * batch_policy_mask.float() * entropies).sum().item()
+        accumulated_weight_sum += (batch_weights * batch_policy_mask.float()).sum().item()
         accumulated_value_mse_sum += (value_mse * batch_value_loss_mask.float()).sum().item()
         accumulated_value_mse_count += batch_value_loss_mask.sum().item()
 
@@ -693,6 +738,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             'value_targets_chunks': probe_value_targets_chunks,
             'is_terminal_chunks': probe_is_terminal_chunks,
             'is_synthetic_chunks': probe_is_synthetic_chunks,
+            'is_value_only_chunks': probe_is_value_only_chunks,
             'weights_chunks': probe_weights_chunks,
             'gae_advantages_chunks': probe_gae_advantages_chunks,
             'next_values_chunks': probe_next_values_chunks,
@@ -746,6 +792,7 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             probe_data['value_targets_chunks'],
             probe_data['is_terminal_chunks'],
             probe_data['is_synthetic_chunks'],
+            probe_data['is_value_only_chunks'],
             probe_data['weights_chunks'],
             probe_data['gae_advantages_chunks'],
             probe_data['next_values_chunks'],
