@@ -36,7 +36,7 @@ pyright
 - **Imitation learning**: Opponent winning moves added as training samples, weighted by `(1 - win_rate)`. (`enhancement.py`)
 - **Tactical boost**: Detects win-in-1 and block-win-in-1 positions; boosts correct moves and generates synthetic corrective samples. (`enhancement.py`)
 - **OPR (Off-Policy Rollout)**: Tests alternative actions near low-entropy lost positions; adds corrective samples when an alternative wins by a margin. (`enhancement.py`, `gomoku.py`)
-- **Gradient probe**: Every N updates, computes per-component gradient vectors and cosine similarities to detect gradient conflicts. Saves `.npz` files + `gradient_probe.csv`. (`training.py`)
+- **Gradient probe**: Every N updates, computes per-component gradient vectors to detect gradient conflicts. Saves `.npz` files for post-hoc analysis. (`training.py`)
 - **Opponent pool & historical mining**: Pool of past checkpoints for self-play evaluation; periodic scanning to mine historically hard opponents. (`eval.py`)
 - **Renju openings**: Pre-defined 3-move opening sequences used in `SEED_PROBABILITY` fraction of games for diversity. (`gomoku.py`)
 

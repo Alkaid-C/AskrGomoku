@@ -80,6 +80,4 @@ From `IMITATION_START_UPDATE`: opponent moves that led to opponent winning are a
 
 ## Gradient Probe (`training.py`)
 
-Every `PROBE_INTERVAL` updates, computes 5 separate gradient vectors (policy_real, policy_synthetic, value_real, entropy_real, entropy_synthetic) by running 5 backward passes. Computes cosine similarity between policy and value gradients per trunk layer group. Saves full vectors to `.npz` and summary to `gradient_probe.csv`.
-
-Vanilla has no dual-SE blocks, so all trunk params are included in cosine similarity. Gradient probe groups are labeled by block index ranges (e.g., `blocks_0-2`).
+Every `PROBE_INTERVAL` updates, computes 5 separate gradient vectors (policy_real, policy_synthetic, value_real, entropy_real, entropy_synthetic) by running 5 backward passes. Saves full vectors to `.npz` files (`gradient_probe_NNNNNN.npz`) containing param names, offsets, and all gradient vectors for post-hoc analysis (e.g., per-layer cosine similarity).

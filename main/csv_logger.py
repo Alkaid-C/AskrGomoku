@@ -2,7 +2,7 @@
 CSV Logging Module for Training Metrics
 
 Manages CSV logging for training updates, evaluation summaries, opponent details,
-historical exploiter mining, and gradient conflict probing.
+and historical exploiter mining.
 """
 
 import csv
@@ -21,14 +21,12 @@ class CSVLogger:
         self.eval_summary_path = os.path.join(output_dir, "eval_summary.csv")
         self.eval_opponent_details_path = os.path.join(output_dir, "eval_opponent_details.csv")
         self.mining_log_path = os.path.join(output_dir, "mining_log.csv")
-        self.gradient_probe_path = os.path.join(output_dir, "gradient_probe.csv")
 
         # Initialize CSV files with headers if they don't exist
         self._init_training_updates_csv()
         self._init_eval_summary_csv()
         self._init_eval_opponent_details_csv()
         self._init_mining_log_csv()
-        self._init_gradient_probe_csv()
 
     def _init_training_updates_csv(self):
         if not os.path.exists(self.training_updates_path):
@@ -74,26 +72,6 @@ class CSVLogger:
                     'mined_opponent_id', 'mined_win_rate', 'mined_rank',
                     'added_to_pool', 'evicted_opponent_id',
                     'scan_time'
-                ])
-
-    def _init_gradient_probe_csv(self):
-        if not os.path.exists(self.gradient_probe_path):
-            with open(self.gradient_probe_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'update',
-                    'overall_cos_sim', 'overall_policy_norm', 'overall_value_norm',
-                    'stem_cos_sim', 'stem_policy_norm', 'stem_value_norm',
-                    'shared_0_2_cos_sim', 'shared_0_2_policy_norm', 'shared_0_2_value_norm',
-                    'shared_3_5_cos_sim', 'shared_3_5_policy_norm', 'shared_3_5_value_norm',
-                    'shared_6_8_cos_sim', 'shared_6_8_policy_norm', 'shared_6_8_value_norm',
-                    'shared_9_11_cos_sim', 'shared_9_11_policy_norm', 'shared_9_11_value_norm',
-                    'dual_se_0_2_cos_sim', 'dual_se_0_2_policy_norm', 'dual_se_0_2_value_norm',
-                    'dual_se_3_5_cos_sim', 'dual_se_3_5_policy_norm', 'dual_se_3_5_value_norm',
-                    'overall_entropy_norm', 'stem_entropy_norm',
-                    'shared_0_2_entropy_norm', 'shared_3_5_entropy_norm',
-                    'shared_6_8_entropy_norm', 'shared_9_11_entropy_norm',
-                    'dual_se_0_2_entropy_norm', 'dual_se_3_5_entropy_norm'
                 ])
 
     def log_training_update(self, update: int, metrics: dict):
@@ -143,21 +121,3 @@ class CSVLogger:
                 scan_time
             ])
 
-    def log_gradient_probe(self, update: int, metrics: dict):
-        with open(self.gradient_probe_path, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
-                update,
-                metrics['overall_cos_sim'], metrics['overall_policy_norm'], metrics['overall_value_norm'],
-                metrics['stem_cos_sim'], metrics['stem_policy_norm'], metrics['stem_value_norm'],
-                metrics['shared_0_2_cos_sim'], metrics['shared_0_2_policy_norm'], metrics['shared_0_2_value_norm'],
-                metrics['shared_3_5_cos_sim'], metrics['shared_3_5_policy_norm'], metrics['shared_3_5_value_norm'],
-                metrics['shared_6_8_cos_sim'], metrics['shared_6_8_policy_norm'], metrics['shared_6_8_value_norm'],
-                metrics['shared_9_11_cos_sim'], metrics['shared_9_11_policy_norm'], metrics['shared_9_11_value_norm'],
-                metrics['dual_se_0_2_cos_sim'], metrics['dual_se_0_2_policy_norm'], metrics['dual_se_0_2_value_norm'],
-                metrics['dual_se_3_5_cos_sim'], metrics['dual_se_3_5_policy_norm'], metrics['dual_se_3_5_value_norm'],
-                metrics.get('overall_entropy_norm', 0.0), metrics.get('stem_entropy_norm', 0.0),
-                metrics.get('shared_0_2_entropy_norm', 0.0), metrics.get('shared_3_5_entropy_norm', 0.0),
-                metrics.get('shared_6_8_entropy_norm', 0.0), metrics.get('shared_9_11_entropy_norm', 0.0),
-                metrics.get('dual_se_0_2_entropy_norm', 0.0), metrics.get('dual_se_3_5_entropy_norm', 0.0)
-            ])

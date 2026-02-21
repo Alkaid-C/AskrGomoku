@@ -9,7 +9,7 @@ Contains the core training logic:
 """
 
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -102,7 +102,6 @@ def probe_gradient_conflict_chunked(
     next_obs_chunks: List[torch.Tensor],
     actions_chunks: List[torch.Tensor],
     masks_chunks: List[torch.Tensor],
-    returns_chunks: List[torch.Tensor],
     value_targets_chunks: List[torch.Tensor],
     is_terminal_chunks: List[torch.Tensor],
     is_synthetic_chunks: List[torch.Tensor],
@@ -113,13 +112,13 @@ def probe_gradient_conflict_chunked(
     entropy_bonus_scale: float = 1.0,
     update: int = 0,
     output_dir: str = ''
-) -> Dict[str, float]:
+) -> None:
     """
     Probe gradient conflict using chunked gradient accumulation.
 
     Computes 5 gradient vectors (policy_real, policy_synthetic, value_real,
-    entropy_real, entropy_synthetic) separately across chunks, saves full
-    vectors to .npz, and returns summary metrics for CSV logging.
+    entropy_real, entropy_synthetic) separately across chunks and saves full
+    vectors to .npz for post-hoc analysis.
     """
     # Save current gradients
     saved_grads = {}
@@ -322,124 +321,11 @@ def probe_gradient_conflict_chunked(
             update=np.int32(update + 1)
         )
 
-    # --- Compute CSV summary metrics ---
-    # Combined policy grads = policy_real + policy_synthetic (backward-compatible)
-    policy_grads = {name: grad_accum['policy_real'][name] + grad_accum['policy_synthetic'][name]
-                    for name in param_names_ordered}
-    value_grads = grad_accum['value_real']
-    # Combined entropy grads = entropy_real + entropy_synthetic
-    entropy_grads = {name: grad_accum['entropy_real'][name] + grad_accum['entropy_synthetic'][name]
-                     for name in param_names_ordered}
-
-    def cosine_sim(grad_dict_1: dict, grad_dict_2: dict, param_names: List[str]) -> Tuple[float, float, float]:
-        grads_1 = []
-        grads_2 = []
-        for name in param_names:
-            if name in grad_dict_1 and name in grad_dict_2:
-                grads_1.append(grad_dict_1[name].flatten())
-                grads_2.append(grad_dict_2[name].flatten())
-
-        if not grads_1:
-            return 0.0, 0.0, 0.0
-
-        vec1 = torch.cat(grads_1)
-        vec2 = torch.cat(grads_2)
-
-        norm1 = vec1.norm().item()
-        norm2 = vec2.norm().item()
-
-        if norm1 < 1e-8 or norm2 < 1e-8:
-            return 0.0, norm1, norm2
-
-        cos = F.cosine_similarity(vec1.unsqueeze(0), vec2.unsqueeze(0)).item()
-        return cos, norm1, norm2
-
-    def compute_norm(grad_dict: dict, param_names: List[str]) -> float:
-        parts = [grad_dict[name].flatten() for name in param_names if name in grad_dict]
-        if not parts:
-            return 0.0
-        return torch.cat(parts).norm().item()
-
-    # Categorize parameters
-    stem_params = []
-    trunk_params = {
-        'shared_0-2': [], 'shared_3-5': [], 'shared_6-8': [], 'shared_9-11': [],
-        'dual_se_0-2': [], 'dual_se_3-5': [],
-    }
-    all_trunk_stem_params = []
-
-    for name in param_names_ordered:
-        if any(x in name for x in ['conv_3x3', 'conv_directional5', 'conv_full5',
-                                     'conv_directional7', 'conv_full7', 'conv_1x1',
-                                     'stem_norm']):
-            stem_params.append(name)
-            all_trunk_stem_params.append(name)
-        elif 'shared_blocks.' in name:
-            block_idx = int(name.split('shared_blocks.')[1].split('.')[0])
-            layer_start = (block_idx // 3) * 3
-            layer_key = f'shared_{layer_start}-{layer_start+2}'
-            trunk_params[layer_key].append(name)
-            all_trunk_stem_params.append(name)
-        elif 'dual_se_blocks.' in name:
-            # Skip stream-specific params (se_policy, se_value, norm1_policy, norm2_policy,
-            # norm1_value, norm2_value): each only receives grads from one head, so including
-            # them inflates the norm without contributing to the dot product, biasing cos sim toward 0.
-            if '_policy.' in name or '_value.' in name:
-                continue
-            block_idx = int(name.split('dual_se_blocks.')[1].split('.')[0])
-            layer_start = (block_idx // 3) * 3
-            layer_key = f'dual_se_{layer_start}-{layer_start+2}'
-            trunk_params[layer_key].append(name)
-            all_trunk_stem_params.append(name)
-
-    # Compute cosine similarities (policy vs value, backward-compatible)
-    overall_cos, overall_norm_p, overall_norm_v = cosine_sim(policy_grads, value_grads, all_trunk_stem_params)
-    stem_cos, stem_norm_p, stem_norm_v = cosine_sim(policy_grads, value_grads, stem_params)
-
-    trunk_metrics = {}
-    for layer_key in sorted(trunk_params.keys()):
-        layer_cos, layer_norm_p, layer_norm_v = cosine_sim(policy_grads, value_grads, trunk_params[layer_key])
-        trunk_metrics[layer_key] = (layer_cos, layer_norm_p, layer_norm_v)
-
-    # Compute entropy norms per group
-    overall_entropy_norm = compute_norm(entropy_grads, all_trunk_stem_params)
-    stem_entropy_norm = compute_norm(entropy_grads, stem_params)
-
-    trunk_entropy_norms = {}
-    for layer_key in sorted(trunk_params.keys()):
-        trunk_entropy_norms[layer_key] = compute_norm(entropy_grads, trunk_params[layer_key])
-
     # Restore original gradients
     model.zero_grad()
     for name, param in model.named_parameters():
         if name in saved_grads:
             param.grad = saved_grads[name]
-
-    # Build metrics dictionary
-    metrics = {
-        'overall_cos_sim': overall_cos,
-        'overall_policy_norm': overall_norm_p,
-        'overall_value_norm': overall_norm_v,
-        'stem_cos_sim': stem_cos,
-        'stem_policy_norm': stem_norm_p,
-        'stem_value_norm': stem_norm_v,
-    }
-
-    for layer_key in ['shared_0-2', 'shared_3-5', 'shared_6-8', 'shared_9-11', 'dual_se_0-2', 'dual_se_3-5']:
-        cos, norm_p, norm_v = trunk_metrics.get(layer_key, (0.0, 0.0, 0.0))
-        prefix = layer_key.replace('-', '_')
-        metrics[f'{prefix}_cos_sim'] = cos
-        metrics[f'{prefix}_policy_norm'] = norm_p
-        metrics[f'{prefix}_value_norm'] = norm_v
-
-    # Entropy norm metrics
-    metrics['overall_entropy_norm'] = overall_entropy_norm
-    metrics['stem_entropy_norm'] = stem_entropy_norm
-    for layer_key in ['shared_0-2', 'shared_3-5', 'shared_6-8', 'shared_9-11', 'dual_se_0-2', 'dual_se_3-5']:
-        prefix = layer_key.replace('-', '_')
-        metrics[f'{prefix}_entropy_norm'] = trunk_entropy_norms.get(layer_key, 0.0)
-
-    return metrics
 
 
 # ============================================================================
@@ -593,7 +479,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     dummy_masks = torch.ones_like(masks_tensor)
     aug_next_obs, _, _ = augment_batch_8fold(next_obs_tensor, actions_tensor, dummy_masks)
 
-    aug_returns = returns_tensor.repeat(8)
     aug_value_targets = value_targets_tensor.repeat(8)
     aug_is_synthetic = is_synthetic_tensor.repeat(8)
     aug_is_terminal = is_terminal_tensor.repeat(8)
@@ -697,6 +582,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     accumulated_value_mse_sum = 0.0
     accumulated_value_mse_count = 0
     accumulated_weighted_entropy_sum = 0.0
+    entropy_bonus_scale = 0.0
     accumulated_weight_sum = 0.0
 
     # Collect data for chunked gradient probing (if needed)
@@ -705,7 +591,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     probe_next_obs_chunks = [] if should_probe else None
     probe_actions_chunks = [] if should_probe else None
     probe_masks_chunks = [] if should_probe else None
-    probe_returns_chunks = [] if should_probe else None
     probe_value_targets_chunks = [] if should_probe else None
     probe_is_terminal_chunks = [] if should_probe else None
     probe_is_synthetic_chunks = [] if should_probe else None
@@ -721,7 +606,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_next_obs = aug_next_obs[batch_start:batch_end]
         batch_actions = aug_actions[batch_start:batch_end]
         batch_masks = aug_masks[batch_start:batch_end]
-        batch_returns = aug_returns[batch_start:batch_end]
         batch_value_targets = aug_value_targets[batch_start:batch_end]
         batch_gae_advantages = aug_gae_advantages[batch_start:batch_end]
         batch_is_synthetic = aug_is_synthetic[batch_start:batch_end]
@@ -735,7 +619,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             probe_next_obs_chunks.append(batch_next_obs.detach())
             probe_actions_chunks.append(batch_actions.detach())
             probe_masks_chunks.append(batch_masks.detach())
-            probe_returns_chunks.append(batch_returns.detach())
             probe_value_targets_chunks.append(batch_value_targets.detach())
             probe_is_terminal_chunks.append(batch_is_terminal.detach())
             probe_is_synthetic_chunks.append(batch_is_synthetic.detach())
@@ -805,7 +688,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             'next_obs_chunks': probe_next_obs_chunks,
             'actions_chunks': probe_actions_chunks,
             'masks_chunks': probe_masks_chunks,
-            'returns_chunks': probe_returns_chunks,
             'value_targets_chunks': probe_value_targets_chunks,
             'is_terminal_chunks': probe_is_terminal_chunks,
             'is_synthetic_chunks': probe_is_synthetic_chunks,
@@ -852,15 +734,13 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
     )
 
     # Run gradient probe (before optimizer step)
-    collected_probe_metrics = None
     if probe_data is not None:
-        collected_probe_metrics = probe_gradient_conflict_chunked(
+        probe_gradient_conflict_chunked(
             model,
             probe_data['obs_chunks'],
             probe_data['next_obs_chunks'],
             probe_data['actions_chunks'],
             probe_data['masks_chunks'],
-            probe_data['returns_chunks'],
             probe_data['value_targets_chunks'],
             probe_data['is_terminal_chunks'],
             probe_data['is_synthetic_chunks'],
@@ -887,5 +767,5 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
         'imitation_black': num_imitation_black,
         'imitation_white': num_imitation_white,
         'opr_samples': num_opr,
-        'probe_metrics': collected_probe_metrics
+        'probe_ran': probe_data is not None
     }

@@ -418,13 +418,9 @@ def main():
         ema_alpha = 1.0 / EMA_WINDOW
         ema_entropy = ema_alpha * train_results['entropy'] + (1.0 - ema_alpha) * ema_entropy
 
-        # Log gradient probe if metrics collected
-        if train_results['probe_metrics'] is not None:
-            csv_logger.log_gradient_probe(update + 1, train_results['probe_metrics'])
-            pm = train_results['probe_metrics']
-            print(f"  [Probe] Overall cos_sim={pm['overall_cos_sim']:+.3f} | "
-                  f"Stem={pm['stem_cos_sim']:+.3f} | "
-                  f"Entropy norm={pm['overall_entropy_norm']:.4f}")
+        # Free probe tensors after gradient probe ran
+        if train_results['probe_ran']:
+            print("  [Probe] Gradient vectors saved to .npz")
             torch.cuda.empty_cache()
 
         # Update miss rate EMAs
