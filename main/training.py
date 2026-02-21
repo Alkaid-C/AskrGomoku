@@ -30,30 +30,31 @@ TOTAL_UPDATES = 65536
 LEARNING_RATE = 1.0/8192
 MIN_LR = 0.125/8192
 LR_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Decay midpoint at 75% of training
-LR_DECAY_STEEPNESS = 0.5             # Transition spread over 50% of total training
-WEIGHT_DECAY = 1.0/134217728
+LR_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training
+WEIGHT_DECAY = 1.0/ 2 ** 24
 GRAD_CLIP_NORM = 16.0
 
 # --- Batching & Memory ---
-EPISODES_PER_UPDATE = 96       # Episodes to collect before each training update
-TRAIN_BATCH_SIZE = 256 * 2     # Micro-batch size for training
+EPISODES_PER_UPDATE = 96  # Episodes to collect before each training update
+TRAIN_BATCH_SIZE = 256 * 2  # Micro-batch size for training
 
 # --- EMA Smoothing ---
-EMA_WINDOW = 64                # Effective window for per-update EMA tracking (alpha = 1/window)
-EVAL_WIN_RATE_EMA_WINDOW = 2   # Effective window for evaluation win rate EMA (evals happen less frequently)
+EMA_WINDOW = 64  # Effective window for per-update EMA tracking (alpha = 1/window)
+EVAL_WIN_RATE_EMA_WINDOW = 2  # Effective window for evaluation win rate EMA (evals happen less frequently)
 
 # --- Entropy Bonus ---
-ENTROPY_TARGET_START = 1.0      # Entropy bonus numerator at start (nats)
-ENTROPY_TARGET_END = 0.1875      # Entropy bonus numerator at end (nats)
-ENTROPY_BONUS_COEFF = 1/128.0   # Coefficient for entropy bonus
+ENTROPY_TARGET_START = 1.0  # Entropy bonus numerator at start (nats)
+ENTROPY_TARGET_END = 0.1875  # Entropy bonus numerator at end (nats)
+ENTROPY_BONUS_COEFF = 1/128.0  # Coefficient for entropy bonus
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of total training
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF_START = 1.0   # Value loss coefficient at alpha=0 (start of training)
-VALUE_LOSS_COEFF_END = 0.25    # Value loss coefficient at alpha=1 (after ramp)
-GAE_LAMBDA = 0.95              # GAE lambda (0=TD(0), 1=MC)
-BASELINE_RAMP_END = 512        # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
+VALUE_LOSS_COEFF_START = 1.0  # Value loss coefficient at alpha=0 (start of training)
+VALUE_LOSS_COEFF_END = 0.25  # Value loss coefficient at alpha=1 (after ramp)
+GAE_LAMBDA = 0.95  # GAE lambda (0=TD(0), 1=MC)
+BASELINE_RAMP_END = 1024  # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
+NEGATIVE_ADVANTAGE_SLOPE = 0.25  # Leaky ReLU slope for negative advantages (0=max(0,x), 1=identity)
 
 # --- Logging ---
 PRINT_INTERVAL = 1             # Print stats every N updates
@@ -539,13 +540,14 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             gae = delta - GAE_LAMBDA * gae
             gae_advantages[sample_idx] = gae
 
-    # Blend advantages: (1-alpha)*max(0, R_t) + alpha*max(0, GAE_t) + tactical boost
+    # Blend advantages with leaky ReLU: attenuate negative advantages by NEGATIVE_ADVANTAGE_SLOPE
     raw_returns = returns_tensor.cpu().numpy()
     final_advantages = np.zeros(B, dtype=np.float32)
+    s = NEGATIVE_ADVANTAGE_SLOPE * alpha
 
     for sample_idx in range(num_samples_before_tactical):
-        blended = (1 - alpha) * max(0.0, raw_returns[sample_idx]) + alpha * max(0.0, gae_advantages[sample_idx])
-        final_advantages[sample_idx] = blended + tactical_boost_info.sample_boosts[sample_idx]
+        blended = (1 - alpha) * raw_returns[sample_idx] + alpha * gae_advantages[sample_idx]
+        final_advantages[sample_idx] = blended * (s + (1 - s) * (blended > 0)) + tactical_boost_info.sample_boosts[sample_idx]
 
     # Tactical synthetic samples: use their advantage values directly
     for i, advantage_value in enumerate(tactical_boost_info.synthetic_advantages):

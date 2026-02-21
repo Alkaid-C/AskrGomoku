@@ -5,7 +5,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 ## Directory Structure
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
-- **`vanilla/`** — Baseline training pipeline with a simpler model. **Training code must stay in sync with `main/`** — the only intentional differences are model structure.
+- **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
 - **`minimax_post_train/`** — Post-training: takes a `main/`-trained checkpoint and refines it using negamax search + ranking losses. **Model structure stay in sync with `main/model.py`**
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 
