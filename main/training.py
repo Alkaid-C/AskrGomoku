@@ -136,7 +136,7 @@ def probe_gradient_conflict_chunked(
 
     global_policy_entropy_normalizer, global_value_normalizer = global_normalizers
 
-    # --- Loop 1: policy_real ---
+    # --- Loops 1+4 merged: policy_real + entropy_real (shared forward pass) ---
     model.zero_grad()
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
@@ -159,18 +159,29 @@ def probe_gradient_conflict_chunked(
 
         logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
         dist = Categorical(logits=logits_scaled, validate_args=False)
+
+        # policy_real backward (retain graph for entropy_real)
         batch_log_probs = dist.log_prob(actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
-
         policy_loss = -(weights * real_mask.float() * gae_advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
-        policy_loss.backward()
+        policy_loss.backward(retain_graph=True)
 
         for name, param in model.named_parameters():
             if param.grad is not None:
                 grad_accum['policy_real'][name] += param.grad.detach()
         model.zero_grad()
 
-    # --- Loop 2: policy_synthetic ---
+        # entropy_real backward (releases graph)
+        entropies = dist.entropy()
+        entropy_loss = entropy_bonus_scale * (-(weights * real_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
+        entropy_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_accum['entropy_real'][name] += param.grad.detach()
+        model.zero_grad()
+
+    # --- Loops 2+5 merged: policy_synthetic + entropy_synthetic (shared forward pass) ---
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
         actions = actions_chunks[i]
@@ -191,18 +202,29 @@ def probe_gradient_conflict_chunked(
 
         logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
         dist = Categorical(logits=logits_scaled, validate_args=False)
+
+        # policy_synthetic backward (retain graph for entropy_synthetic)
         batch_log_probs = dist.log_prob(actions)
         batch_log_probs = torch.clamp(batch_log_probs, min=LOG_PROB_MIN)
-
         policy_loss = -(weights * synth_mask.float() * gae_advantages * batch_log_probs).sum() / max(global_policy_entropy_normalizer, 1.0)
-        policy_loss.backward()
+        policy_loss.backward(retain_graph=True)
 
         for name, param in model.named_parameters():
             if param.grad is not None:
                 grad_accum['policy_synthetic'][name] += param.grad.detach()
         model.zero_grad()
 
-    # --- Loop 3: value_real (already masks synthetic internally) ---
+        # entropy_synthetic backward (releases graph)
+        entropies = dist.entropy()
+        entropy_loss = entropy_bonus_scale * (-(weights * synth_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
+        entropy_loss.backward()
+
+        for name, param in model.named_parameters():
+            if param.grad is not None:
+                grad_accum['entropy_synthetic'][name] += param.grad.detach()
+        model.zero_grad()
+
+    # --- Loop 3: value_real (uses forward_value_only, cannot be merged) ---
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
         value_targets = value_targets_chunks[i]
@@ -228,65 +250,6 @@ def probe_gradient_conflict_chunked(
         for name, param in model.named_parameters():
             if param.grad is not None:
                 grad_accum['value_real'][name] += param.grad.detach()
-        model.zero_grad()
-
-    # --- Loop 4: entropy_real ---
-    for i in range(len(obs_chunks)):
-        obs = obs_chunks[i]
-        masks = masks_chunks[i]
-        is_synthetic = is_synthetic_chunks[i]
-        is_value_only = is_value_only_chunks[i]
-        weights = weights_chunks[i]
-
-        real_mask = ~is_synthetic & ~is_value_only
-        if not real_mask.any():
-            continue
-
-        batch_size = obs.size(0)
-        logits_grid, values = model(obs)
-        logits = logits_grid.squeeze(1)
-        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
-        logits_flat = logits.view(batch_size, 225)
-
-        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
-        dist = Categorical(logits=logits_scaled, validate_args=False)
-        entropies = dist.entropy()
-
-        entropy_loss = entropy_bonus_scale * (-(weights * real_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
-        entropy_loss.backward()
-
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                grad_accum['entropy_real'][name] += param.grad.detach()
-        model.zero_grad()
-
-    # --- Loop 5: entropy_synthetic ---
-    for i in range(len(obs_chunks)):
-        obs = obs_chunks[i]
-        masks = masks_chunks[i]
-        is_synthetic = is_synthetic_chunks[i]
-        weights = weights_chunks[i]
-
-        synth_mask = is_synthetic
-        if not synth_mask.any():
-            continue
-
-        batch_size = obs.size(0)
-        logits_grid, values = model(obs)
-        logits = logits_grid.squeeze(1)
-        logits = logits.masked_fill(~masks, LOGIT_MASK_VALUE)
-        logits_flat = logits.view(batch_size, 225)
-
-        logits_scaled = logits_flat / TEMPERATURE_TRAIN if TEMPERATURE_TRAIN > 0 else logits_flat
-        dist = Categorical(logits=logits_scaled, validate_args=False)
-        entropies = dist.entropy()
-
-        entropy_loss = entropy_bonus_scale * (-(weights * synth_mask.float() * entropies).sum() / max(global_policy_entropy_normalizer, 1.0))
-        entropy_loss.backward()
-
-        for name, param in model.named_parameters():
-            if param.grad is not None:
-                grad_accum['entropy_synthetic'][name] += param.grad.detach()
         model.zero_grad()
 
     # --- Flatten vectors & save .npz ---
