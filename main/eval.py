@@ -33,8 +33,8 @@ DEFAULT_WIN_RATE = 0.5         # Default win rate for new opponents
 EVAL_ROUNDS = 32               # Number of evaluation rounds per opponent
 EVAL_TEMP = 1.0                # Temperature for evaluation
 EVAL_INTERVAL_EARLY = 4        # Evaluation interval for early training
-EVAL_INTERVAL_MID = 16         # Evaluation interval for mid training
-EVAL_INTERVAL_LATE = 64        # Evaluation interval for late training
+EVAL_INTERVAL_MID = 8         # Evaluation interval for mid training
+EVAL_INTERVAL_LATE = 32        # Evaluation interval for late training
 WIN_RATE_THRESHOLD = 19.0/32   # Minimum win rate to add to opponent pool
 
 # --- Opponent Sampling ---
@@ -43,7 +43,7 @@ UNIFORM_SAMPLING_FRACTION = 0.5  # Fraction of samples that are uniform
 # --- Historical Exploiter Scanning ---
 SCAN_START_UPDATE = 8192       # Update at which to start scanning
 SCAN_PERIOD = 16               # Scan every N evaluations
-NUM_SCAN_BUCKETS = 4           # Number of buckets for round-robin scanning
+NUM_SCAN_BUCKETS = 8           # Number of buckets for round-robin scanning
 QUICK_SCREEN_ROUNDS = 16       # Rounds for quick screen
 TOP_K_QUICK_SCREEN = 16        # Keep top K from quick screen
 FINAL_SCREEN_ROUNDS = 64       # Rounds for final screen

@@ -58,7 +58,7 @@ NEGATIVE_ADVANTAGE_SLOPE = 0.25  # Leaky ReLU slope for negative advantages (0=m
 
 # --- Logging ---
 PRINT_INTERVAL = 1             # Print stats every N updates
-PROBE_INTERVAL = 64            # Probe gradient conflict every N updates (0 = disable)
+PROBE_INTERVAL = 32            # Probe gradient conflict every N updates (0 = disable)
 
 
 # ============================================================================
