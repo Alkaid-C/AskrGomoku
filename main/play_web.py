@@ -583,6 +583,10 @@ h1 {
                         </div>
                     </div>
 
+                    <div class="entropy-display" style="margin-bottom: 10px;">
+                        <strong>Entropy:</strong> <span id="entropy-text">--</span> <span id="entropy-nats" style="color: #888; font-size: 12px;">nats</span>
+                    </div>
+
                     <div class="best-move">
                         <strong>Suggested Move:</strong>
                         <span id="suggested-move">--</span>
@@ -767,6 +771,7 @@ function clearBoard() {
     document.getElementById('game-status').textContent = 'In Progress';
     document.getElementById('suggested-move').textContent = '--';
     document.getElementById('value-text').textContent = '--';
+    document.getElementById('entropy-text').textContent = '--';
     document.getElementById('top-moves-list').innerHTML = '<em>Click "Get AI Suggestion" to analyze</em>';
 
     renderBoard();
@@ -990,6 +995,9 @@ function displayAIAnalysis(data) {
     // Update value bar position (map -1 to 1 -> 0% to 100%)
     const percentage = ((value + 1) / 2) * 100;
     document.getElementById('value-bar').style.left = `${percentage}%`;
+
+    // Display entropy
+    document.getElementById('entropy-text').textContent = data.entropy.toFixed(3);
 
     // Display top moves
     const topMovesList = document.getElementById('top-moves-list');
@@ -1237,6 +1245,10 @@ def run_inference(black_pieces, white_pieces, current_player, temperature):
         best_idx = torch.multinomial(probs.view(-1), num_samples=1).item()
         best_row, best_col = idx_to_pos(best_idx)
 
+    # Compute entropy from raw (untempered) logits
+    raw_probs = F.softmax(logits_masked.view(-1), dim=0)
+    entropy = -(raw_probs * torch.log(raw_probs + 1e-8)).sum().item()
+
     # Convert value to BLACK's perspective
     # value is from current player's perspective
     if current_player == 'white':
@@ -1266,7 +1278,8 @@ def run_inference(black_pieces, white_pieces, current_player, temperature):
         'best_move': [int(best_row), int(best_col)],
         'value': float(value_black),
         'probabilities': move_probs,
-        'all_probs_grid': probs_grid
+        'all_probs_grid': probs_grid,
+        'entropy': float(entropy)
     }
 
 
