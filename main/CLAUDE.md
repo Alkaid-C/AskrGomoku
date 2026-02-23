@@ -63,7 +63,7 @@ Each update:
 loss = policy_loss + value_coeff * value_loss + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss
 ```
 
-- **Policy loss**: `-Σ(weight * advantage * log_prob) / Σ(weight)`. Advantage = `(1-α)*max(0, return) + α*max(0, GAE) + tactical_boost`. The `max(0, ...)` means only positive advantages reinforce — bad moves are never explicitly pushed down.
+- **Policy loss**: `-Σ(weight * advantage * log_prob) / Σ(weight)`. Advantage is a blended `(1-α)*return + α*GAE + tactical_boost`, passed through a leaky ReLU (`NEGATIVE_ADVANTAGE_SLOPE`) that attenuates negative advantages rather than zeroing them.
 - **Value loss**: weighted MSE between predicted value and target. Target = return (terminal) or `-V(next)` (non-terminal, negamax convention). Only computed on real samples (not synthetic). Coefficient ramps from `VALUE_LOSS_COEFF_START` to `VALUE_LOSS_COEFF_END` via α.
 - **Entropy loss**: `-Σ(weight * entropy) / Σ(weight)`, scaled by `entropy_bonus_scale = entropy_schedule / ema_entropy` (adaptive ratio).
 

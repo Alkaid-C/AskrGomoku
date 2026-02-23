@@ -55,13 +55,14 @@ from training import (
     ENTROPY_TARGET_START,
     EPISODES_PER_UPDATE,
     EVAL_WIN_RATE_EMA_WINDOW,
-    GAE_LAMBDA,
     LEARNING_RATE,
     LR_DECAY_MIDPOINT_PERCENTAGE,
     LR_DECAY_STEEPNESS,
     MIN_LR,
+    POLICY_GAE_LAMBDA,
     PRINT_INTERVAL,
     TOTAL_UPDATES,
+    VALUE_GAE_LAMBDA,
     VALUE_LOSS_COEFF_END,
     VALUE_LOSS_COEFF_START,
     WEIGHT_DECAY,
@@ -322,7 +323,7 @@ def main():
     print("  Data augmentation: 8-fold symmetry (rot + flip)")
     print(f"  Imitation learning: Dynamic weight (win_rate=0: {IMITATION_MAX_WEIGHT}, win_rate=1: {IMITATION_MIN_WEIGHT}), start: update {IMITATION_START_UPDATE}")
     print(f"  Value head: ENABLED (loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END} via cosine ramp over [0, {BASELINE_RAMP_END}])")
-    print(f"  GAE: lambda={GAE_LAMBDA}")
+    print(f"  GAE: policy_lambda={POLICY_GAE_LAMBDA}, value_lambda={VALUE_GAE_LAMBDA}")
     print(f"  Baseline transition: cosine ramp alpha over [0, {BASELINE_RAMP_END}]")
     print("    - Advantages: (1-alpha)*max(0,R) + alpha*max(0,GAE) + tactical boost")
     print(f"    - Value loss coeff: {VALUE_LOSS_COEFF_START} -> {VALUE_LOSS_COEFF_END}")

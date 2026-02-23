@@ -50,15 +50,16 @@ ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of tot
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF_START = 1.0  # Value loss coefficient at alpha=0 (start of training)
-VALUE_LOSS_COEFF_END = 0.25  # Value loss coefficient at alpha=1 (after ramp)
-GAE_LAMBDA = 0.95  # GAE lambda (0=TD(0), 1=MC)
+VALUE_LOSS_COEFF_START = 3.0/8  # Value loss coefficient at alpha=0 (start of training)
+VALUE_LOSS_COEFF_END = 1.0/16  # Value loss coefficient at alpha=1 (after ramp)
+POLICY_GAE_LAMBDA = 15.0/16  # GAE lambda for policy advantages
+VALUE_GAE_LAMBDA = 13.0/16  # GAE lambda for value targets (λ-return)
 BASELINE_RAMP_END = 1024  # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
 NEGATIVE_ADVANTAGE_SLOPE = 0.25  # Leaky ReLU slope for negative advantages (0=max(0,x), 1=identity)
 
 # --- Logging ---
-PRINT_INTERVAL = 1             # Print stats every N updates
-PROBE_INTERVAL = 32            # Probe gradient conflict every N updates (0 = disable)
+PRINT_INTERVAL = 1  # Print stats every N updates
+PROBE_INTERVAL = 32  # Probe gradient conflict every N updates (0 = disable)
 
 
 # ============================================================================
@@ -102,13 +103,11 @@ def probe_gradient_conflict_chunked(
     obs_chunks: List[torch.Tensor],
     actions_chunks: List[torch.Tensor],
     masks_chunks: List[torch.Tensor],
-    value_targets_chunks: List[torch.Tensor],
-    is_terminal_chunks: List[torch.Tensor],
     is_synthetic_chunks: List[torch.Tensor],
     is_value_only_chunks: List[torch.Tensor],
     weights_chunks: List[torch.Tensor],
     gae_advantages_chunks: List[torch.Tensor],
-    next_values_chunks: List[torch.Tensor],
+    value_lambda_returns_chunks: List[torch.Tensor],
     global_normalizers: Tuple[float, float],
     entropy_bonus_scale: float = 1.0,
     update: int = 0,
@@ -227,20 +226,12 @@ def probe_gradient_conflict_chunked(
     # --- Loop 3: value_real (uses forward_value_only, cannot be merged) ---
     for i in range(len(obs_chunks)):
         obs = obs_chunks[i]
-        value_targets = value_targets_chunks[i]
-        is_terminal = is_terminal_chunks[i]
         is_synthetic = is_synthetic_chunks[i]
         weights = weights_chunks[i]
-        next_values = next_values_chunks[i]
+        effective_value_targets = value_lambda_returns_chunks[i]
 
         values = model.forward_value_only(obs)
         values = values.squeeze(1)
-
-        effective_value_targets = torch.where(
-            is_terminal,
-            value_targets,
-            -next_values.detach()
-        )
 
         value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
         value_loss_mask = ~is_synthetic
@@ -265,6 +256,17 @@ def probe_gradient_conflict_chunked(
     for key in grad_keys:
         parts = [grad_accum[key][name].flatten().cpu().float().numpy() for name in param_names_ordered]
         flat_vectors[key] = np.concatenate(parts) if parts else np.array([], dtype=np.float32)
+
+    # Compute and print gradient norm ratios (value vs policy)
+    policy_total = flat_vectors['policy_real'] + flat_vectors['policy_synthetic']
+    policy_norm = float(np.linalg.norm(policy_total))
+    value_norm = float(np.linalg.norm(flat_vectors['value_real']))
+    alpha = compute_baseline_alpha(update)
+    value_loss_coeff = VALUE_LOSS_COEFF_START + (VALUE_LOSS_COEFF_END - VALUE_LOSS_COEFF_START) * alpha
+    raw_ratio = value_norm / max(policy_norm, 1e-12)
+    adjusted_ratio = value_loss_coeff * raw_ratio
+    print(f"  [Probe] Grad norms: policy={policy_norm:.4f}, value={value_norm:.4f} | "
+          f"raw V/P={raw_ratio:.3f}, adjusted(x{value_loss_coeff:.3f})={adjusted_ratio:.3f}")
 
     if output_dir:
         npz_path = os.path.join(output_dir, f'gradient_probe_{update+1:06d}.npz')
@@ -444,18 +446,14 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     actions_tensor = torch.tensor(all_actions, dtype=torch.long, device=device)
     masks_tensor = mask_batch_to_tensor(all_masks, device)
     returns_tensor = torch.tensor(all_returns, dtype=torch.float32, device=device)
-    value_targets_tensor = torch.tensor(all_value_targets, dtype=torch.float32, device=device)
     is_synthetic_tensor = torch.tensor(all_is_synthetic, dtype=torch.bool, device=device)
-    is_terminal_tensor = torch.tensor(all_is_terminal, dtype=torch.bool, device=device)
     weights_tensor = torch.tensor(all_weights, dtype=torch.float32, device=device)
     is_value_only_tensor = torch.tensor(all_is_value_only, dtype=torch.bool, device=device)
 
     # Apply all 8 symmetries
     aug_obs, aug_actions, aug_masks = augment_batch_8fold(obs_tensor, actions_tensor, masks_tensor)
 
-    aug_value_targets = value_targets_tensor.repeat(8)
     aug_is_synthetic = is_synthetic_tensor.repeat(8)
-    aug_is_terminal = is_terminal_tensor.repeat(8)
     aug_weights = weights_tensor.repeat(8)
     aug_is_value_only = is_value_only_tensor.repeat(8)
 
@@ -488,8 +486,9 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     for entries in traj_entries:
         entries.sort(key=lambda e: e[0])
 
-    # Compute base GAE per trajectory
+    # Compute base GAE (policy) and λ-return (value) per trajectory
     gae_advantages = np.zeros(B, dtype=np.float32)
+    value_lambda_returns = np.zeros(B, dtype=np.float32)
 
     for traj_idx in range(len(trajectories)):
         entries = traj_entries[traj_idx]
@@ -499,19 +498,24 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         values = [e[2] for e in entries]
         sample_indices = [e[1] for e in entries]
 
-        # GAE backward recursion (negamax: consecutive steps alternate players)
-        gae = 0.0
+        # GAE + λ-return backward recursion (negamax: consecutive steps alternate players)
+        policy_gae = 0.0
+        value_return = 0.0
         for i in reversed(range(len(values))):
             sample_idx = sample_indices[i]
             z_t = all_returns[sample_idx]
 
             if i == len(values) - 1:
                 delta = z_t - values[i]
+                policy_gae = delta
+                value_return = z_t
             else:
                 delta = -values[i + 1] - values[i]
+                policy_gae = delta - POLICY_GAE_LAMBDA * policy_gae
+                value_return = -(1 - VALUE_GAE_LAMBDA) * values[i + 1] - VALUE_GAE_LAMBDA * value_return
 
-            gae = delta - GAE_LAMBDA * gae
-            gae_advantages[sample_idx] = gae
+            gae_advantages[sample_idx] = policy_gae
+            value_lambda_returns[sample_idx] = value_return
 
     # Blend advantages with leaky ReLU: attenuate negative advantages by NEGATIVE_ADVANTAGE_SLOPE
     raw_returns = returns_tensor.cpu().numpy()
@@ -534,24 +538,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     advantages_tensor = torch.tensor(final_advantages, dtype=torch.float32, device=device)
     aug_gae_advantages = advantages_tensor.repeat(8)
 
-    # Compute next-step values via index lookup into avg_values (eliminates a B*8 forward pass).
-    # Every non-terminal sample's next_obs is another sample's obs (opponent steps are collected
-    # as imitation or value-only samples), so their averaged values are already in avg_values.
-    step_to_sample = {}
-    for sample_idx, (ti, si) in enumerate(sample_to_traj):
-        if ti >= 0:  # Not synthetic
-            step_to_sample[(ti, si)] = sample_idx
-
-    avg_next_values_np = np.zeros(B, dtype=np.float32)
-    for sample_idx in range(B):
-        if all_is_terminal[sample_idx]:
-            continue
-        ti, si = sample_to_traj[sample_idx]
-        if ti < 0:
-            continue  # Synthetic (value masked out anyway)
-        avg_next_values_np[sample_idx] = avg_values[step_to_sample[(ti, si + 1)]]
-
-    aug_next_values_averaged = torch.from_numpy(avg_next_values_np).to(device).repeat(8)
+    value_lambda_returns_tensor = torch.tensor(value_lambda_returns, dtype=torch.float32, device=device)
+    aug_value_lambda_returns = value_lambda_returns_tensor.repeat(8)
 
     aug_policy_mask = ~aug_is_value_only
     global_policy_entropy_normalizer = (aug_weights * aug_policy_mask.float()).sum().item()
@@ -574,12 +562,10 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     probe_obs_chunks = [] if should_probe else None
     probe_actions_chunks = [] if should_probe else None
     probe_masks_chunks = [] if should_probe else None
-    probe_value_targets_chunks = [] if should_probe else None
-    probe_is_terminal_chunks = [] if should_probe else None
     probe_is_synthetic_chunks = [] if should_probe else None
     probe_weights_chunks = [] if should_probe else None
     probe_gae_advantages_chunks = [] if should_probe else None
-    probe_next_values_chunks = [] if should_probe else None
+    probe_value_lambda_returns_chunks = [] if should_probe else None
     probe_is_value_only_chunks = [] if should_probe else None
 
     # Process in micro-batches
@@ -589,10 +575,8 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         batch_obs = aug_obs[batch_start:batch_end]
         batch_actions = aug_actions[batch_start:batch_end]
         batch_masks = aug_masks[batch_start:batch_end]
-        batch_value_targets = aug_value_targets[batch_start:batch_end]
         batch_gae_advantages = aug_gae_advantages[batch_start:batch_end]
         batch_is_synthetic = aug_is_synthetic[batch_start:batch_end]
-        batch_is_terminal = aug_is_terminal[batch_start:batch_end]
         batch_weights = aug_weights[batch_start:batch_end]
         batch_is_value_only = aug_is_value_only[batch_start:batch_end]
         batch_size = batch_end - batch_start
@@ -602,8 +586,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             probe_obs_chunks.append(batch_obs.detach())
             probe_actions_chunks.append(batch_actions.detach())
             probe_masks_chunks.append(batch_masks.detach())
-            probe_value_targets_chunks.append(batch_value_targets.detach())
-            probe_is_terminal_chunks.append(batch_is_terminal.detach())
             probe_is_synthetic_chunks.append(batch_is_synthetic.detach())
             probe_weights_chunks.append(batch_weights.detach())
             probe_gae_advantages_chunks.append(batch_gae_advantages.detach())
@@ -622,18 +604,11 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         values = values.squeeze(1)
 
-        # Use 8-fold averaged next_values for consistent TD targets
-        next_values = aug_next_values_averaged[batch_start:batch_end]
+        effective_value_targets = aug_value_lambda_returns[batch_start:batch_end]
         if should_probe:
-            probe_next_values_chunks.append(next_values.detach())
+            probe_value_lambda_returns_chunks.append(effective_value_targets.detach())
 
         advantages = batch_gae_advantages
-
-        effective_value_targets = torch.where(
-            batch_is_terminal,
-            batch_value_targets,
-            -next_values.detach()
-        )
 
         value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
         batch_value_loss_mask = ~batch_is_synthetic
@@ -672,13 +647,11 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             'obs_chunks': probe_obs_chunks,
             'actions_chunks': probe_actions_chunks,
             'masks_chunks': probe_masks_chunks,
-            'value_targets_chunks': probe_value_targets_chunks,
-            'is_terminal_chunks': probe_is_terminal_chunks,
             'is_synthetic_chunks': probe_is_synthetic_chunks,
             'is_value_only_chunks': probe_is_value_only_chunks,
             'weights_chunks': probe_weights_chunks,
             'gae_advantages_chunks': probe_gae_advantages_chunks,
-            'next_values_chunks': probe_next_values_chunks,
+            'value_lambda_returns_chunks': probe_value_lambda_returns_chunks,
             'global_normalizers': (global_policy_entropy_normalizer, global_value_normalizer),
             'entropy_bonus_scale': ENTROPY_BONUS_COEFF * entropy_bonus_scale
         }
@@ -725,13 +698,11 @@ def train_on_batch(model: nn.Module, trajectories: List[Trajectory],
             probe_data['obs_chunks'],
             probe_data['actions_chunks'],
             probe_data['masks_chunks'],
-            probe_data['value_targets_chunks'],
-            probe_data['is_terminal_chunks'],
             probe_data['is_synthetic_chunks'],
             probe_data['is_value_only_chunks'],
             probe_data['weights_chunks'],
             probe_data['gae_advantages_chunks'],
-            probe_data['next_values_chunks'],
+            probe_data['value_lambda_returns_chunks'],
             probe_data['global_normalizers'],
             entropy_bonus_scale=probe_data['entropy_bonus_scale'],
             update=update,
