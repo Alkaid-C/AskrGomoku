@@ -14,7 +14,6 @@ from typing import List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from enhancement import EPISODE_WEIGHT_ALPHA, IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE, TacticalStats, apply_tactical_enhancements, augment_batch_8fold
 from gomoku import LOG_PROB_MIN, LOGIT_MASK_VALUE, TEMPERATURE_TRAIN, Trajectory, compute_returns, mask_batch_to_tensor, obs_batch_to_tensor
 from torch.distributions import Categorical
@@ -50,8 +49,8 @@ ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of tot
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF_START = 3.0/8  # Value loss coefficient at alpha=0 (start of training)
-VALUE_LOSS_COEFF_END = 1.0/16  # Value loss coefficient at alpha=1 (after ramp)
+VALUE_LOSS_COEFF_START = 1.0/2  # Value loss coefficient at alpha=0 (start of training)
+VALUE_LOSS_COEFF_END = 1.0/4  # Value loss coefficient at alpha=1 (after ramp)
 POLICY_GAE_LAMBDA = 15.0/16  # GAE lambda for policy advantages
 VALUE_GAE_LAMBDA = 13.0/16  # GAE lambda for value targets (λ-return)
 BASELINE_RAMP_END = 1024  # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
@@ -233,7 +232,7 @@ def probe_gradient_conflict_chunked(
         values = model.forward_value_only(obs)
         values = values.squeeze(1)
 
-        value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
+        value_mse = (values - effective_value_targets).square()
         value_loss_mask = ~is_synthetic
         value_loss = (weights * value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
         value_loss.backward()
@@ -318,7 +317,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     all_actions = []
     all_masks = []
     all_returns = []
-    all_value_targets = []
     all_is_synthetic = []
     all_is_terminal = []
     all_weights = []
@@ -328,11 +326,15 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Track trajectory structure for GAE computation
     sample_to_traj = []  # Maps sample index to (traj_idx, step_idx)
 
+    # Cache returns per trajectory (used in both passes)
+    traj_returns = []
+
     num_imitation_black = 0
     num_imitation_white = 0
 
     for traj_idx, traj in enumerate(trajectories):
         returns = compute_returns(traj)
+        traj_returns.append(returns)
 
         current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
 
@@ -354,7 +356,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_actions.append(action)
                 all_masks.append(legal_mask)
                 all_returns.append(z_t)
-                all_value_targets.append(z_t)
                 all_is_synthetic.append(False)
                 all_is_value_only.append(False)
                 all_weights.append(current_weight)
@@ -367,7 +368,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_actions.append(action)
                 all_masks.append(legal_mask)
                 all_returns.append(z_t)
-                all_value_targets.append(z_t)
                 all_is_synthetic.append(False)
                 all_is_value_only.append(False)
                 all_weights.append(imitation_weight)
@@ -386,7 +386,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
     # Apply tactical enhancements (returns boost info for applying after GAE)
     tactical_stats, tactical_boost_info = apply_tactical_enhancements(
         all_obs, all_actions, all_masks, all_returns,
-        all_weights, all_value_targets, all_is_synthetic, all_is_terminal,
+        all_weights, all_is_synthetic, all_is_terminal,
         win_boost, block_boost
     )
 
@@ -407,7 +407,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             all_actions.append(sample['action'])
             all_masks.append(sample['mask'])
             all_returns.append(sample['strength'])
-            all_value_targets.append(0.0)
             all_is_synthetic.append(True)
             opr_advantages.append(sample['strength'])  # Track for later
             all_weights.append(sample['weight'])
@@ -418,7 +417,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
     # Pass 2: Collect value-only opponent steps for correct GAE
     for traj_idx, traj in enumerate(trajectories):
-        returns = compute_returns(traj)
+        returns = traj_returns[traj_idx]
         current_steps = sum(1 for is_current in traj.is_current_policy if is_current)
         if current_steps == 0:
             continue
@@ -434,7 +433,6 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 all_actions.append(action)
                 all_masks.append(legal_mask)
                 all_returns.append(z_t)
-                all_value_targets.append(z_t)
                 all_is_synthetic.append(False)
                 all_is_value_only.append(True)
                 all_weights.append(current_weight)
@@ -610,7 +608,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
 
         advantages = batch_gae_advantages
 
-        value_mse = F.mse_loss(values, effective_value_targets, reduction='none')
+        value_mse = (values - effective_value_targets).square()
         batch_value_loss_mask = ~batch_is_synthetic
         value_loss_mb = (batch_weights * batch_value_loss_mask.float() * value_mse).sum() / max(global_value_normalizer, 1.0)
 

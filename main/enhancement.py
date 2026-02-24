@@ -517,7 +517,6 @@ def apply_tactical_enhancements(
     all_masks: List[np.ndarray],
     all_returns: List[float],
     all_weights: List[float],
-    all_value_targets: List[float],
     all_is_synthetic: List[bool],
     all_is_terminal: List[bool],
     win_boost: float,
@@ -535,7 +534,6 @@ def apply_tactical_enhancements(
         all_masks: List of masks (extended with synthetic)
         all_returns: List of returns (modified in place, extended with synthetic)
         all_weights: List of weights (extended with synthetic)
-        all_value_targets: List of value targets (extended with synthetic)
         all_is_synthetic: List of synthetic flags (extended)
         all_is_terminal: List of terminal flags (extended)
         win_boost: Boost for win-in-1 situations
@@ -570,7 +568,6 @@ def apply_tactical_enhancements(
                         all_actions.append(other_win)
                         all_masks.append(all_masks[i])
                         all_returns.append(all_returns[i])  # Use original return, not boosted
-                        all_value_targets.append(0.0)
                         all_is_synthetic.append(True)
                         synthetic_advantages.append(win_boost)
                         all_weights.append(all_weights[i])
@@ -584,7 +581,6 @@ def apply_tactical_enhancements(
                     all_actions.append(winning_move)
                     all_masks.append(all_masks[i])
                     all_returns.append(all_returns[i])  # Use original return, not boosted
-                    all_value_targets.append(0.0)
                     all_is_synthetic.append(True)
                     synthetic_advantages.append(SYNTHETIC_WIN_BOOST)
                     all_weights.append(all_weights[i])
@@ -605,7 +601,6 @@ def apply_tactical_enhancements(
                     all_actions.append(blocking_moves[0])
                     all_masks.append(all_masks[i])
                     all_returns.append(all_returns[i])  # Use original return, not boosted
-                    all_value_targets.append(0.0)
                     all_is_synthetic.append(True)
                     synthetic_advantages.append(SYNTHETIC_BLOCKING_BOOST)
                     all_weights.append(all_weights[i])
