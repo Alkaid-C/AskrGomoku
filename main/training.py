@@ -44,7 +44,7 @@ EVAL_WIN_RATE_EMA_WINDOW = 2  # Effective window for evaluation win rate EMA (ev
 # --- Entropy Bonus ---
 ENTROPY_TARGET_START = 1.0  # Entropy bonus numerator at start (nats)
 ENTROPY_TARGET_END = 0.1875  # Entropy bonus numerator at end (nats)
-ENTROPY_BONUS_COEFF = 1/128.0  # Coefficient for entropy bonus
+ENTROPY_BONUS_COEFF = 1.5/128.0  # Coefficient for entropy bonus
 ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of total training
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
