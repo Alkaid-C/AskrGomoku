@@ -139,6 +139,7 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
                         scan_event_counter: int,
                         evals_since_last_scan: int,
                         win_rate_ema: float,
+                        selfplay_win_rate_ema: float,
                         seed: Optional[int] = None) -> None:
     """Save training state to JSON for resume capability."""
     state = {
@@ -151,6 +152,7 @@ def save_training_state(output_dir: str, update: int, opponent_pool_updates: Lis
         'scan_event_counter': scan_event_counter,
         'evals_since_last_scan': evals_since_last_scan,
         'win_rate_ema': win_rate_ema,
+        'selfplay_win_rate_ema': selfplay_win_rate_ema,
         'seed': seed
     }
 
@@ -168,7 +170,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     Returns:
         Tuple of (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
                   next_eval_update, win_miss_ema, block_miss_ema, per_opponent_win_rates,
-                  scan_event_counter, evals_since_last_scan, win_rate_ema) when loading succeeds.
+                  scan_event_counter, evals_since_last_scan, win_rate_ema, selfplay_win_rate_ema) when loading succeeds.
         Returns None only when no training state file exists.
         Note: opponent_pool_updates is filtered to only include successfully loaded opponents.
 
@@ -198,6 +200,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     scan_event_counter = state.get('scan_event_counter', 0)
     evals_since_last_scan = state.get('evals_since_last_scan', 0)
     win_rate_ema = state.get('win_rate_ema', 0.5)
+    selfplay_win_rate_ema = state.get('selfplay_win_rate_ema', 0.5)
     seed = state.get('seed', None)
 
     print(f"Resuming from update {current_update}")
@@ -283,7 +286,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     print()
 
     return (model, optimizer, scheduler, opponent_pool, loaded_opponent_updates, current_update - 1, next_eval_update,
-            win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema, seed)
+            win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema, selfplay_win_rate_ema, seed)
 
 
 # ============================================================================
@@ -347,7 +350,7 @@ def main():
     if resume_result is not None:
         (current_policy, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
          next_eval_update, win_miss_ema, block_miss_ema, per_opponent_win_rates, scan_event_counter,
-         evals_since_last_scan, win_rate_ema, saved_seed) = resume_result
+         evals_since_last_scan, win_rate_ema, selfplay_win_rate_ema, saved_seed) = resume_result
         if saved_seed is not None:
             if seed is not None and seed != saved_seed:
                 print(f"Warning: SEED={seed} differs from saved seed {saved_seed}, using saved seed")
@@ -400,6 +403,7 @@ def main():
 
         win_miss_ema = 1.0
         block_miss_ema = 1.0
+        selfplay_win_rate_ema = 0.5
         next_eval_update = get_eval_interval(0)
 
         per_opponent_win_rates = {}
@@ -477,7 +481,7 @@ def main():
         train_results = train_on_batch(
             current_policy, trajectories, optimizer, DEVICE, update=update,
             win_boost=win_boost, block_boost=block_boost, opr_samples=opr_samples, ema_entropy=ema_entropy,
-            win_rate=win_rate_ema, output_dir=output_dir
+            win_rate=selfplay_win_rate_ema, output_dir=output_dir
         )
         t_train = time.time() - t0
 
@@ -501,6 +505,7 @@ def main():
         win_miss_ema = update_miss_rate_ema(this_win_miss_rate, win_miss_ema, EMA_WINDOW)
         if this_block_miss_rate is not None:
             block_miss_ema = update_miss_rate_ema(this_block_miss_rate, block_miss_ema, EMA_WINDOW)
+        selfplay_win_rate_ema = update_miss_rate_ema(stats['win_rate'], selfplay_win_rate_ema, EMA_WINDOW)
 
         t_total = time.time() - t_start
 
@@ -784,7 +789,7 @@ def main():
             save_training_state(
                 output_dir, update + 1, opponent_pool_updates, win_miss_ema, block_miss_ema,
                 per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
-                seed=seed
+                selfplay_win_rate_ema, seed=seed
             )
             if seed is not None:
                 save_rng_state(output_dir)
@@ -803,7 +808,7 @@ def main():
     save_training_state(
         output_dir, TOTAL_UPDATES, opponent_pool_updates, win_miss_ema, block_miss_ema,
         per_opponent_win_rates, scan_event_counter, evals_since_last_scan, win_rate_ema,
-        seed=seed
+        selfplay_win_rate_ema, seed=seed
     )
     if seed is not None:
         save_rng_state(output_dir)
