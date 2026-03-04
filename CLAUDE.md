@@ -6,16 +6,15 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
 - **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
-- **`minimax_post_train/`** — Post-training: takes a `main/`-trained checkpoint and refines it using negamax search + ranking losses. **Model structure stay in sync with `main/model.py`**
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 
 ## Running
 
 ```bash
-# Training (from main/, vanilla/, or minimax_post_train/)
+# Training (from main/ or vanilla/)
 python main.py <output_dir>          # starts or resumes training
 
-# Interactive play against a checkpoint (from main/, vanilla/, or minimax_post_train/)
+# Interactive play against a checkpoint (from main/ or vanilla/)
 python play_web.py                   # Flask server at http://localhost:5000
 
 # ONNX export (from deploy/)
@@ -46,7 +45,6 @@ pyright
 - **Output**: policy logits `[batch, 225]` (flat 15×15) and scalar value `[batch, 1]` (tanh-bounded, from current player's perspective).
 - **vanilla** (`vanilla/model.py`): ResNet-like — single 3×3 stem, 18 plain residual blocks, conv policy head, flatten-FC value head.
 - **main** (`main/model.py`): Multi-scale dilated stem (standard + directional convolutions), 12 shared residual blocks + 6 dual-SE blocks (policy/value streams diverge via separate norms and SE), dual-attention policy head with relative positional bias, log-mean-exp pooling value head.
-- **minimax_post_train** (`minimax_post_train/model.py`): Same trunk/stem as main; different heads (FiLM-based policy head, split-dilated value head).
 
 ## Other Notes
 
