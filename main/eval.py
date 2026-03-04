@@ -16,9 +16,19 @@ import re
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
-from gomoku import GameState, play_eval_games, select_action_batch_eval
+import torch.nn.functional as F
+from gomoku import (
+    LOGIT_MASK_VALUE,
+    RENJU_OPENING_SEQUENCES,
+    GameState,
+    play_episodes_batched,
+    play_eval_games,
+    select_action_batch,
+    select_action_batch_eval,
+)
 from model import GomokuPolicyNet
 
 # ============================================================================
@@ -50,6 +60,92 @@ FINAL_SCREEN_ROUNDS = 64       # Rounds for final screen
 MAX_MINED_OPPONENTS_PER_EVENT = 1  # Max opponents to add per scan
 MINING_WIN_RATE_THRESHOLD = 27.0/64    # Only mine opponents with win rate below this
 MINING_MODEL_BATCH = 16            # Max models to load simultaneously during mining
+
+# --- KL-Aware Mining & Eviction ---
+MINING_BASE_THRESHOLD = 0.4
+MINING_KL_CAP = 0.4
+EVICTION_KL_WEIGHT = 0.5
+FINGERPRINT_NUM_TRAJECTORIES = 16
+
+
+# ============================================================================
+# Fingerprint Infrastructure
+# ============================================================================
+
+_fp_positions: Optional[torch.Tensor] = None   # [N, 3, 15, 15]
+_fp_masks: Optional[torch.Tensor] = None        # [N, 225] bool
+_fp_cache: Dict[int, np.ndarray] = {}            # update_num → [N, 225] log-probs
+
+
+def generate_fingerprint_positions(model: nn.Module, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generate fingerprint positions via self-play with Renju openings.
+
+    Returns (positions [N,3,15,15], masks [N,225]) tensors on device.
+    """
+    opening_ids = random.sample(range(len(RENJU_OPENING_SEQUENCES)), FINGERPRINT_NUM_TRAJECTORIES)
+    pairs = [(model, model)] * FINGERPRINT_NUM_TRAJECTORIES
+    current_is_black = [True] * FINGERPRINT_NUM_TRAJECTORIES
+
+    trajs = play_episodes_batched(
+        pairs, current_is_black, 1.0, device,
+        select_action_batch, opening_ids,
+    )
+
+    obs_list = []
+    mask_list = []
+    for traj in trajs:
+        for obs, mask in zip(traj.observations, traj.legal_masks):
+            obs_list.append(obs)
+            mask_list.append(mask.flatten())
+
+    positions = torch.from_numpy(np.stack(obs_list)).float().to(device)
+    masks = torch.from_numpy(np.stack(mask_list)).bool().to(device)
+    return positions, masks
+
+
+def fingerprint_model(model: nn.Module, positions: torch.Tensor, masks: torch.Tensor) -> np.ndarray:
+    """Run model on fingerprint positions, return masked log-softmax vectors.
+
+    Returns: numpy array [N, 225] of log-probabilities.
+    """
+    all_log_probs = []
+    batch_size = 256
+    with torch.inference_mode():
+        for start in range(0, positions.shape[0], batch_size):
+            end = min(start + batch_size, positions.shape[0])
+            obs_batch = positions[start:end]
+            mask_batch = masks[start:end]
+
+            logits_grid = model.forward_policy_only(obs_batch)
+            logits = logits_grid.squeeze(1).view(-1, 225)
+            logits = logits.masked_fill(~mask_batch, LOGIT_MASK_VALUE)
+            log_probs = F.log_softmax(logits, dim=1)
+            all_log_probs.append(log_probs.cpu().numpy())
+
+    return np.concatenate(all_log_probs, axis=0)
+
+
+def compute_symmetric_kl(log_probs_a: np.ndarray, log_probs_b: np.ndarray) -> float:
+    """Compute mean symmetric KL divergence across positions (in nats)."""
+    probs_a = np.exp(log_probs_a)
+    probs_b = np.exp(log_probs_b)
+    kl_ab = np.sum(probs_a * (log_probs_a - log_probs_b), axis=1)
+    kl_ba = np.sum(probs_b * (log_probs_b - log_probs_a), axis=1)
+    sym_kl = (kl_ab + kl_ba) / 2.0
+    return float(np.mean(sym_kl))
+
+
+def compute_min_kl(target_fp: np.ndarray, all_fps: Dict[int, np.ndarray],
+                   exclude_update: Optional[int] = None) -> float:
+    """Min symmetric KL from target to any entry in all_fps (skip exclude_update)."""
+    min_kl = float('inf')
+    for update_num, fp in all_fps.items():
+        if update_num == exclude_update:
+            continue
+        kl = compute_symmetric_kl(target_fp, fp)
+        if kl < min_kl:
+            min_kl = kl
+    return min_kl
 
 
 # ============================================================================
@@ -267,17 +363,86 @@ def evict_easiest_opponent(opponent_pool: deque, opponent_pool_updates: List[int
     return evicted_update
 
 
+def _evict_kl_aware(opponent_pool: deque, opponent_pool_updates: List[int],
+                    per_opponent_win_rates: Dict[str, float],
+                    new_update: int) -> int:
+    """Evict the most redundant+easy opponent using KL-aware scoring.
+
+    The new entrant (new_update) participates in KL distance computation
+    but is NOT an eviction candidate.
+    """
+    # Compute min_kl for each pool member (including new entrant in _fp_cache)
+    member_min_kls = []
+    for update_num in opponent_pool_updates:
+        fp = _fp_cache.get(update_num)
+        if fp is None:
+            member_min_kls.append(0.0)
+            continue
+        min_kl = compute_min_kl(fp, _fp_cache, exclude_update=update_num)
+        member_min_kls.append(min_kl)
+
+    max_min_kl = max(member_min_kls) if member_min_kls else 0.0
+
+    # Get win rate range
+    win_rates = [per_opponent_win_rates.get(str(u), DEFAULT_WIN_RATE) for u in opponent_pool_updates]
+    win_rate_range = max(win_rates) - min(win_rates) if win_rates else 0.0
+
+    # Compute eviction scores — higher = easier + more redundant → evict
+    best_score = -float('inf')
+    best_idx = 0
+
+    for idx, update_num in enumerate(opponent_pool_updates):
+        if update_num == new_update:
+            continue
+        wr = per_opponent_win_rates.get(str(update_num), DEFAULT_WIN_RATE)
+        if max_min_kl > 1e-8:
+            score = wr - (win_rate_range * EVICTION_KL_WEIGHT) * (member_min_kls[idx] / max_min_kl)
+        else:
+            score = wr
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+
+    evicted_update = opponent_pool_updates[best_idx]
+    pool_list = list(opponent_pool)
+    del pool_list[best_idx]
+    del opponent_pool_updates[best_idx]
+    opponent_pool.clear()
+    opponent_pool.extend(pool_list)
+
+    # Clean cache
+    _fp_cache.pop(evicted_update, None)
+
+    return evicted_update
+
+
 def add_opponent_to_pool(opponent_pool: deque, opponent_pool_updates: List[int],
                          new_model: nn.Module, new_update: int,
                          per_opponent_win_rates: Dict[str, float],
                          device: torch.device) -> Optional[int]:
-    """Add a new opponent to the pool, evicting the easiest if pool is full."""
+    """Add a new opponent to the pool, evicting if pool is full.
+
+    Uses KL-aware eviction when fingerprint state is available,
+    otherwise falls back to pure win-rate eviction.
+    """
     snapshot = copy_model(new_model, device)
     evicted_update = None
 
     if len(opponent_pool) >= OPPONENT_POOL_SIZE:
-        evicted_update = evict_easiest_opponent(opponent_pool, opponent_pool_updates,
-                                                 per_opponent_win_rates)
+        if _fp_positions is not None:
+            # Fingerprint new model before eviction decision
+            fp = fingerprint_model(snapshot, _fp_positions, _fp_masks)
+            _fp_cache[new_update] = fp
+            evicted_update = _evict_kl_aware(opponent_pool, opponent_pool_updates,
+                                             per_opponent_win_rates, new_update)
+        else:
+            evicted_update = evict_easiest_opponent(opponent_pool, opponent_pool_updates,
+                                                     per_opponent_win_rates)
+    else:
+        # Pool not full — fingerprint and cache if positions available
+        if _fp_positions is not None:
+            fp = fingerprint_model(snapshot, _fp_positions, _fp_masks)
+            _fp_cache[new_update] = fp
 
     opponent_pool.append(snapshot)
     opponent_pool_updates.append(new_update)
@@ -345,9 +510,14 @@ def get_bucket_candidates(scan_event_num: int, all_checkpoints: List[int]) -> Li
 
 
 def scan_historical_exploiters(output_dir: str, current_model: nn.Module, opponent_pool_updates: List[int],
-                                scan_event_num: int, device: torch.device) -> Tuple[List[Tuple[int, float]], int, int]:
+                                scan_event_num: int, device: torch.device,
+                                opponent_pool: Optional[deque] = None,
+                                win_rate_ema: Optional[float] = None) -> Tuple[List[Tuple[int, float]], int, int]:
     """
     Scan historical checkpoints to find exploiters (hard opponents for current policy).
+
+    When opponent_pool is provided, refreshes fingerprint positions and caches
+    all pool member fingerprints for KL-aware mining and eviction.
 
     Returns:
         Tuple of (mined_exploiters, total_candidates, candidates_after_filter) where:
@@ -355,6 +525,19 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
         - total_candidates: Total number of candidates in this bucket
         - candidates_after_filter: Number of candidates after filtering pool duplicates
     """
+    global _fp_positions, _fp_masks
+
+    # Refresh fingerprint state if pool is available
+    if opponent_pool is not None:
+        _fp_positions, _fp_masks = generate_fingerprint_positions(current_model, device)
+        print(f"  Fingerprint positions: {_fp_positions.shape[0]}")
+
+        # Fingerprint all current pool members
+        _fp_cache.clear()
+        for pool_model, update_num in zip(opponent_pool, opponent_pool_updates):
+            pool_model.eval()
+            _fp_cache[update_num] = fingerprint_model(pool_model, _fp_positions, _fp_masks)
+
     print(f"  Scanning historical checkpoints (scan event {scan_event_num}, bucket {scan_event_num % NUM_SCAN_BUCKETS})...")
 
     all_checkpoints = discover_historical_checkpoints(output_dir, min_update=0)
@@ -424,19 +607,39 @@ def scan_historical_exploiters(output_dir: str, current_model: nn.Module, oppone
         for update_num, win_rate in zip(final_valid_updates, win_rates):
             final_results.append((update_num, win_rate))
 
+    # Fingerprint candidates while models are still loaded
+    candidate_fps: Dict[int, np.ndarray] = {}
+    if _fp_positions is not None:
+        for opponent, update_num in zip(final_opponents, final_valid_updates):
+            candidate_fps[update_num] = fingerprint_model(opponent, _fp_positions, _fp_masks)
+
     del final_opponents
     torch.cuda.empty_cache()
 
     final_results.sort(key=lambda x: x[1])
-    # Only mine opponents that are actually hard (win rate < threshold)
-    hard_opponents = [(u, wr) for u, wr in final_results if wr < MINING_WIN_RATE_THRESHOLD]
-    mined = hard_opponents[:MAX_MINED_OPPONENTS_PER_EVENT]
+
+    # Apply KL-aware threshold per candidate when fingerprint state is available
+    use_kl_threshold = bool(candidate_fps) and _fp_cache and win_rate_ema is not None
+    mined = []
+    for u, wr in final_results:
+        if len(mined) >= MAX_MINED_OPPONENTS_PER_EVENT:
+            break
+        if use_kl_threshold and u in candidate_fps:
+            assert win_rate_ema is not None
+            min_kl = compute_min_kl(candidate_fps[u], _fp_cache)
+            threshold = MINING_BASE_THRESHOLD + (win_rate_ema - MINING_BASE_THRESHOLD) * min(MINING_KL_CAP, min_kl) / MINING_KL_CAP
+            accepted = wr < threshold
+            print(f"    candidate {u}: wr={wr:.2%}, min_KL={min_kl:.4f}, threshold={threshold:.2%} → {'MINE' if accepted else 'skip'}")
+            if accepted:
+                mined.append((u, wr))
+        else:
+            if wr < MINING_WIN_RATE_THRESHOLD:
+                mined.append((u, wr))
 
     if mined:
         print(f"  Mined exploiters: {[(u, f'{wr:.2%}') for u, wr in mined]}")
     elif final_results:
-        # Log the best (lowest) win rate for context
         best_wr = final_results[0][1]
-        print(f"  No exploiters mined (best win rate {best_wr:.2%} >= threshold {MINING_WIN_RATE_THRESHOLD:.0%})")
+        print(f"  No exploiters mined (best win rate {best_wr:.2%})")
 
     return mined, total_candidates, candidates_after_filter

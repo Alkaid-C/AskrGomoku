@@ -736,7 +736,8 @@ def main():
                 scan_start_time = time.time()
 
                 mined_exploiters, total_candidates, candidates_after_filter = scan_historical_exploiters(
-                    output_dir, current_policy, opponent_pool_updates, scan_event_counter, DEVICE
+                    output_dir, current_policy, opponent_pool_updates, scan_event_counter, DEVICE,
+                    opponent_pool=opponent_pool, win_rate_ema=win_rate_ema
                 )
 
                 bucket_id = scan_event_counter % NUM_SCAN_BUCKETS
