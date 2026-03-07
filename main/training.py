@@ -54,7 +54,7 @@ VALUE_LOSS_COEFF_END = 3.0/16  # Value loss coefficient at alpha=1 (after ramp)
 POLICY_GAE_LAMBDA = 15.0/16  # GAE lambda for policy advantages
 VALUE_GAE_LAMBDA = 13.0/16  # GAE lambda for value targets (λ-return)
 BASELINE_RAMP_END = 1024  # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
-NEGATIVE_ADVANTAGE_SLOPE = 1.0/8  # Leaky ReLU slope for negative advantages (0=max(0,x), 1=identity)
+NEGATIVE_ADVANTAGE_SLOPE = 1.0/4  # Leaky ReLU slope for negative advantages (0=max(0,x), 1=identity)
 
 # --- Logging ---
 PRINT_INTERVAL = 1  # Print stats every N updates

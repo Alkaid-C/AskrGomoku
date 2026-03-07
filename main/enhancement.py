@@ -38,16 +38,15 @@ IMITATION_MIN_WEIGHT = 0.0      # Minimum weight for imitation learning (at 100%
 IMITATION_START_UPDATE = 128    # Update at which to enable imitation learning
 
 # --- Off-Policy Rollout ---
-OPR_START_UPDATE = 128          # Update at which to enable off-policy rollout
+OPR_START_UPDATE = 1024         # Update at which to enable off-policy rollout
 OPR_TRIGGER_PROB = 0.25         # Probability of triggering off-policy rollout on a lost game
 OPR_ADVANTAGE = 1.25            # Strength multiplier for off-policy rollout samples
 OPR_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
 OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = entropy_schedule * multiplier)
 OPR_RADIUS = 1                  # Chebyshev distance for local candidate moves
 OPR_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
-OPR_NUM_ROLLOUTS = 8            # Rollouts per alternative action
-OPR_WIN_MARGIN = 0.375          # Minimum margin over original action's winrate
-OPR_MAX_SAMPLES_PER_UPDATE = 999  # Max off-policy rollout samples per training update
+OPR_NUM_ROLLOUTS = 4            # Rollouts per alternative action
+OPR_WIN_MARGIN = 0.5            # Minimum margin over original action's winrate
 OPR_ROLLOUT_TEMP = 1.0          # Temperature for off-policy rollouts
 
 # --- Sample Weighting ---
@@ -416,10 +415,6 @@ def generate_offpolicy_rollout_samples(trajectories: List[Trajectory],
             traj_idx, t_star, obs, mask, player, original_action, alt_actions,
             black_model, white_model, selected_entropy
         ))
-
-        # Stop collecting if we have enough candidates
-        if len(candidate_info) >= OPR_MAX_SAMPLES_PER_UPDATE:
-            break
 
     if not candidate_info:
         current_policy.train()
