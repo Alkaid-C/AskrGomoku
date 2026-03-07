@@ -49,8 +49,8 @@ ENTROPY_DECAY_MIDPOINT_PERCENTAGE = 0.625  # Sigmoid midpoint as fraction of tot
 ENTROPY_DECAY_STEEPNESS = 0.625  # Sigmoid width as fraction of total training
 
 # --- Value Head & Advantage Estimation ---
-VALUE_LOSS_COEFF_START = 1.0/2  # Value loss coefficient at alpha=0 (start of training)
-VALUE_LOSS_COEFF_END = 1.0/4  # Value loss coefficient at alpha=1 (after ramp)
+VALUE_LOSS_COEFF_START = 3.0/8  # Value loss coefficient at alpha=0 (start of training)
+VALUE_LOSS_COEFF_END = 3.0/16  # Value loss coefficient at alpha=1 (after ramp)
 POLICY_GAE_LAMBDA = 15.0/16  # GAE lambda for policy advantages
 VALUE_GAE_LAMBDA = 13.0/16  # GAE lambda for value targets (λ-return)
 BASELINE_RAMP_END = 1024  # Cosine ramp from raw returns to GAE over [0, BASELINE_RAMP_END]
