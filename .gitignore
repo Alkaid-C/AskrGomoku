@@ -5,7 +5,7 @@
 # metadata and project setup file
 !.gitignore
 !pyproject.toml
-!*CLAUDE.md
+!CLAUDE.md
 
 # code
 !*.py
