@@ -39,10 +39,10 @@ IMITATION_START_UPDATE = 128    # Update at which to enable imitation learning
 
 # --- Off-Policy Rollout ---
 OPR_START_UPDATE = 1024         # Update at which to enable off-policy rollout
-OPR_TRIGGER_PROB = 0.25         # Probability of triggering off-policy rollout on a lost game
-OPR_ADVANTAGE = 1.25            # Strength multiplier for off-policy rollout samples
+OPR_TRIGGER_PROB = 0.125         # Probability of triggering off-policy rollout on a lost game
+OPR_ADVANTAGE = 1.0             # Strength multiplier for off-policy rollout samples
 OPR_MIN_STEPS_TO_END = 6        # Minimum steps from terminal to consider
-OPR_ENTROPY_TH_MULTIPLIER = 0.5 # Entropy threshold multiplier (actual threshold = entropy_schedule * multiplier)
+OPR_ENTROPY_TH_MULTIPLIER = 0.25 # Entropy threshold multiplier (actual threshold = entropy_schedule * multiplier)
 OPR_RADIUS = 1                  # Chebyshev distance for local candidate moves
 OPR_NUM_ACTIONS = 8             # Number of alternative actions to evaluate
 OPR_NUM_ROLLOUTS = 4            # Rollouts per alternative action
