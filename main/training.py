@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from enhancement import EPISODE_WEIGHT_ALPHA, IMITATION_MAX_WEIGHT, IMITATION_MIN_WEIGHT, IMITATION_START_UPDATE, TacticalStats, apply_tactical_enhancements, augment_batch_8fold
-from gomoku import LOG_PROB_MIN, LOGIT_MASK_VALUE, TEMPERATURE_TRAIN, Trajectory, compute_returns, mask_batch_to_tensor, obs_batch_to_tensor
+from gomoku import LOG_PROB_MIN, LOGIT_MASK_VALUE, TEMPERATURE_TRAIN, Player, Trajectory, compute_returns, mask_batch_to_tensor, obs_batch_to_tensor
 from torch.distributions import Categorical
 
 # ============================================================================
@@ -363,7 +363,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
                 sample_to_traj.append((traj_idx, step_idx))
                 all_is_terminal.append(step_idx + 1 >= len(traj.observations))
 
-            elif imitation_enabled and z_t > 0:
+            elif imitation_enabled and z_t > 0 and traj.players[step_idx] == Player.WHITE:
                 all_obs.append(obs)
                 all_actions.append(action)
                 all_masks.append(legal_mask)
@@ -428,7 +428,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
         for step_idx, (obs, action, legal_mask, z_t, is_current) in enumerate(zip(
             traj.observations, traj.actions, traj.legal_masks, returns, traj.is_current_policy
         )):
-            if not is_current and (not imitation_enabled or z_t <= 0):
+            if not is_current and (not imitation_enabled or z_t <= 0 or traj.players[step_idx] != Player.WHITE):
                 all_obs.append(obs)
                 all_actions.append(action)
                 all_masks.append(legal_mask)
