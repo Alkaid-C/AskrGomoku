@@ -70,7 +70,7 @@ WEIGHT_DECAY = 1.0 / 2 ** 24
 
 TEMP_EMA_WINDOW = 64
 TEMP_CONVERGENCE_EXPONENT = 0.99
-INITIAL_TEMPERATURE = 1.72
+INITIAL_TEMPERATURE = 1.4
 
 EVAL_INTERVAL = 32
 PRINT_INTERVAL = 1
@@ -162,7 +162,7 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     # Load opponent pool — try output_dir first, fall back to saved external dir
     opponent_pool_dir = state.get('opponent_pool_dir')
     search_dirs = [output_dir]
-    if opponent_pool_dir and opponent_pool_dir != output_dir:
+    if opponent_pool_dir and os.path.abspath(opponent_pool_dir) != os.path.abspath(output_dir):
         search_dirs.append(opponent_pool_dir)
 
     opponent_pool: deque[torch.nn.Module] = deque()
