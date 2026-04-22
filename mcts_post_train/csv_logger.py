@@ -24,6 +24,8 @@ class MCTSCSVLogger:
                     'temperature', 'sharpen_exponent',
                     'lr', 'avg_game_length',
                     'black_win_rate', 'draw_rate',
+                    'black_block_opps', 'black_block_mcts_rate', 'black_block_raw_rate',
+                    'white_block_opps', 'white_block_mcts_rate', 'white_block_raw_rate',
                     'time_selfplay', 'time_train',
                 ])
 
@@ -37,5 +39,7 @@ class MCTSCSVLogger:
                 metrics['temperature'], metrics['sharpen_exponent'],
                 metrics['lr'], metrics['avg_game_length'],
                 metrics['black_win_rate'], metrics['draw_rate'],
+                metrics['black_block_opps'], metrics['black_block_mcts_rate'], metrics['black_block_raw_rate'],
+                metrics['white_block_opps'], metrics['white_block_mcts_rate'], metrics['white_block_raw_rate'],
                 metrics['time_selfplay'], metrics['time_train'],
             ])

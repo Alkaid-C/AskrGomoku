@@ -6,11 +6,12 @@ Pure self-play MCTS distillation: the current model plays both sides, every posi
 
 - `main.py` — Entry point. Training loop, temperature calibration, state save/load, CLI.
 - `mcts.py` — PUCT tree search with batched neural network leaf evaluation.
-- `self_play.py` — MCTS self-play (current model plays both sides); every ply is recorded as training data.
+- `self_play.py` — MCTS self-play (current model plays both sides); every ply is recorded as training data. Also exposes `compute_block_rates` for the block-win-in-1 hit-rate diagnostic.
 - `training.py` — Supervised distillation loss (CE + MSE), 8-fold distribution augmentation.
 - `csv_logger.py` — CSV logging for training metrics.
 - `gomoku.py` → symlink to `main/gomoku.py`
 - `model.py` → symlink to `main/model.py`
+- `enhancement.py` → symlink to `main/enhancement.py` (only `find_blocking_moves` is used, for the block-rate diagnostic)
 
 ## MCTS Search (`mcts.py`)
 

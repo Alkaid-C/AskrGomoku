@@ -31,7 +31,7 @@ from gomoku import (
     GameState,
 )
 from model import GomokuPolicyNet
-from self_play import play_mcts_games
+from self_play import compute_block_rates, play_mcts_games
 from training import train_on_mcts_batch
 
 # ============================================================================
@@ -46,15 +46,15 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 # MCTS Post-Training Constants
 # ============================================================================
 
-NUM_SIMULATIONS = 400
+NUM_SIMULATIONS = 512
 C_PUCT = 1.25
 DIRICHLET_ALPHA = 0.15
 DIRICHLET_EPSILON = 0.25
 
-TOTAL_UPDATES = 3000
+TOTAL_UPDATES = 8192
 EPISODES_PER_UPDATE = 96
 LEARNING_RATE = 0.5 / 8192
-MIN_LR = LEARNING_RATE / 8
+MIN_LR = LEARNING_RATE / 2
 WEIGHT_DECAY = 1.0 / 2 ** 24
 
 TEMP_EMA_WINDOW = 64
@@ -183,11 +183,9 @@ def main() -> None:
         print(f"Seed: {SEED}")
 
         print(f"Loading checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=DEVICE, weights_only=False)
-        if 'model_state_dict' not in checkpoint:
-            raise RuntimeError(f"Checkpoint missing 'model_state_dict': {args.checkpoint}")
+        state_dict = torch.load(args.checkpoint, map_location=DEVICE, weights_only=False)
         model = GomokuPolicyNet().to(DEVICE)
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(state_dict)
         model.train()
 
         optimizer = torch.optim.AdamW(
@@ -228,6 +226,7 @@ def main() -> None:
             dirichlet_alpha=DIRICHLET_ALPHA,
             dirichlet_epsilon=DIRICHLET_EPSILON,
         )
+        block_stats = compute_block_rates(records, model, DEVICE)
         model.train()
         t_selfplay = time.time() - t0
 
@@ -276,6 +275,18 @@ def main() -> None:
             elapsed = time.time() - training_start_time
             eta = elapsed / (update - start_update + 1) * (TOTAL_UPDATES - update - 1) if update > start_update else 0
 
+            def _fmt_rate(r: float) -> str:
+                return "--" if r != r else f"{r:.0%}"  # r != r catches NaN
+
+            blk_line = (
+                f"Blk B:M{_fmt_rate(block_stats['black_block_mcts_rate'])}"
+                f"/R{_fmt_rate(block_stats['black_block_raw_rate'])}"
+                f"({block_stats['black_block_opps']}) "
+                f"W:M{_fmt_rate(block_stats['white_block_mcts_rate'])}"
+                f"/R{_fmt_rate(block_stats['white_block_raw_rate'])}"
+                f"({block_stats['white_block_opps']})"
+            )
+
             print(
                 f"Update {update+1:4d}/{TOTAL_UPDATES} | "
                 f"BlackWR: {black_win_rate:.0%} D: {draw_rate:.0%} | "
@@ -283,6 +294,7 @@ def main() -> None:
                 f"Ent: {model_entropy:.3f}/{mcts_entropy:.3f} | "
                 f"T: {temperature:.4f} | "
                 f"PLoss: {train_results['policy_loss']:.4f} VLoss: {train_results['value_loss']:.4f} | "
+                f"{blk_line} | "
                 f"{t_total:.1f}s (sp:{t_selfplay:.1f} tr:{t_train:.1f}) | "
                 f"{fmt_time(elapsed)}/{fmt_time(eta)}"
             )
@@ -300,6 +312,7 @@ def main() -> None:
             'draw_rate': draw_rate,
             'time_selfplay': t_selfplay,
             'time_train': t_train,
+            **block_stats,
         })
 
         if (update + 1) % CHECKPOINT_INTERVAL == 0:
