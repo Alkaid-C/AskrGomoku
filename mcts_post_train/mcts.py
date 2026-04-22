@@ -114,8 +114,8 @@ def mcts_search_batched(
     c_puct: float,
     prior_temperature: float,
     device: torch.device,
-    dirichlet_alpha: float = 0.15,
-    dirichlet_epsilon: float = 0.25,
+    dirichlet_alpha: float,
+    dirichlet_epsilon: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Run batched MCTS search on multiple board positions.

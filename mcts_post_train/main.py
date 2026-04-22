@@ -50,7 +50,6 @@ NUM_SIMULATIONS = 400
 C_PUCT = 1.25
 DIRICHLET_ALPHA = 0.15
 DIRICHLET_EPSILON = 0.25
-ACTION_TEMPERATURE = 1.0
 
 TOTAL_UPDATES = 3000
 EPISODES_PER_UPDATE = 96
@@ -80,6 +79,14 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def fmt_time(s: float) -> str:
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    if h > 0:
+        return f"{h}h{m:02d}m"
+    return f"{m}m{int(s%60):02d}s"
 
 
 def save_training_state(output_dir: str, update: int, temperature: float) -> None:
@@ -220,7 +227,6 @@ def main() -> None:
             opening_ids=opening_ids,
             dirichlet_alpha=DIRICHLET_ALPHA,
             dirichlet_epsilon=DIRICHLET_EPSILON,
-            action_temperature=ACTION_TEMPERATURE,
         )
         model.train()
         t_selfplay = time.time() - t0
@@ -231,7 +237,8 @@ def main() -> None:
         black_wins = 0
         draws = 0
         for record in records:
-            game_lengths.append(len(record.actions))
+            game_lengths.append(len(record.observations))
+            assert record.outcome is not None, "Game did not terminate"
             if record.outcome == GameState.DRAW:
                 draws += 1
             elif record.outcome == GameState.BLACK_WIN:
@@ -251,10 +258,11 @@ def main() -> None:
         )
         t_train = time.time() - t0
 
-        # Update temperature via EMA of entropy ratio
+        # Update temperature via EMA of entropy ratio. Floor guards against
+        # a nearly-deterministic model blowing up `ratio = mcts / model`.
         model_entropy = train_results['model_entropy']
         mcts_entropy = train_results['mcts_entropy']
-        if model_entropy > 0:
+        if model_entropy > 1e-3:
             ratio = mcts_entropy / model_entropy
             ema_alpha = 1.0 / TEMP_EMA_WINDOW
             temperature = temperature + ema_alpha * (ratio - temperature)
@@ -268,13 +276,6 @@ def main() -> None:
             elapsed = time.time() - training_start_time
             eta = elapsed / (update - start_update + 1) * (TOTAL_UPDATES - update - 1) if update > start_update else 0
 
-            def fmt_time(s: float) -> str:
-                h = int(s // 3600)
-                m = int((s % 3600) // 60)
-                if h > 0:
-                    return f"{h}h{m:02d}m"
-                return f"{m}m{int(s%60):02d}s"
-
             print(
                 f"Update {update+1:4d}/{TOTAL_UPDATES} | "
                 f"BlackWR: {black_win_rate:.0%} D: {draw_rate:.0%} | "
@@ -286,20 +287,20 @@ def main() -> None:
                 f"{fmt_time(elapsed)}/{fmt_time(eta)}"
             )
 
-            csv_logger.log_training_update(update + 1, {
-                'policy_loss': train_results['policy_loss'],
-                'value_loss': train_results['value_loss'],
-                'model_entropy': model_entropy,
-                'mcts_entropy': mcts_entropy,
-                'temperature': temperature,
-                'sharpen_exponent': sharpen_exponent,
-                'lr': current_lr,
-                'avg_game_length': avg_game_length,
-                'black_win_rate': black_win_rate,
-                'draw_rate': draw_rate,
-                'time_selfplay': t_selfplay,
-                'time_train': t_train,
-            })
+        csv_logger.log_training_update(update + 1, {
+            'policy_loss': train_results['policy_loss'],
+            'value_loss': train_results['value_loss'],
+            'model_entropy': model_entropy,
+            'mcts_entropy': mcts_entropy,
+            'temperature': temperature,
+            'sharpen_exponent': sharpen_exponent,
+            'lr': current_lr,
+            'avg_game_length': avg_game_length,
+            'black_win_rate': black_win_rate,
+            'draw_rate': draw_rate,
+            'time_selfplay': t_selfplay,
+            'time_train': t_train,
+        })
 
         if (update + 1) % CHECKPOINT_INTERVAL == 0:
             ckpt_id = update + 1

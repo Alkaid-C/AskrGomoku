@@ -11,8 +11,6 @@ class MCTSCSVLogger:
 
     def __init__(self, output_dir: str):
         self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
-
         self.training_path = os.path.join(output_dir, "training_updates.csv")
         self._init_training_csv()
 

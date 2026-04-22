@@ -6,6 +6,7 @@ a training sample.
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 import torch
@@ -29,8 +30,7 @@ class MCTSGameRecord:
     observations: list[np.ndarray] = field(default_factory=list)        # [3, 15, 15] per move, side-to-move perspective
     visit_distributions: list[np.ndarray] = field(default_factory=list) # [225] normalized
     root_values: list[float] = field(default_factory=list)              # MCTS root Q, side-to-move perspective
-    actions: list[int] = field(default_factory=list)
-    outcome: GameState = GameState.CONTINUE
+    outcome: Optional[GameState] = None
 
 
 # ============================================================================
@@ -46,9 +46,8 @@ def play_mcts_games(
     prior_temperature: float,
     device: torch.device,
     opening_ids: list[int],
-    dirichlet_alpha: float = 0.15,
-    dirichlet_epsilon: float = 0.25,
-    action_temperature: float = 1.0,
+    dirichlet_alpha: float,
+    dirichlet_epsilon: float,
 ) -> list[MCTSGameRecord]:
     """
     Play pure-self-play MCTS games with batched search.
@@ -67,7 +66,6 @@ def play_mcts_games(
         opening_ids: Per-game opening ID (-1 for empty board)
         dirichlet_alpha: Dirichlet noise alpha (root only)
         dirichlet_epsilon: Dirichlet noise weight (root only)
-        action_temperature: Temperature for sampling actions from visit counts
 
     Returns:
         List of MCTSGameRecord with training data from every ply.
@@ -97,13 +95,7 @@ def play_mcts_games(
             records[i].visit_distributions.append(visit_dists[j])
             records[i].root_values.append(float(root_values[j]))
 
-            dist = visit_dists[j]
-            if action_temperature != 1.0:
-                dist = dist ** (1.0 / action_temperature)
-                dist = dist / dist.sum()
-            action = int(np.random.choice(225, p=dist))
-
-            records[i].actions.append(action)
+            action = int(np.random.choice(225, p=visit_dists[j]))
 
             row, col = idx_to_pos(action)
             outcome = boards[i].Move((row, col))

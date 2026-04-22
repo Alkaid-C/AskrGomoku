@@ -150,8 +150,6 @@ def train_on_mcts_batch(
     Returns:
         Dict with training metrics
     """
-    model.train()
-
     # Collect all training samples from game records
     all_obs = []
     all_dists = []
@@ -167,15 +165,6 @@ def train_on_mcts_batch(
             occupied = obs[0] | obs[1]
             legal_mask = (1 - occupied).astype(np.uint8)
             all_masks.append(legal_mask)
-
-    if not all_obs:
-        return {
-            'policy_loss': 0.0, 'value_loss': 0.0,
-            'model_entropy': 0.0, 'mcts_entropy': 0.0,
-            'total_samples': 0,
-        }
-
-    n_samples = len(all_obs)
 
     # Convert to tensors
     obs_tensor = torch.from_numpy(np.stack(all_obs)).float().to(device)
@@ -256,5 +245,4 @@ def train_on_mcts_batch(
         'value_loss': total_value_loss / n_micro_batches,
         'model_entropy': total_model_entropy / n_micro_batches,
         'mcts_entropy': total_mcts_entropy / n_micro_batches,
-        'total_samples': n_samples,
     }

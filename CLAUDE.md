@@ -6,7 +6,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
 - **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
-- **`mcts_post_train/`** — MCTS-guided distillation pipeline. Refines RL-trained weights by training on MCTS search results. Symlinks `model.py`, `gomoku.py`, `enhancement.py` from `main/`; has its own `mcts.py`, `self_play.py`, `training.py`, `main.py`, `csv_logger.py`.
+- **`mcts_post_train/`** — MCTS-guided distillation pipeline. Refines RL-trained weights by training on MCTS search results. Symlinks `model.py`, `gomoku.py` from `main/`; has its own `mcts.py`, `self_play.py`, `training.py`, `main.py`, `csv_logger.py`.
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 
 ## Running

@@ -11,7 +11,6 @@ Pure self-play MCTS distillation: the current model plays both sides, every posi
 - `csv_logger.py` — CSV logging for training metrics.
 - `gomoku.py` → symlink to `main/gomoku.py`
 - `model.py` → symlink to `main/model.py`
-- `enhancement.py` → symlink to `main/enhancement.py` (kept for reference; not currently imported)
 
 ## MCTS Search (`mcts.py`)
 
