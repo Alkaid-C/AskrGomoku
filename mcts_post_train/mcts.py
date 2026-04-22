@@ -205,11 +205,7 @@ def mcts_search_batched(
                 backup(leaf, -leaf.terminal_value)  # terminal_value is from parent's perspective
                 continue
 
-            if leaf.children:
-                # Already expanded (can happen if all children are terminal)
-                # Just backup using existing Q
-                backup(leaf, -leaf.q_value)
-                continue
+            assert not leaf.children, "PUCT would have descended through an expanded non-terminal node"
 
             # Need to expand: clone board and replay path
             board_copy = copy_board(boards[i])
