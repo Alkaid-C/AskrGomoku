@@ -6,7 +6,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
 - **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
-- **`mcts_post_train/`** — MCTS-guided distillation pipeline. Refines RL-trained weights by training on MCTS search results. Symlinks `model.py`, `gomoku.py`, `eval.py`, `enhancement.py` from `main/`; has its own `mcts.py`, `self_play.py`, `training.py`, `main.py`, `csv_logger.py`.
+- **`mcts_post_train/`** — MCTS-guided distillation pipeline. Refines RL-trained weights by training on MCTS search results. Symlinks `model.py`, `gomoku.py`, `enhancement.py` from `main/`; has its own `mcts.py`, `self_play.py`, `training.py`, `main.py`, `csv_logger.py`.
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 
 ## Running
@@ -19,7 +19,7 @@ python3 main.py <output_dir>          # starts or resumes training
 python3 play_web.py                   # Flask server at http://localhost:5000
 
 # MCTS post-training (from mcts_post_train/)
-python3 main.py <output_dir> --checkpoint <path> --opponent-pool-dir <rl_output_dir>
+python3 main.py <output_dir> --checkpoint <path>
 
 # ONNX export (from deploy/)
 python3 export_onnx.py --input checkpoint.pt --output model.onnx
@@ -45,10 +45,10 @@ pyright
 
 ### MCTS Post-Training (`mcts_post_train/`)
 
-- **MCTS self-play**: Both players use PUCT tree search with the network as prior. Training data collected only from the current model's moves. (`mcts.py`, `self_play.py`)
+- **MCTS self-play**: Pure self-play — the current model plays both sides with PUCT tree search. Every ply is recorded as a training sample. (`mcts.py`, `self_play.py`)
 - **Entropy-preserving temperature**: MCTS visit distributions are structurally flatter than raw policy. Prior is softened by T before PUCT; visit targets are sharpened by T^0.99 after. T is calibrated via EMA of `H_mcts / H_model`, converging toward 1.0 over training. (`main.py`, `training.py`)
 - **Supervised distillation**: Cross-entropy vs sharpened visit distribution + MSE vs MCTS root Q-value. No entropy bonus, no GAE, no tactical boost, no imitation, no OPR. (`training.py`)
-- **Checkpoint ID offset**: Post-train checkpoint IDs start at `UPDATE_ID_OFFSET` (65537) to avoid collision with RL checkpoint IDs (0–65536) in the shared opponent pool. (`main.py`)
+- **Checkpointing**: Saved every `CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, where `N` is the update count. (`main.py`)
 
 ### Model
 

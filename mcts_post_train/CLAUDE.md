@@ -1,16 +1,17 @@
 # mcts_post_train/ — MCTS-Guided Distillation Pipeline
 
+Pure self-play MCTS distillation: the current model plays both sides, every position becomes a training sample.
+
 ## File Responsibilities
 
 - `main.py` — Entry point. Training loop, temperature calibration, state save/load, CLI.
 - `mcts.py` — PUCT tree search with batched neural network leaf evaluation.
-- `self_play.py` — MCTS game generation; both players search, training data from current model only.
+- `self_play.py` — MCTS self-play (current model plays both sides); every ply is recorded as training data.
 - `training.py` — Supervised distillation loss (CE + MSE), 8-fold distribution augmentation.
-- `csv_logger.py` — CSV logging for training and eval metrics.
+- `csv_logger.py` — CSV logging for training metrics.
 - `gomoku.py` → symlink to `main/gomoku.py`
 - `model.py` → symlink to `main/model.py`
-- `eval.py` → symlink to `main/eval.py`
-- `enhancement.py` → symlink to `main/enhancement.py` (only `augment_batch_8fold` coordinate transforms are referenced)
+- `enhancement.py` → symlink to `main/enhancement.py` (kept for reference; not currently imported)
 
 ## MCTS Search (`mcts.py`)
 
@@ -68,19 +69,15 @@ Gradient accumulation across micro-batches of `TRAIN_BATCH_SIZE`, then `clip_gra
 ## Training Loop (`main.py`)
 
 Each update:
-1. Sample `EPISODES_PER_UPDATE` opponents from pool (weighted by difficulty, same as RL)
-2. `play_mcts_games`: both players run `NUM_SIMULATIONS`-sim MCTS; record (obs, visit_dist, root_Q) for current model's moves
+1. Sample opening IDs (`SEED_PROBABILITY` fraction get a Renju opening; rest start empty)
+2. `play_mcts_games`: the current model plays both sides in `EPISODES_PER_UPDATE` games. All active games batch into a single `mcts_search_batched` call per ply; every recorded position (obs, visit_dist, root_Q) becomes a training sample
 3. Compute sharpen exponent = T^`TEMP_CONVERGENCE_EXPONENT`
 4. `train_on_mcts_batch`: augment 8-fold, sharpen targets, CE + MSE loss
 5. Update T via EMA of entropy ratio
-6. Every `EVAL_INTERVAL` updates: save checkpoint, evaluate raw policy (no MCTS) vs pool, conditionally add to pool
-
-### Checkpoint ID offset
-
-Post-train checkpoint IDs use `UPDATE_ID_OFFSET` (65537) to avoid collision with RL checkpoint IDs (0–65536). The opponent pool may contain both RL opponents (loaded from `--opponent-pool-dir`) and post-train opponents (saved locally). On resume, pool loading tries `output_dir` first, then falls back to the saved `opponent_pool_dir` for RL-era IDs.
+6. Every `CHECKPOINT_INTERVAL` updates: save checkpoint and persist training state
 
 ### Schedules
 
 - **LR**: cosine annealing from `LEARNING_RATE` to `MIN_LR` over `TOTAL_UPDATES`.
 - **Temperature**: self-calibrating via EMA (no schedule).
-- **Eval interval**: fixed at `EVAL_INTERVAL` (simpler than RL's adaptive interval).
+- **Checkpoint interval**: fixed at `CHECKPOINT_INTERVAL`.
