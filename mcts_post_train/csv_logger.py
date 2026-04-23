@@ -27,6 +27,7 @@ class MCTSCSVLogger:
                     'black_block_opps', 'black_block_mcts_rate', 'black_block_raw_rate',
                     'white_block_opps', 'white_block_mcts_rate', 'white_block_raw_rate',
                     'time_selfplay', 'time_train',
+                    'cache_hit_rate', 'cache_hits', 'cache_misses',
                 ])
 
     def log_training_update(self, update: int, metrics: dict) -> None:
@@ -42,4 +43,5 @@ class MCTSCSVLogger:
                 metrics['black_block_opps'], metrics['black_block_mcts_rate'], metrics['black_block_raw_rate'],
                 metrics['white_block_opps'], metrics['white_block_mcts_rate'], metrics['white_block_raw_rate'],
                 metrics['time_selfplay'], metrics['time_train'],
+                metrics['cache_hit_rate'], metrics['cache_hits'], metrics['cache_misses'],
             ])

@@ -30,6 +30,7 @@ from gomoku import (
     SEED_PROBABILITY,
     GameState,
 )
+from mcts import clear_nn_eval_cache, get_nn_eval_cache_stats
 from model import GomokuPolicyNet
 from self_play import compute_block_rates, play_mcts_games
 from training import train_on_mcts_batch
@@ -46,7 +47,7 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 # MCTS Post-Training Constants
 # ============================================================================
 
-NUM_SIMULATIONS = 512
+NUM_SIMULATIONS = 4096
 C_PUCT = 1.25
 DIRICHLET_ALPHA = 0.15
 DIRICHLET_EPSILON = 0.25
@@ -249,12 +250,18 @@ def main() -> None:
 
         sharpen_exponent = temperature ** TEMP_CONVERGENCE_EXPONENT
 
+        cache_hits, cache_misses = get_nn_eval_cache_stats()
+        cache_total = cache_hits + cache_misses
+        cache_hit_rate = cache_hits / cache_total if cache_total > 0 else 0.0
+
         # Train
         t0 = time.time()
         train_results = train_on_mcts_batch(
             model, records, optimizer, DEVICE,
             sharpen_exponent=sharpen_exponent,
         )
+        # Weights changed; canonical-logit cache is stale.
+        clear_nn_eval_cache()
         t_train = time.time() - t0
 
         # Update temperature via EMA of entropy ratio. Floor guards against
@@ -295,6 +302,7 @@ def main() -> None:
                 f"T: {temperature:.4f} | "
                 f"PLoss: {train_results['policy_loss']:.4f} VLoss: {train_results['value_loss']:.4f} | "
                 f"{blk_line} | "
+                f"Cache: {cache_hit_rate:.0%} ({cache_hits}/{cache_total}) | "
                 f"{t_total:.1f}s (sp:{t_selfplay:.1f} tr:{t_train:.1f}) | "
                 f"{fmt_time(elapsed)}/{fmt_time(eta)}"
             )
@@ -312,6 +320,9 @@ def main() -> None:
             'draw_rate': draw_rate,
             'time_selfplay': t_selfplay,
             'time_train': t_train,
+            'cache_hit_rate': cache_hit_rate,
+            'cache_hits': cache_hits,
+            'cache_misses': cache_misses,
             **block_stats,
         })
 

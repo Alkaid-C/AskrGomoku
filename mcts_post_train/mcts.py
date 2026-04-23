@@ -6,13 +6,79 @@ Supports batched search across multiple game positions simultaneously.
 """
 
 import math
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gomoku import GameState, GomokuBoard, encode_observation, idx_to_pos
+
+# ============================================================================
+# D4 Canonicalization & NN Eval Cache
+# ============================================================================
+
+# Forward permutation table: _FORWARD_PERM[s, old_flat] = new_flat.
+# Coordinate convention matches main/enhancement.py:268-269 (and the inverse
+# table in mcts_post_train/training.py); both must stay in sync.
+def _build_forward_perm() -> np.ndarray:
+    coords = np.arange(225)
+    r = coords // 15
+    c = coords % 15
+    new_rows = np.stack([r, c, 14 - r, 14 - c, r, 14 - r, c, 14 - c])
+    new_cols = np.stack([c, 14 - r, 14 - c, r, 14 - c, c, r, 14 - r])
+    return (new_rows * 15 + new_cols).astype(np.int64)  # [8, 225]
+
+
+_FORWARD_PERM = _build_forward_perm()
+
+# Spatial transforms on uint8 obs of shape [3, 15, 15], indexed by the same
+# `s` ordering as _FORWARD_PERM and augment_batch_8fold.
+_SPATIAL_TRANSFORMS: list[Callable[[np.ndarray], np.ndarray]] = [
+    lambda o: o,                                 # s=0: identity
+    lambda o: o.transpose(0, 2, 1)[:, :, ::-1],  # s=1: rot90
+    lambda o: o[:, ::-1, ::-1],                  # s=2: rot180
+    lambda o: o.transpose(0, 2, 1)[:, ::-1, :],  # s=3: rot270
+    lambda o: o[:, :, ::-1],                     # s=4: flip-H
+    lambda o: o[:, ::-1, :],                     # s=5: flip-V
+    lambda o: o.transpose(0, 2, 1),              # s=6: transpose
+    lambda o: o[:, ::-1, ::-1].transpose(0, 2, 1),  # s=7: anti-transpose
+]
+
+# Cache maps canonical-obs bytes -> (canonical_logits [225] float32, value).
+# Cleared once per training update at the optimizer.step() boundary.
+_NN_EVAL_CACHE: dict[bytes, tuple[np.ndarray, float]] = {}
+_CACHE_HITS = 0
+_CACHE_MISSES = 0
+
+
+def canonicalize_obs(obs: np.ndarray) -> tuple[bytes, int]:
+    """Return (canonical_bytes, s) where s is the transform that produced it.
+
+    Picks the lexicographically smallest of the 8 D4 transforms of `obs`.
+    """
+    best_key: Optional[bytes] = None
+    best_s = 0
+    for s in range(8):
+        key = np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](obs)).tobytes()
+        if best_key is None or key < best_key:
+            best_key = key
+            best_s = s
+    assert best_key is not None
+    return best_key, best_s
+
+
+def get_nn_eval_cache_stats() -> tuple[int, int]:
+    """Return (hits, misses) accumulated since the last clear."""
+    return _CACHE_HITS, _CACHE_MISSES
+
+
+def clear_nn_eval_cache() -> None:
+    global _CACHE_HITS, _CACHE_MISSES
+    _NN_EVAL_CACHE.clear()
+    _CACHE_HITS = 0
+    _CACHE_MISSES = 0
+
 
 # ============================================================================
 # MCTS Node
@@ -145,13 +211,41 @@ def mcts_search_batched(
         legal_mask, _ = board.GetLegalMoves()
         legal_masks.append(legal_mask)
 
-    obs_tensor = torch.from_numpy(np.stack(obs_list)).float().to(device)
-    mask_tensor = torch.from_numpy(np.stack(legal_masks)).bool().to(device)
+    # Partition into cache hits and misses on D4-canonical key. Dedup by key
+    # within the batch — duplicate canonical inputs (e.g. all empty-board
+    # seeded games) must evaluate only once, not once per occurrence.
+    global _CACHE_HITS, _CACHE_MISSES
+    keys_and_s = [canonicalize_obs(o) for o in obs_list]
+    miss_indices: list[int] = []
+    miss_canonical_obs: list[np.ndarray] = []
+    pending_keys: set[bytes] = set()
+    for i, (key, s) in enumerate(keys_and_s):
+        if key in _NN_EVAL_CACHE or key in pending_keys:
+            continue
+        pending_keys.add(key)
+        miss_indices.append(i)
+        miss_canonical_obs.append(np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](obs_list[i])))
+    _CACHE_HITS += len(keys_and_s) - len(miss_indices)
+    _CACHE_MISSES += len(miss_indices)
 
-    with torch.inference_mode():
-        logits = model.forward_policy_only(obs_tensor)
-    logits = logits.squeeze(1)
-    logits = logits.view(n_games, 225)
+    if miss_indices:
+        miss_obs_tensor = torch.from_numpy(np.stack(miss_canonical_obs)).float().to(device)
+        with torch.inference_mode():
+            m_logits, m_values = model(miss_obs_tensor)
+        m_logits_np = m_logits.squeeze(1).view(len(miss_indices), 225).cpu().numpy()
+        m_values_np = m_values.squeeze(-1).cpu().numpy()
+        for k, i in enumerate(miss_indices):
+            key = keys_and_s[i][0]
+            _NN_EVAL_CACHE[key] = (m_logits_np[k].copy(), float(m_values_np[k]))
+
+    # Reassemble per-game logits by inverting the canonical permutation
+    raw_logits = np.empty((n_games, 225), dtype=np.float32)
+    for i, (key, s) in enumerate(keys_and_s):
+        canonical_logits, _ = _NN_EVAL_CACHE[key]
+        raw_logits[i] = canonical_logits[_FORWARD_PERM[s]]
+
+    logits = torch.from_numpy(raw_logits).to(device)
+    mask_tensor = torch.from_numpy(np.stack(legal_masks)).bool().to(device)
     logits = logits.masked_fill(~mask_tensor.view(n_games, 225), -1e9)
     # Apply temperature to prior
     priors = F.softmax(logits / prior_temperature, dim=-1).cpu().numpy()
@@ -239,16 +333,45 @@ def mcts_search_batched(
             eval_legal.append(legal_mask)
             eval_indices.append(i)
 
-        # Phase 3: Batch NN evaluation
+        # Phase 3: Batch NN evaluation (cache-aware)
         if eval_indices:
-            obs_t = torch.from_numpy(np.stack(eval_obs)).float().to(device)
-            with torch.inference_mode():
-                logits_t, values_t = model(obs_t)
-            logits_t = logits_t.squeeze(1).view(len(eval_indices), 225)
-            mask_t = torch.from_numpy(np.stack(eval_legal)).bool().to(device).view(len(eval_indices), 225)
+            n_eval = len(eval_indices)
+            keys_and_s_eval = [canonicalize_obs(o) for o in eval_obs]
+            miss_idx_eval: list[int] = []
+            miss_canonical_obs: list[np.ndarray] = []
+            pending_keys_eval: set[bytes] = set()
+            for j, (key, s) in enumerate(keys_and_s_eval):
+                if key in _NN_EVAL_CACHE or key in pending_keys_eval:
+                    continue
+                pending_keys_eval.add(key)
+                miss_idx_eval.append(j)
+                miss_canonical_obs.append(
+                    np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](eval_obs[j]))
+                )
+            _CACHE_HITS += n_eval - len(miss_idx_eval)
+            _CACHE_MISSES += len(miss_idx_eval)
+
+            if miss_idx_eval:
+                miss_obs_tensor = torch.from_numpy(np.stack(miss_canonical_obs)).float().to(device)
+                with torch.inference_mode():
+                    m_logits, m_values = model(miss_obs_tensor)
+                m_logits_np = m_logits.squeeze(1).view(len(miss_idx_eval), 225).cpu().numpy()
+                m_values_np = m_values.squeeze(-1).cpu().numpy()
+                for k, j in enumerate(miss_idx_eval):
+                    key = keys_and_s_eval[j][0]
+                    _NN_EVAL_CACHE[key] = (m_logits_np[k].copy(), float(m_values_np[k]))
+
+            raw_logits = np.empty((n_eval, 225), dtype=np.float32)
+            leaf_values = np.empty(n_eval, dtype=np.float32)
+            for j, (key, s) in enumerate(keys_and_s_eval):
+                canonical_logits, value = _NN_EVAL_CACHE[key]
+                raw_logits[j] = canonical_logits[_FORWARD_PERM[s]]
+                leaf_values[j] = value
+
+            logits_t = torch.from_numpy(raw_logits).to(device)
+            mask_t = torch.from_numpy(np.stack(eval_legal)).bool().to(device).view(n_eval, 225)
             logits_t = logits_t.masked_fill(~mask_t, -1e9)
             leaf_priors = F.softmax(logits_t / prior_temperature, dim=-1).cpu().numpy()
-            leaf_values = values_t.squeeze(-1).cpu().numpy()
 
             for j, i in enumerate(eval_indices):
                 leaf = leaves[i]
