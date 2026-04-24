@@ -49,6 +49,7 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
 NUM_SIMULATIONS = 4096
 C_PUCT = 1.25
+DISCOUNT_GAMMA = 0.98
 DIRICHLET_ALPHA = 0.15
 DIRICHLET_EPSILON = 0.25
 
@@ -164,7 +165,7 @@ def main() -> None:
 
     csv_logger = MCTSCSVLogger(output_dir)
     print(f"Output: {output_dir}")
-    print(f"MCTS: {NUM_SIMULATIONS} sims, c_puct={C_PUCT}")
+    print(f"MCTS: {NUM_SIMULATIONS} sims, c_puct={C_PUCT}, gamma={DISCOUNT_GAMMA}")
     print(f"Temperature: initial={INITIAL_TEMPERATURE}, convergence={TEMP_CONVERGENCE_EXPONENT}")
     print(f"Training: {TOTAL_UPDATES} updates, {EPISODES_PER_UPDATE} games/update (pure self-play)")
     print(f"LR: {LEARNING_RATE} -> {MIN_LR} (cosine)")
@@ -226,6 +227,7 @@ def main() -> None:
             opening_ids=opening_ids,
             dirichlet_alpha=DIRICHLET_ALPHA,
             dirichlet_epsilon=DIRICHLET_EPSILON,
+            gamma=DISCOUNT_GAMMA,
         )
         block_stats = compute_block_rates(records, model, DEVICE)
         model.train()

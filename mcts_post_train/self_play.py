@@ -50,6 +50,7 @@ def play_mcts_games(
     opening_ids: list[int],
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
+    gamma: float,
 ) -> list[MCTSGameRecord]:
     """
     Play pure-self-play MCTS games with batched search.
@@ -68,6 +69,7 @@ def play_mcts_games(
         opening_ids: Per-game opening ID (-1 for empty board)
         dirichlet_alpha: Dirichlet noise alpha (root only)
         dirichlet_epsilon: Dirichlet noise weight (root only)
+        gamma: Per-ply MCTS backup discount (see mcts.py::backup).
 
     Returns:
         List of MCTSGameRecord with training data from every ply.
@@ -87,6 +89,7 @@ def play_mcts_games(
             prior_temperature, device,
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,
+            gamma=gamma,
         )
 
         still_active: list[int] = []

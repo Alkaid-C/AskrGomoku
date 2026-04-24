@@ -56,11 +56,15 @@ def canonicalize_obs(obs: np.ndarray) -> tuple[bytes, int]:
     """Return (canonical_bytes, s) where s is the transform that produced it.
 
     Picks the lexicographically smallest of the 8 D4 transforms of `obs`.
+    The key packs the two stone planes into bits (450 bits → 57 bytes);
+    channel 2 is the all-1s board mask and is omitted as it carries no
+    position information.
     """
     best_key: Optional[bytes] = None
     best_s = 0
     for s in range(8):
-        key = np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](obs)).tobytes()
+        transformed = _SPATIAL_TRANSFORMS[s](obs)
+        key = np.packbits(np.ascontiguousarray(transformed[:2]).ravel()).tobytes()
         if best_key is None or key < best_key:
             best_key = key
             best_s = s
@@ -71,6 +75,10 @@ def canonicalize_obs(obs: np.ndarray) -> tuple[bytes, int]:
 def get_nn_eval_cache_stats() -> tuple[int, int]:
     """Return (hits, misses) accumulated since the last clear."""
     return _CACHE_HITS, _CACHE_MISSES
+
+
+def get_nn_eval_cache_size() -> int:
+    return len(_NN_EVAL_CACHE)
 
 
 def clear_nn_eval_cache() -> None:
@@ -86,10 +94,20 @@ def clear_nn_eval_cache() -> None:
 
 
 class MCTSNode:
-    """Single node in the MCTS tree."""
+    """Single node in the MCTS tree.
+
+    Children are created lazily: `child_actions`/`child_priors` hold the
+    full prior distribution over legal actions once the node is expanded,
+    while `children` contains only the `MCTSNode` objects PUCT has actually
+    selected at least once. Unvisited children's PUCT score is fully
+    determined by `(prior, parent.visit_count)`, so no node is needed.
+    """
     __slots__ = [
         'action',
+        'child_actions',
+        'child_priors',
         'children',
+        'is_expanded',
         'is_terminal',
         'parent',
         'prior',
@@ -102,6 +120,9 @@ class MCTSNode:
         self.parent = parent
         self.action = action          # flat index (-1 for root)
         self.children: dict[int, MCTSNode] = {}
+        self.child_actions: Optional[np.ndarray] = None  # int32 [num_legal]
+        self.child_priors: Optional[np.ndarray] = None   # float32 [num_legal]
+        self.is_expanded = False
         self.visit_count = 0
         self.total_value = 0.0        # W: accumulated from parent's perspective
         self.prior = prior            # P: prior probability
@@ -136,33 +157,57 @@ def copy_board(board: GomokuBoard) -> GomokuBoard:
 
 
 def select_child(node: MCTSNode, c_puct: float) -> MCTSNode:
-    """Select child with highest PUCT score."""
+    """Select child with highest PUCT score, materializing it on demand.
+
+    Iterates `child_actions`/`child_priors` (set when the node was expanded)
+    rather than `children.values()`. Unvisited children contribute Q=0 and
+    visit_count=0, making their score `c_puct * P * sqrt(N_parent)` — no
+    `MCTSNode` instance is required to compute it. The chosen child is
+    looked up in `node.children` and created lazily if absent.
+    """
+    assert node.child_actions is not None and node.child_priors is not None
     sqrt_parent = math.sqrt(node.visit_count)
     best_score = -float('inf')
-    best_child = None
+    best_action = -1
+    best_prior = 0.0
 
-    for child in node.children.values():
-        score = child.q_value + c_puct * child.prior * sqrt_parent / (1 + child.visit_count)
+    for k in range(len(node.child_actions)):
+        action = int(node.child_actions[k])
+        prior = float(node.child_priors[k])
+        existing = node.children.get(action)
+        if existing is None:
+            score = c_puct * prior * sqrt_parent
+        else:
+            score = existing.q_value + c_puct * prior * sqrt_parent / (1 + existing.visit_count)
         if score > best_score:
             best_score = score
-            best_child = child
+            best_action = action
+            best_prior = prior
 
-    assert best_child is not None
-    return best_child
+    assert best_action >= 0
+    child = node.children.get(best_action)
+    if child is None:
+        child = MCTSNode(parent=node, action=best_action, prior=best_prior)
+        node.children[best_action] = child
+    return child
 
 
-def backup(leaf: MCTSNode, value: float) -> None:
+def backup(leaf: MCTSNode, value: float, gamma: float) -> None:
     """
-    Backup value from leaf to root.
+    Backup value from leaf to root with per-ply discount.
 
     Args:
         leaf: The leaf node where evaluation happened
         value: Value from the side-to-move's perspective at the leaf
+        gamma: Per-ply discount factor. Applied at every level alongside
+            the perspective flip, so a terminal +/-1 reaches the root with
+            magnitude gamma^depth and alternating sign. This makes "lose
+            later" strictly better than "lose sooner" in backed-up Q.
     """
     v = value
     node = leaf
     while node is not None:
-        v = -v  # flip perspective at each level
+        v = -v * gamma  # flip perspective AND discount
         node.total_value += v
         node.visit_count += 1
         node = node.parent
@@ -182,6 +227,7 @@ def mcts_search_batched(
     device: torch.device,
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
+    gamma: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Run batched MCTS search on multiple board positions.
@@ -195,6 +241,8 @@ def mcts_search_batched(
         device: Torch device
         dirichlet_alpha: Dirichlet noise parameter
         dirichlet_epsilon: Dirichlet noise weight (0 = no noise)
+        gamma: Per-ply discount in backup; backed-up Q carries a gamma^depth
+            factor, so deeper terminals contribute less than shallow ones.
 
     Returns:
         visit_distributions: [N, 225] normalized visit counts
@@ -263,10 +311,13 @@ def mcts_search_batched(
         legal_indices = np.where(legal_flat)[0]
         noise = np.random.dirichlet([dirichlet_alpha] * len(legal_indices))
 
-        for k, action in enumerate(legal_indices):
-            p = (1 - dirichlet_epsilon) * prior_i[action] + dirichlet_epsilon * noise[k]
-            child = MCTSNode(parent=root, action=action, prior=p)
-            root.children[action] = child
+        final_priors = (
+            (1 - dirichlet_epsilon) * prior_i[legal_indices]
+            + dirichlet_epsilon * noise
+        ).astype(np.float32)
+        root.child_actions = legal_indices.astype(np.int32)
+        root.child_priors = final_priors
+        root.is_expanded = True
 
         roots.append(root)
 
@@ -281,7 +332,7 @@ def mcts_search_batched(
             path = []
 
             # Traverse down tree using PUCT
-            while node.children and not node.is_terminal:
+            while node.is_expanded and not node.is_terminal:
                 node = select_child(node, c_puct)
                 path.append(node.action)
 
@@ -296,10 +347,10 @@ def mcts_search_batched(
         for i, leaf in enumerate(leaves):
             if leaf.is_terminal:
                 # Terminal node: backup cached value
-                backup(leaf, -leaf.terminal_value)  # terminal_value is from parent's perspective
+                backup(leaf, -leaf.terminal_value, gamma)  # terminal_value is from parent's perspective
                 continue
 
-            assert not leaf.children, "PUCT would have descended through an expanded non-terminal node"
+            assert not leaf.is_expanded, "PUCT would have descended through an expanded non-terminal node"
 
             # Need to expand: clone board and replay path
             board_copy = copy_board(boards[i])
@@ -319,7 +370,7 @@ def mcts_search_batched(
                         # Parent chose this action, and the result is a win for
                         # the player who just moved = the parent's side.
                         leaf.terminal_value = 1.0
-                    backup(leaf, -leaf.terminal_value)
+                    backup(leaf, -leaf.terminal_value, gamma)
                     terminal = True
                     break
 
@@ -378,14 +429,15 @@ def mcts_search_batched(
                 legal_flat = eval_legal[j].reshape(225)
                 prior_j = leaf_priors[j]
 
-                # Expand: create children
+                # Expand: store priors over legal actions; child nodes are
+                # created on demand by select_child as PUCT visits them.
                 legal_actions = np.where(legal_flat)[0]
-                for action in legal_actions:
-                    child = MCTSNode(parent=leaf, action=action, prior=prior_j[action])
-                    leaf.children[action] = child
+                leaf.child_actions = legal_actions.astype(np.int32)
+                leaf.child_priors = prior_j[legal_actions].astype(np.float32)
+                leaf.is_expanded = True
 
                 # Backup: leaf_values[j] is from side-to-move at leaf
-                backup(leaf, leaf_values[j])
+                backup(leaf, leaf_values[j], gamma)
 
     # --- Extract results ---
     visit_distributions = np.zeros((n_games, 225), dtype=np.float32)
