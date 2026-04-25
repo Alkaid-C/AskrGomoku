@@ -266,6 +266,7 @@ def main() -> None:
         )
         # Weights changed; canonical-logit cache is stale.
         clear_nn_eval_cache()
+        torch.cuda.empty_cache()
         t_train = time.time() - t0
 
         model_entropy = train_results['model_entropy']
@@ -344,7 +345,6 @@ def main() -> None:
             }, checkpoint_path)
             save_training_state(output_dir, ckpt_id, temperature)
             print(f"  Saved: {os.path.basename(checkpoint_path)}")
-            torch.cuda.empty_cache()
 
     # Final save
     final_checkpoint_path = os.path.join(output_dir, f"checkpoint_update_{TOTAL_UPDATES}.pt")
