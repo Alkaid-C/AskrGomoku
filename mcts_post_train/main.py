@@ -47,7 +47,7 @@ torch.backends.cuda.matmul.fp32_precision = 'tf32'
 # MCTS Post-Training Constants
 # ============================================================================
 
-NUM_SIMULATIONS = 4096
+NUM_SIMULATIONS = 1024
 C_PUCT = 1.25
 DISCOUNT_GAMMA = 0.98
 DIRICHLET_ALPHA = 0.15
@@ -185,9 +185,9 @@ def main() -> None:
         print(f"Seed: {SEED}")
 
         print(f"Loading checkpoint: {args.checkpoint}")
-        state_dict = torch.load(args.checkpoint, map_location=DEVICE, weights_only=False)
+        checkpoint = torch.load(args.checkpoint, map_location=DEVICE, weights_only=False)
         model = GomokuPolicyNet().to(DEVICE)
-        model.load_state_dict(state_dict)
+        model.load_state_dict(checkpoint['model_state_dict'])
         model.train()
 
         optimizer = torch.optim.AdamW(
@@ -222,7 +222,7 @@ def main() -> None:
             num_games=EPISODES_PER_UPDATE,
             num_simulations=NUM_SIMULATIONS,
             c_puct=C_PUCT,
-            prior_temperature=temperature,
+            entropy_multiplier=temperature,
             device=DEVICE,
             opening_ids=opening_ids,
             dirichlet_alpha=DIRICHLET_ALPHA,
@@ -250,33 +250,27 @@ def main() -> None:
         draw_rate = draws / EPISODES_PER_UPDATE
         avg_game_length = float(np.mean(game_lengths)) if game_lengths else 0.0
 
-        sharpen_exponent = temperature ** TEMP_CONVERGENCE_EXPONENT
+        entropy_divisor = temperature ** TEMP_CONVERGENCE_EXPONENT
 
         cache_hits, cache_misses = get_nn_eval_cache_stats()
         cache_total = cache_hits + cache_misses
         cache_hit_rate = cache_hits / cache_total if cache_total > 0 else 0.0
 
+        current_lr = optimizer.param_groups[0]['lr']
+
         # Train
         t0 = time.time()
         train_results = train_on_mcts_batch(
             model, records, optimizer, DEVICE,
-            sharpen_exponent=sharpen_exponent,
+            entropy_divisor=entropy_divisor,
         )
         # Weights changed; canonical-logit cache is stale.
         clear_nn_eval_cache()
         t_train = time.time() - t0
 
-        # Update temperature via EMA of entropy ratio. Floor guards against
-        # a nearly-deterministic model blowing up `ratio = mcts / model`.
         model_entropy = train_results['model_entropy']
         mcts_entropy = train_results['mcts_entropy']
-        if model_entropy > 1e-3:
-            ratio = mcts_entropy / model_entropy
-            ema_alpha = 1.0 / TEMP_EMA_WINDOW
-            temperature = temperature + ema_alpha * (ratio - temperature)
-
-        scheduler.step()
-        current_lr = optimizer.param_groups[0]['lr']
+        sharpened_entropy = train_results['sharpened_entropy']
 
         t_total = time.time() - t_start
 
@@ -300,7 +294,7 @@ def main() -> None:
                 f"Update {update+1:4d}/{TOTAL_UPDATES} | "
                 f"BlackWR: {black_win_rate:.0%} D: {draw_rate:.0%} | "
                 f"Len: {avg_game_length:.0f} | "
-                f"Ent: {model_entropy:.3f}/{mcts_entropy:.3f} | "
+                f"Ent: {model_entropy:.3f}/{sharpened_entropy:.3f}/{mcts_entropy:.3f} | "
                 f"T: {temperature:.4f} | "
                 f"PLoss: {train_results['policy_loss']:.4f} VLoss: {train_results['value_loss']:.4f} | "
                 f"{blk_line} | "
@@ -314,8 +308,9 @@ def main() -> None:
             'value_loss': train_results['value_loss'],
             'model_entropy': model_entropy,
             'mcts_entropy': mcts_entropy,
+            'sharpened_entropy': sharpened_entropy,
             'temperature': temperature,
-            'sharpen_exponent': sharpen_exponent,
+            'entropy_divisor': entropy_divisor,
             'lr': current_lr,
             'avg_game_length': avg_game_length,
             'black_win_rate': black_win_rate,
@@ -327,6 +322,16 @@ def main() -> None:
             'cache_misses': cache_misses,
             **block_stats,
         })
+
+        # Advance temperature (EMA of entropy ratio) and LR for the next update.
+        # Done after logging so the row above is a snapshot of the state used
+        # for this update's self-play and training. Floor on model_entropy guards
+        # against a nearly-deterministic model blowing up `ratio = mcts / model`.
+        if model_entropy > 1e-3:
+            ratio = mcts_entropy / model_entropy
+            ema_alpha = 1.0 / TEMP_EMA_WINDOW
+            temperature = temperature + ema_alpha * (ratio - temperature)
+        scheduler.step()
 
         if (update + 1) % CHECKPOINT_INTERVAL == 0:
             ckpt_id = update + 1

@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from entropy_ops import rescale_to_entropy
 from gomoku import GameState, GomokuBoard, encode_observation, idx_to_pos
 
 # ============================================================================
@@ -223,7 +224,7 @@ def mcts_search_batched(
     boards: list[GomokuBoard],
     num_simulations: int,
     c_puct: float,
-    prior_temperature: float,
+    entropy_multiplier: float,
     device: torch.device,
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
@@ -237,7 +238,10 @@ def mcts_search_batched(
         boards: List of N board positions to search from
         num_simulations: Number of MCTS simulations per position
         c_puct: PUCT exploration constant
-        prior_temperature: Temperature for softening policy prior (>1 = flatter)
+        entropy_multiplier: Per-position prior entropy is rescaled to
+            H(softmax(logits)) * entropy_multiplier. Caller passes the EMA
+            temperature T (no exponent — the asymmetry T vs T**0.99 between
+            pre-search flatten and post-search sharpen drives convergence to T=1).
         device: Torch device
         dirichlet_alpha: Dirichlet noise parameter
         dirichlet_epsilon: Dirichlet noise weight (0 = no noise)
@@ -295,8 +299,11 @@ def mcts_search_batched(
     logits = torch.from_numpy(raw_logits).to(device)
     mask_tensor = torch.from_numpy(np.stack(legal_masks)).bool().to(device)
     logits = logits.masked_fill(~mask_tensor.view(n_games, 225), -1e9)
-    # Apply temperature to prior
-    priors = F.softmax(logits / prior_temperature, dim=-1).cpu().numpy()
+    # Rescale prior to target entropy = H_model * T per position.
+    natural = F.softmax(logits, dim=-1)
+    H_model = -(natural * (natural + 1e-30).log()).sum(dim=-1)
+    target_H = (H_model * entropy_multiplier).clamp(max=math.log(225))
+    priors = rescale_to_entropy(logits, target_H).cpu().numpy()
 
     # Create root nodes and expand
     roots: list[MCTSNode] = []
@@ -422,7 +429,10 @@ def mcts_search_batched(
             logits_t = torch.from_numpy(raw_logits).to(device)
             mask_t = torch.from_numpy(np.stack(eval_legal)).bool().to(device).view(n_eval, 225)
             logits_t = logits_t.masked_fill(~mask_t, -1e9)
-            leaf_priors = F.softmax(logits_t / prior_temperature, dim=-1).cpu().numpy()
+            leaf_natural = F.softmax(logits_t, dim=-1)
+            leaf_H = -(leaf_natural * (leaf_natural + 1e-30).log()).sum(dim=-1)
+            leaf_target_H = (leaf_H * entropy_multiplier).clamp(max=math.log(225))
+            leaf_priors = rescale_to_entropy(logits_t, leaf_target_H).cpu().numpy()
 
             for j, i in enumerate(eval_indices):
                 leaf = leaves[i]

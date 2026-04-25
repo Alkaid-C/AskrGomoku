@@ -20,8 +20,8 @@ class MCTSCSVLogger:
                 writer = csv.writer(f)
                 writer.writerow([
                     'update', 'policy_loss', 'value_loss',
-                    'model_entropy', 'mcts_entropy',
-                    'temperature', 'sharpen_exponent',
+                    'model_entropy', 'mcts_entropy', 'sharpened_entropy',
+                    'temperature', 'entropy_divisor',
                     'lr', 'avg_game_length',
                     'black_win_rate', 'draw_rate',
                     'black_block_opps', 'black_block_mcts_rate', 'black_block_raw_rate',
@@ -36,8 +36,8 @@ class MCTSCSVLogger:
             writer.writerow([
                 update,
                 metrics['policy_loss'], metrics['value_loss'],
-                metrics['model_entropy'], metrics['mcts_entropy'],
-                metrics['temperature'], metrics['sharpen_exponent'],
+                metrics['model_entropy'], metrics['mcts_entropy'], metrics['sharpened_entropy'],
+                metrics['temperature'], metrics['entropy_divisor'],
                 metrics['lr'], metrics['avg_game_length'],
                 metrics['black_win_rate'], metrics['draw_rate'],
                 metrics['black_block_opps'], metrics['black_block_mcts_rate'], metrics['black_block_raw_rate'],

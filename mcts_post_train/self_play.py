@@ -45,7 +45,7 @@ def play_mcts_games(
     num_games: int,
     num_simulations: int,
     c_puct: float,
-    prior_temperature: float,
+    entropy_multiplier: float,
     device: torch.device,
     opening_ids: list[int],
     dirichlet_alpha: float,
@@ -64,7 +64,8 @@ def play_mcts_games(
         num_games: Number of concurrent games to play
         num_simulations: MCTS simulations per move
         c_puct: PUCT exploration constant
-        prior_temperature: Temperature for softening prior in MCTS
+        entropy_multiplier: Per-position prior is rescaled to entropy
+            H(softmax(logits)) * entropy_multiplier (= H_model * T).
         device: Torch device
         opening_ids: Per-game opening ID (-1 for empty board)
         dirichlet_alpha: Dirichlet noise alpha (root only)
@@ -86,7 +87,7 @@ def play_mcts_games(
 
         visit_dists, root_values = mcts_search_batched(
             model, active_boards, num_simulations, c_puct,
-            prior_temperature, device,
+            entropy_multiplier, device,
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,
             gamma=gamma,
