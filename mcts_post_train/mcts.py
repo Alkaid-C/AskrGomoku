@@ -6,13 +6,12 @@ Supports batched search across multiple game positions simultaneously.
 """
 
 import math
-from typing import Callable, Optional
+from typing import Callable, Optional, cast
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from entropy_ops import rescale_to_entropy
+from entropy_ops import rescale_to_entropy_np, softmax_np
 from gomoku import GameState, GomokuBoard, encode_observation, idx_to_pos
 
 # ============================================================================
@@ -46,8 +45,12 @@ _SPATIAL_TRANSFORMS: list[Callable[[np.ndarray], np.ndarray]] = [
     lambda o: o[:, ::-1, ::-1].transpose(0, 2, 1),  # s=7: anti-transpose
 ]
 
-# Cache maps canonical-obs bytes -> (canonical_logits [225] float32, value).
-# Cleared once per training update at the optimizer.step() boundary.
+# Cache maps canonical-obs bytes -> (canonical_priors_scaled [225] float32, value).
+# `canonical_priors_scaled` is the post-mask, post-softmax, post-entropy-rescale
+# distribution in canonical orientation (illegal squares are exactly 0). Caching
+# the scaled distribution rather than raw logits is sound because the entropy
+# multiplier T is constant within a single training update, and the cache is
+# cleared once per update at the optimizer.step() boundary.
 _NN_EVAL_CACHE: dict[bytes, tuple[np.ndarray, float]] = {}
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
@@ -97,44 +100,52 @@ def clear_nn_eval_cache() -> None:
 class MCTSNode:
     """Single node in the MCTS tree.
 
-    Children are created lazily: `child_actions`/`child_priors` hold the
-    full prior distribution over legal actions once the node is expanded,
-    while `children` contains only the `MCTSNode` objects PUCT has actually
-    selected at least once. Unvisited children's PUCT score is fully
-    determined by `(prior, parent.visit_count)`, so no node is needed.
+    On expansion, child stats are stored as parallel **Python lists** (not
+    numpy arrays) so the PUCT inner loop in `select_child` reads native
+    Python floats/ints — numpy scalar indexing is ~3x slower in tight
+    loops because each `arr[k]` allocates a numpy scalar wrapper.
+    `child_actions` is a list[int]; `child_priors`, `child_q`, `child_total`
+    are list[float]; `child_n` is list[int]; `child_node` lazily holds
+    materialized `MCTSNode`s indexed by the same `k`.
     """
     __slots__ = [
         'action',
         'child_actions',
+        'child_n',
+        'child_node',
         'child_priors',
-        'children',
+        'child_q',
+        'child_total',
         'is_expanded',
         'is_terminal',
         'parent',
+        'parent_k',
         'prior',
         'terminal_value',
-        'total_value',
         'visit_count',
     ]
 
-    def __init__(self, parent: Optional['MCTSNode'], action: int, prior: float):
+    def __init__(
+        self,
+        parent: Optional['MCTSNode'],
+        parent_k: int,
+        action: int,
+        prior: float,
+    ):
         self.parent = parent
-        self.action = action          # flat index (-1 for root)
-        self.children: dict[int, MCTSNode] = {}
-        self.child_actions: Optional[np.ndarray] = None  # int32 [num_legal]
-        self.child_priors: Optional[np.ndarray] = None   # float32 [num_legal]
+        self.parent_k = parent_k       # index into parent's child lists (-1 for root)
+        self.action = action           # flat index (-1 for root)
+        self.child_actions: Optional[list[int]] = None
+        self.child_priors: Optional[list[float]] = None
+        self.child_q: Optional[list[float]] = None
+        self.child_n: Optional[list[int]] = None
+        self.child_total: Optional[list[float]] = None
+        self.child_node: Optional[list[Optional[MCTSNode]]] = None
         self.is_expanded = False
         self.visit_count = 0
-        self.total_value = 0.0        # W: accumulated from parent's perspective
-        self.prior = prior            # P: prior probability
+        self.prior = prior             # P: prior probability
         self.is_terminal = False
-        self.terminal_value = 0.0     # from parent's perspective (+1 = parent wins)
-
-    @property
-    def q_value(self) -> float:
-        if self.visit_count == 0:
-            return 0.0
-        return self.total_value / self.visit_count
+        self.terminal_value = 0.0      # from parent's perspective (+1 = parent wins)
 
 
 # ============================================================================
@@ -160,42 +171,51 @@ def copy_board(board: GomokuBoard) -> GomokuBoard:
 def select_child(node: MCTSNode, c_puct: float) -> MCTSNode:
     """Select child with highest PUCT score, materializing it on demand.
 
-    Iterates `child_actions`/`child_priors` (set when the node was expanded)
-    rather than `children.values()`. Unvisited children contribute Q=0 and
-    visit_count=0, making their score `c_puct * P * sqrt(N_parent)` — no
-    `MCTSNode` instance is required to compute it. The chosen child is
-    looked up in `node.children` and created lazily if absent.
+    All child stats live in parallel arrays on `node`. Unvisited slots have
+    `child_q[k] = 0` and `child_n[k] = 0`, so the unified PUCT formula
+    `q + c_puct * prior * sqrt_parent / (1 + n)` collapses to the correct
+    `c_puct * prior * sqrt_parent` for unvisited children (no branch).
+    The chosen child's `MCTSNode` is created lazily on first selection.
     """
-    assert node.child_actions is not None and node.child_priors is not None
-    sqrt_parent = math.sqrt(node.visit_count)
-    best_score = -float('inf')
-    best_action = -1
-    best_prior = 0.0
+    actions = node.child_actions
+    priors = node.child_priors
+    qs = node.child_q
+    ns = node.child_n
+    nodes = node.child_node
+    assert actions is not None and priors is not None
+    assert qs is not None and ns is not None and nodes is not None
 
-    for k in range(len(node.child_actions)):
-        action = int(node.child_actions[k])
-        prior = float(node.child_priors[k])
-        existing = node.children.get(action)
-        if existing is None:
-            score = c_puct * prior * sqrt_parent
-        else:
-            score = existing.q_value + c_puct * prior * sqrt_parent / (1 + existing.visit_count)
+    c_sqrt = c_puct * math.sqrt(node.visit_count)
+    K = len(actions)
+    best_score = -float('inf')
+    best_k = -1
+    for k in range(K):
+        score = qs[k] + c_sqrt * priors[k] / (1 + ns[k])
         if score > best_score:
             best_score = score
-            best_action = action
-            best_prior = prior
+            best_k = k
 
-    assert best_action >= 0
-    child = node.children.get(best_action)
+    assert best_k >= 0
+    child = nodes[best_k]
     if child is None:
-        child = MCTSNode(parent=node, action=best_action, prior=best_prior)
-        node.children[best_action] = child
+        child = MCTSNode(
+            parent=node,
+            parent_k=best_k,
+            action=actions[best_k],
+            prior=priors[best_k],
+        )
+        nodes[best_k] = child
     return child
 
 
 def backup(leaf: MCTSNode, value: float, gamma: float) -> None:
     """
     Backup value from leaf to root with per-ply discount.
+
+    Updates each traversed node's `visit_count` and (when it has a parent)
+    the parent's running stats for this child slot: `child_total[k]`,
+    `child_n[k]`, `child_q[k] = child_total[k] / child_n[k]`. Root has no
+    parent, so only its own `visit_count` is touched.
 
     Args:
         leaf: The leaf node where evaluation happened
@@ -209,9 +229,91 @@ def backup(leaf: MCTSNode, value: float, gamma: float) -> None:
     node = leaf
     while node is not None:
         v = -v * gamma  # flip perspective AND discount
-        node.total_value += v
         node.visit_count += 1
-        node = node.parent
+        parent = node.parent
+        if parent is not None:
+            k = node.parent_k
+            assert parent.child_total is not None and parent.child_n is not None and parent.child_q is not None
+            parent.child_total[k] += v
+            parent.child_n[k] += 1
+            parent.child_q[k] = parent.child_total[k] / parent.child_n[k]
+        node = parent
+
+
+# ============================================================================
+# Cache-aware batched evaluation
+# ============================================================================
+
+
+def _evaluate_with_cache(
+    model: nn.Module,
+    obs_list: list[np.ndarray],
+    entropy_multiplier: float,
+    device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Look up `obs_list` in the NN cache, evaluate misses on GPU, post-process
+    on CPU, and return per-obs scaled priors and values in original orientation.
+
+    The cache stores fully-scaled canonical priors (mask + softmax + entropy
+    rescale already applied), so cache hits collapse to a permutation lookup.
+    Only misses pay for the model forward + entropy rescale.
+
+    Returns:
+        priors: [N, 225] float32, illegal squares = 0, in original orientation.
+        values: [N] float32, model value head (= side-to-move's perspective).
+    """
+    global _CACHE_HITS, _CACHE_MISSES
+    n = len(obs_list)
+    keys_and_s = [canonicalize_obs(o) for o in obs_list]
+    miss_indices: list[int] = []
+    miss_canonical_obs: list[np.ndarray] = []
+    pending_keys: set[bytes] = set()
+    for i, (key, s) in enumerate(keys_and_s):
+        if key in _NN_EVAL_CACHE or key in pending_keys:
+            continue
+        pending_keys.add(key)
+        miss_indices.append(i)
+        miss_canonical_obs.append(
+            np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](obs_list[i]))
+        )
+    _CACHE_HITS += n - len(miss_indices)
+    _CACHE_MISSES += len(miss_indices)
+
+    if miss_indices:
+        m_obs_np = np.stack(miss_canonical_obs)  # [M, 3, 15, 15] uint8, canonical
+        miss_obs_tensor = torch.from_numpy(m_obs_np).float().to(device)
+        with torch.inference_mode():
+            m_logits, m_values = model(miss_obs_tensor)
+        m_logits_np = m_logits.squeeze(1).view(len(miss_indices), 225).cpu().numpy()
+        m_values_np = m_values.squeeze(-1).cpu().numpy()
+
+        # Canonical legal mask is implied by the canonical obs: any square
+        # occupied in either stone plane is illegal.
+        canonical_legal = ~(
+            (m_obs_np[:, 0] | m_obs_np[:, 1]).reshape(-1, 225).astype(bool)
+        )
+        masked = np.where(canonical_legal, m_logits_np, -1e9).astype(np.float32)
+        natural = softmax_np(masked, axis=-1)
+        H_model = -(natural * np.log(natural + 1e-30)).sum(axis=-1)
+        target_H = np.minimum(
+            H_model * entropy_multiplier, math.log(225)
+        ).astype(np.float32)
+        canonical_priors_scaled = rescale_to_entropy_np(masked, target_H)
+
+        for k, i in enumerate(miss_indices):
+            key = keys_and_s[i][0]
+            _NN_EVAL_CACHE[key] = (
+                canonical_priors_scaled[k].copy(),
+                float(m_values_np[k]),
+            )
+
+    priors = np.empty((n, 225), dtype=np.float32)
+    values = np.empty(n, dtype=np.float32)
+    for i, (key, s) in enumerate(keys_and_s):
+        canonical_priors, value = _NN_EVAL_CACHE[key]
+        priors[i] = canonical_priors[_FORWARD_PERM[s]]
+        values[i] = value
+    return priors, values
 
 
 # ============================================================================
@@ -263,52 +365,14 @@ def mcts_search_batched(
         legal_mask, _ = board.GetLegalMoves()
         legal_masks.append(legal_mask)
 
-    # Partition into cache hits and misses on D4-canonical key. Dedup by key
-    # within the batch — duplicate canonical inputs (e.g. all empty-board
-    # seeded games) must evaluate only once, not once per occurrence.
-    global _CACHE_HITS, _CACHE_MISSES
-    keys_and_s = [canonicalize_obs(o) for o in obs_list]
-    miss_indices: list[int] = []
-    miss_canonical_obs: list[np.ndarray] = []
-    pending_keys: set[bytes] = set()
-    for i, (key, s) in enumerate(keys_and_s):
-        if key in _NN_EVAL_CACHE or key in pending_keys:
-            continue
-        pending_keys.add(key)
-        miss_indices.append(i)
-        miss_canonical_obs.append(np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](obs_list[i])))
-    _CACHE_HITS += len(keys_and_s) - len(miss_indices)
-    _CACHE_MISSES += len(miss_indices)
-
-    if miss_indices:
-        miss_obs_tensor = torch.from_numpy(np.stack(miss_canonical_obs)).float().to(device)
-        with torch.inference_mode():
-            m_logits, m_values = model(miss_obs_tensor)
-        m_logits_np = m_logits.squeeze(1).view(len(miss_indices), 225).cpu().numpy()
-        m_values_np = m_values.squeeze(-1).cpu().numpy()
-        for k, i in enumerate(miss_indices):
-            key = keys_and_s[i][0]
-            _NN_EVAL_CACHE[key] = (m_logits_np[k].copy(), float(m_values_np[k]))
-
-    # Reassemble per-game logits by inverting the canonical permutation
-    raw_logits = np.empty((n_games, 225), dtype=np.float32)
-    for i, (key, s) in enumerate(keys_and_s):
-        canonical_logits, _ = _NN_EVAL_CACHE[key]
-        raw_logits[i] = canonical_logits[_FORWARD_PERM[s]]
-
-    logits = torch.from_numpy(raw_logits).to(device)
-    mask_tensor = torch.from_numpy(np.stack(legal_masks)).bool().to(device)
-    logits = logits.masked_fill(~mask_tensor.view(n_games, 225), -1e9)
-    # Rescale prior to target entropy = H_model * T per position.
-    natural = F.softmax(logits, dim=-1)
-    H_model = -(natural * (natural + 1e-30).log()).sum(dim=-1)
-    target_H = (H_model * entropy_multiplier).clamp(max=math.log(225))
-    priors = rescale_to_entropy(logits, target_H).cpu().numpy()
+    priors, _root_values = _evaluate_with_cache(
+        model, obs_list, entropy_multiplier, device
+    )
 
     # Create root nodes and expand
     roots: list[MCTSNode] = []
     for i in range(n_games):
-        root = MCTSNode(parent=None, action=-1, prior=0.0)
+        root = MCTSNode(parent=None, parent_k=-1, action=-1, prior=0.0)
         root.visit_count = 1  # virtual visit so PUCT uses priors on first selection
 
         legal_flat = legal_masks[i].reshape(225)
@@ -322,8 +386,13 @@ def mcts_search_batched(
             (1 - dirichlet_epsilon) * prior_i[legal_indices]
             + dirichlet_epsilon * noise
         ).astype(np.float32)
-        root.child_actions = legal_indices.astype(np.int32)
-        root.child_priors = final_priors
+        n_legal = len(legal_indices)
+        root.child_actions = legal_indices.tolist()
+        root.child_priors = final_priors.tolist()
+        root.child_q = [0.0] * n_legal
+        root.child_n = [0] * n_legal
+        root.child_total = [0.0] * n_legal
+        root.child_node = cast(list[Optional[MCTSNode]], [None] * n_legal)
         root.is_expanded = True
 
         roots.append(root)
@@ -393,46 +462,9 @@ def mcts_search_batched(
 
         # Phase 3: Batch NN evaluation (cache-aware)
         if eval_indices:
-            n_eval = len(eval_indices)
-            keys_and_s_eval = [canonicalize_obs(o) for o in eval_obs]
-            miss_idx_eval: list[int] = []
-            miss_canonical_obs: list[np.ndarray] = []
-            pending_keys_eval: set[bytes] = set()
-            for j, (key, s) in enumerate(keys_and_s_eval):
-                if key in _NN_EVAL_CACHE or key in pending_keys_eval:
-                    continue
-                pending_keys_eval.add(key)
-                miss_idx_eval.append(j)
-                miss_canonical_obs.append(
-                    np.ascontiguousarray(_SPATIAL_TRANSFORMS[s](eval_obs[j]))
-                )
-            _CACHE_HITS += n_eval - len(miss_idx_eval)
-            _CACHE_MISSES += len(miss_idx_eval)
-
-            if miss_idx_eval:
-                miss_obs_tensor = torch.from_numpy(np.stack(miss_canonical_obs)).float().to(device)
-                with torch.inference_mode():
-                    m_logits, m_values = model(miss_obs_tensor)
-                m_logits_np = m_logits.squeeze(1).view(len(miss_idx_eval), 225).cpu().numpy()
-                m_values_np = m_values.squeeze(-1).cpu().numpy()
-                for k, j in enumerate(miss_idx_eval):
-                    key = keys_and_s_eval[j][0]
-                    _NN_EVAL_CACHE[key] = (m_logits_np[k].copy(), float(m_values_np[k]))
-
-            raw_logits = np.empty((n_eval, 225), dtype=np.float32)
-            leaf_values = np.empty(n_eval, dtype=np.float32)
-            for j, (key, s) in enumerate(keys_and_s_eval):
-                canonical_logits, value = _NN_EVAL_CACHE[key]
-                raw_logits[j] = canonical_logits[_FORWARD_PERM[s]]
-                leaf_values[j] = value
-
-            logits_t = torch.from_numpy(raw_logits).to(device)
-            mask_t = torch.from_numpy(np.stack(eval_legal)).bool().to(device).view(n_eval, 225)
-            logits_t = logits_t.masked_fill(~mask_t, -1e9)
-            leaf_natural = F.softmax(logits_t, dim=-1)
-            leaf_H = -(leaf_natural * (leaf_natural + 1e-30).log()).sum(dim=-1)
-            leaf_target_H = (leaf_H * entropy_multiplier).clamp(max=math.log(225))
-            leaf_priors = rescale_to_entropy(logits_t, leaf_target_H).cpu().numpy()
+            leaf_priors, leaf_values = _evaluate_with_cache(
+                model, eval_obs, entropy_multiplier, device
+            )
 
             for j, i in enumerate(eval_indices):
                 leaf = leaves[i]
@@ -442,8 +474,13 @@ def mcts_search_batched(
                 # Expand: store priors over legal actions; child nodes are
                 # created on demand by select_child as PUCT visits them.
                 legal_actions = np.where(legal_flat)[0]
-                leaf.child_actions = legal_actions.astype(np.int32)
-                leaf.child_priors = prior_j[legal_actions].astype(np.float32)
+                n_legal = len(legal_actions)
+                leaf.child_actions = legal_actions.tolist()
+                leaf.child_priors = prior_j[legal_actions].astype(np.float32).tolist()
+                leaf.child_q = [0.0] * n_legal
+                leaf.child_n = [0] * n_legal
+                leaf.child_total = [0.0] * n_legal
+                leaf.child_node = [None] * n_legal
                 leaf.is_expanded = True
 
                 # Backup: leaf_values[j] is from side-to-move at leaf
@@ -454,17 +491,15 @@ def mcts_search_batched(
     root_q_values = np.zeros(n_games, dtype=np.float32)
 
     for i, root in enumerate(roots):
-        total_child_visits = 0
-        weighted_q_sum = 0.0
-
-        for action, child in root.children.items():
-            visit_distributions[i, action] = child.visit_count
-            total_child_visits += child.visit_count
-            # Q is from root's perspective (= side-to-move's perspective)
-            weighted_q_sum += child.visit_count * child.q_value
-
+        actions = root.child_actions
+        ns = root.child_n
+        qs = root.child_q
+        assert actions is not None and ns is not None and qs is not None
+        total_child_visits = sum(ns)
         if total_child_visits > 0:
-            visit_distributions[i] /= total_child_visits
-            root_q_values[i] = weighted_q_sum / total_child_visits
+            ns_arr = np.asarray(ns, dtype=np.int32)
+            qs_arr = np.asarray(qs, dtype=np.float32)
+            visit_distributions[i, actions] = ns_arr.astype(np.float32) / total_child_visits
+            root_q_values[i] = float((ns_arr * qs_arr).sum() / total_child_visits)
 
     return visit_distributions, root_q_values
