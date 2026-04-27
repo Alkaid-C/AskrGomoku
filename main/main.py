@@ -802,7 +802,7 @@ def main():
             print()
 
     final_path = os.path.join(output_dir, "final_policy.pt")
-    torch.save(current_policy.state_dict(), final_path)
+    torch.save({'model_state_dict': current_policy.state_dict(), 'update': TOTAL_UPDATES}, final_path)
     print(f"\nTraining complete! Final model saved to {final_path}")
 
     save_training_state(
