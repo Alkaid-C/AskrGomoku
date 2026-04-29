@@ -45,12 +45,13 @@ def play_mcts_games(
     num_games: int,
     num_simulations: int,
     c_puct: float,
-    entropy_multiplier: float,
+    entropy_multiplier: Optional[float],
     device: torch.device,
     opening_ids: list[int],
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
     gamma: float,
+    action_temperature: float = 1.0,
 ) -> list[MCTSGameRecord]:
     """
     Play pure-self-play MCTS games with batched search.
@@ -64,13 +65,18 @@ def play_mcts_games(
         num_games: Number of concurrent games to play
         num_simulations: MCTS simulations per move
         c_puct: PUCT exploration constant
-        entropy_multiplier: Per-position prior is rescaled to entropy
-            H(softmax(logits)) * entropy_multiplier (= H_model * T).
+        entropy_multiplier: When set, per-position prior is rescaled to entropy
+            H(softmax(logits)) * entropy_multiplier. When None, priors are the
+            raw masked softmax (vanilla AlphaZero).
         device: Torch device
         opening_ids: Per-game opening ID (-1 for empty board)
         dirichlet_alpha: Dirichlet noise alpha (root only)
         dirichlet_epsilon: Dirichlet noise weight (root only)
         gamma: Per-ply MCTS backup discount (see mcts.py::backup).
+        action_temperature: Temperature applied to the visit distribution
+            *only* at action sampling time. The supervision target recorded
+            into the MCTSGameRecord is the original visit distribution; this
+            broadens trajectory coverage without altering targets.
 
     Returns:
         List of MCTSGameRecord with training data from every ply.
@@ -101,7 +107,12 @@ def play_mcts_games(
             records[i].visit_distributions.append(visit_dists[j])
             records[i].root_values.append(float(root_values[j]))
 
-            action = int(np.random.choice(225, p=visit_dists[j]))
+            if action_temperature == 1.0:
+                sample_dist = visit_dists[j]
+            else:
+                sample_dist = np.maximum(visit_dists[j], 1e-30) ** (1.0 / action_temperature)
+                sample_dist = sample_dist / sample_dist.sum()
+            action = int(np.random.choice(225, p=sample_dist))
 
             row, col = idx_to_pos(action)
             outcome = boards[i].Move((row, col))

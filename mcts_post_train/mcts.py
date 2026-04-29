@@ -248,7 +248,7 @@ def backup(leaf: MCTSNode, value: float, gamma: float) -> None:
 def _evaluate_with_cache(
     model: nn.Module,
     obs_list: list[np.ndarray],
-    entropy_multiplier: float,
+    entropy_multiplier: Optional[float],
     device: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Look up `obs_list` in the NN cache, evaluate misses on GPU, post-process
@@ -257,6 +257,9 @@ def _evaluate_with_cache(
     The cache stores fully-scaled canonical priors (mask + softmax + entropy
     rescale already applied), so cache hits collapse to a permutation lookup.
     Only misses pay for the model forward + entropy rescale.
+
+    When `entropy_multiplier` is None, priors are the masked softmax of raw
+    logits (no entropy rescale).
 
     Returns:
         priors: [N, 225] float32, illegal squares = 0, in original orientation.
@@ -293,12 +296,15 @@ def _evaluate_with_cache(
             (m_obs_np[:, 0] | m_obs_np[:, 1]).reshape(-1, 225).astype(bool)
         )
         masked = np.where(canonical_legal, m_logits_np, -1e9).astype(np.float32)
-        natural = softmax_np(masked, axis=-1)
-        H_model = -(natural * np.log(natural + 1e-30)).sum(axis=-1)
-        target_H = np.minimum(
-            H_model * entropy_multiplier, math.log(225)
-        ).astype(np.float32)
-        canonical_priors_scaled = rescale_to_entropy_np(masked, target_H)
+        if entropy_multiplier is None:
+            canonical_priors_scaled = softmax_np(masked, axis=-1).astype(np.float32)
+        else:
+            natural = softmax_np(masked, axis=-1)
+            H_model = -(natural * np.log(natural + 1e-30)).sum(axis=-1)
+            target_H = np.minimum(
+                H_model * entropy_multiplier, math.log(225)
+            ).astype(np.float32)
+            canonical_priors_scaled = rescale_to_entropy_np(masked, target_H)
 
         for k, i in enumerate(miss_indices):
             key = keys_and_s[i][0]
@@ -326,7 +332,7 @@ def mcts_search_batched(
     boards: list[GomokuBoard],
     num_simulations: int,
     c_puct: float,
-    entropy_multiplier: float,
+    entropy_multiplier: Optional[float],
     device: torch.device,
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
@@ -340,10 +346,9 @@ def mcts_search_batched(
         boards: List of N board positions to search from
         num_simulations: Number of MCTS simulations per position
         c_puct: PUCT exploration constant
-        entropy_multiplier: Per-position prior entropy is rescaled to
-            H(softmax(logits)) * entropy_multiplier. Caller passes the EMA
-            temperature T (no exponent — the asymmetry T vs T**0.99 between
-            pre-search flatten and post-search sharpen drives convergence to T=1).
+        entropy_multiplier: When set, per-position prior entropy is rescaled to
+            H(softmax(logits)) * entropy_multiplier. When None, priors are the
+            masked softmax of the raw logits (vanilla AlphaZero).
         device: Torch device
         dirichlet_alpha: Dirichlet noise parameter
         dirichlet_epsilon: Dirichlet noise weight (0 = no noise)
@@ -378,14 +383,16 @@ def mcts_search_batched(
         legal_flat = legal_masks[i].reshape(225)
         prior_i = priors[i]
 
-        # Add Dirichlet noise
+        # Add Dirichlet noise (skipped when epsilon=0; alpha=0 would NaN out)
         legal_indices = np.where(legal_flat)[0]
-        noise = np.random.dirichlet([dirichlet_alpha] * len(legal_indices))
-
-        final_priors = (
-            (1 - dirichlet_epsilon) * prior_i[legal_indices]
-            + dirichlet_epsilon * noise
-        ).astype(np.float32)
+        if dirichlet_epsilon > 0:
+            noise = np.random.dirichlet([dirichlet_alpha] * len(legal_indices))
+            final_priors = (
+                (1 - dirichlet_epsilon) * prior_i[legal_indices]
+                + dirichlet_epsilon * noise
+            ).astype(np.float32)
+        else:
+            final_priors = prior_i[legal_indices].astype(np.float32)
         n_legal = len(legal_indices)
         root.child_actions = legal_indices.tolist()
         root.child_priors = final_priors.tolist()

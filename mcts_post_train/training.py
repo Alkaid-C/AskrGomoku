@@ -7,6 +7,8 @@ Trains the policy/value network to match MCTS search results:
 - 8-fold dihedral augmentation (with distribution permutation)
 """
 
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -136,7 +138,7 @@ def train_on_mcts_batch(
     game_records: list[MCTSGameRecord],
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    entropy_divisor: float,
+    entropy_divisor: Optional[float],
 ) -> dict:
     """
     Train model on MCTS self-play data via supervised distillation.
@@ -146,12 +148,13 @@ def train_on_mcts_batch(
         game_records: MCTS game records with visit distributions
         optimizer: Optimizer
         device: Torch device
-        entropy_divisor: Per-sample target entropy = H(visit) / entropy_divisor.
-            Caller passes T**TEMP_CONVERGENCE_EXPONENT (the 0.99 exponent
-            creates the asymmetry that drives T → 1).
+        entropy_divisor: When set, per-sample target entropy =
+            H(visit) / entropy_divisor (visits are sharpened). When None, the
+            raw visit distribution is used as the supervision target.
 
     Returns:
-        Dict with training metrics
+        Dict with training metrics, including `kl_target_student` =
+        CE(target, student) - H(target).
     """
     # Collect all training samples from game records
     all_obs = []
@@ -196,6 +199,7 @@ def train_on_mcts_batch(
     total_model_entropy = 0.0
     total_mcts_entropy = 0.0
     total_sharpened_entropy = 0.0
+    total_kl = 0.0
 
     for start in range(0, n_augmented, TRAIN_BATCH_SIZE):
         end = min(start + TRAIN_BATCH_SIZE, n_augmented)
@@ -205,14 +209,17 @@ def train_on_mcts_batch(
         mb_values = value_tensor[start:end]
         mb_size = end - start
 
-        # Sharpen visit distributions to a target entropy = H(visit) / divisor.
-        # rescale_to_entropy solves directly for the per-row temperature, so
-        # the resulting target's entropy is predictable (the naive p**alpha/Z
-        # form gives entropy that depends on the input shape).
         log_dist = mb_dist.clamp(min=1e-30).log()
         H_visit = -(mb_dist * log_dist).sum(dim=-1)
-        target_H = H_visit / entropy_divisor
-        sharpened = rescale_to_entropy(log_dist, target_H)
+        if entropy_divisor is None:
+            target = mb_dist
+        else:
+            # Sharpen visit distributions to a target entropy = H(visit) / divisor.
+            # rescale_to_entropy solves directly for the per-row temperature, so
+            # the resulting target's entropy is predictable (the naive p**alpha/Z
+            # form gives entropy that depends on the input shape).
+            target_H = H_visit / entropy_divisor
+            target = rescale_to_entropy(log_dist, target_H)
 
         # Forward pass
         logits, pred_values = model(mb_obs)
@@ -222,9 +229,9 @@ def train_on_mcts_batch(
         # Mask illegal moves
         logits = logits.masked_fill(~mb_mask.view(mb_size, 225), LOGIT_MASK_VALUE)
 
-        # Policy loss: cross-entropy vs sharpened MCTS targets
+        # Policy loss: cross-entropy vs target distribution
         log_probs = F.log_softmax(logits, dim=-1)
-        policy_loss = -(sharpened * log_probs).sum(dim=-1).mean()
+        policy_loss = -(target * log_probs).sum(dim=-1).mean()
 
         # Value loss: MSE vs MCTS root Q
         value_loss = F.mse_loss(pred_values, mb_values)
@@ -238,13 +245,16 @@ def train_on_mcts_batch(
             probs = F.softmax(logits, dim=-1)
             model_entropy = -(probs * log_probs).sum(dim=-1).mean().item()
             mcts_entropy = -(mb_dist * (mb_dist + 1e-10).log()).sum(dim=-1).mean().item()
-            sharpened_entropy = -(sharpened * (sharpened + 1e-10).log()).sum(dim=-1).mean().item()
+            target_entropy = -(target * (target + 1e-10).log()).sum(dim=-1).mean().item()
+            # KL(target || student) = CE(target, student) - H(target)
+            kl = (policy_loss - (-(target * (target + 1e-10).log()).sum(dim=-1).mean())).item()
 
         total_policy_loss += policy_loss.item() * mb_size
         total_value_loss += value_loss.item() * mb_size
         total_model_entropy += model_entropy * mb_size
         total_mcts_entropy += mcts_entropy * mb_size
-        total_sharpened_entropy += sharpened_entropy * mb_size
+        total_sharpened_entropy += target_entropy * mb_size
+        total_kl += kl * mb_size
         n_micro_batches += mb_size
 
     # Clip gradients and step
@@ -257,4 +267,5 @@ def train_on_mcts_batch(
         'model_entropy': total_model_entropy / n_micro_batches,
         'mcts_entropy': total_mcts_entropy / n_micro_batches,
         'sharpened_entropy': total_sharpened_entropy / n_micro_batches,
+        'kl_target_student': total_kl / n_micro_batches,
     }
