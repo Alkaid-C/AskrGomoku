@@ -246,7 +246,7 @@ def play_match(model_a: nn.Module, model_b: nn.Module,
 # Q2: sampled-checkpoint full matrix
 # ============================================================================
 
-def discover_sampled_checkpoints(pipeline: str, step: int = 512,
+def discover_sampled_checkpoints(pipeline: str, step: int = 256,
                                  max_update: int = 65536) -> List[Tuple[int, str]]:
     """Return [(update, path)] for every multiple of `step` from `step` to `max_update`."""
     p = PIPELINES[pipeline]
@@ -260,7 +260,7 @@ def discover_sampled_checkpoints(pipeline: str, step: int = 512,
 
 
 def run_q2(device: torch.device, output_path: str, temperature: float = 1.0,
-           sample_step: int = 512, n_openings: int = 32) -> None:
+           sample_step: int = 256, n_openings: int = 128) -> None:
     """Full pairwise matrix on sampled checkpoints.
 
     All n*n (i=black, j=white) games for each opening are dispatched as a single
@@ -441,8 +441,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument('--out', default=None, help='output npz path')
     p.add_argument('--temperature', type=float, default=1.0)
     p.add_argument('--batch-size', type=int, default=512)
-    p.add_argument('--sample-step', type=int, default=512, help='Q2 only: ckpt sampling interval (updates)')
-    p.add_argument('--n-openings', type=int, default=32, help='Q2 only: number of openings (each contributes 2 games per pair via i<->j swap)')
+    p.add_argument('--sample-step', type=int, default=256, help='Q2 only: ckpt sampling interval (updates)')
+    p.add_argument('--n-openings', type=int, default=128, help='Q2 only: number of openings (each contributes 2 games per pair via i<->j swap)')
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     args = p.parse_args(argv)
 

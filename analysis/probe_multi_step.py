@@ -8,8 +8,8 @@ issue.
 import os
 import sys
 
-sys.path.insert(0, '/data/Gomoku/vibe2/mcts_post_train')
-os.chdir('/data/Gomoku/vibe2/mcts_post_train')
+sys.path.insert(0, '/data/Gomoku/vibe2/mcts')
+os.chdir('/data/Gomoku/vibe2/mcts')
 os.environ['PYTORCH_ALLOC_CONF'] = 'expandable_segments:True'
 
 import numpy as np

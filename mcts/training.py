@@ -1,5 +1,5 @@
 """
-MCTS Post-Training: Supervised Distillation
+MCTS Training: Supervised Distillation
 
 Trains the policy/value network to match MCTS search results:
 - Policy: cross-entropy vs sharpened MCTS visit distribution

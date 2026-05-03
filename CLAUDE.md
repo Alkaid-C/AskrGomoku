@@ -6,7 +6,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
 - **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
-- **`mcts_post_train/`** — MCTS-guided distillation pipeline. Refines RL-trained weights by training on MCTS search results. Symlinks `model.py`, `gomoku.py` from `main/`; has its own `mcts.py`, `self_play.py`, `training.py`, `main.py`, `csv_logger.py`.
+- **`mcts/`** — MCTS self-play training, started from an RL checkpoint as warm start to skip the noisy random-init phase. Three CLI subcommands: `generate_data` and `stage1` build the warm-start checkpoint via offline distillation from RL-teacher MCTS rollouts; `stage2` is the actual MCTS training. Symlinks `model.py`, `gomoku.py`, `enhancement.py` from `main/`.
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 
 ## Running
@@ -18,8 +18,10 @@ python3 main.py <output_dir>          # starts or resumes training
 # Interactive play against a checkpoint (from main/ or vanilla/)
 python3 play_web.py                   # Flask server at http://localhost:5000
 
-# MCTS post-training (from mcts_post_train/)
-python3 main.py <output_dir> --checkpoint <path>
+# MCTS training with RL warm start (from mcts/) — see mcts/CLAUDE.md
+python3 main.py generate_data <working_dir>   # working_dir must contain teacher.pt
+python3 main.py stage1        <working_dir>
+python3 main.py stage2        <working_dir>
 
 # ONNX export (from deploy/)
 python3 export_onnx.py --input checkpoint.pt --output model.onnx
@@ -43,12 +45,13 @@ pyright
 - **Opponent pool & historical mining**: Pool of past checkpoints for self-play evaluation; periodic scanning to mine historically hard opponents. (`eval.py`)
 - **Renju openings**: Pre-defined 3-move opening sequences used in `SEED_PROBABILITY` fraction of games for diversity. (`gomoku.py`)
 
-### MCTS Post-Training (`mcts_post_train/`)
+### MCTS Training with RL Warm Start (`mcts/`)
 
-- **MCTS self-play**: Pure self-play — the current model plays both sides with PUCT tree search. Every ply is recorded as a training sample. (`mcts.py`, `self_play.py`)
-- **Entropy-preserving temperature**: MCTS visit distributions are structurally flatter than raw policy. Prior is softened by T before PUCT; visit targets are sharpened by T^0.99 after. T is calibrated via EMA of `H_mcts / H_model`, converging toward 1.0 over training. (`main.py`, `training.py`)
-- **Supervised distillation**: Cross-entropy vs sharpened visit distribution + MSE vs MCTS root Q-value. No entropy bonus, no GAE, no tactical boost, no imitation, no OPR. (`training.py`)
-- **Checkpointing**: Saved every `CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, where `N` is the update count. (`main.py`)
+See `mcts/CLAUDE.md` for the full description. Brief outline:
+
+- **Warm start (stages 0+1)**: A frozen RL teacher runs MCTS self-play, writing `(obs, visit_dist, root_Q)` shards to disk (`data_generator.py`). A fresh student is then trained offline on those shards via CE + MSE distillation (`stage1_trainer.py`). The output `stage1_final.pt` is a network whose policy head is already aligned with MCTS-shaped targets, skipping the noisy random-init phase that early MCTS self-play would otherwise burn simulations on.
+- **MCTS training (stage 2)**: The warm-started student plays itself with vanilla AlphaZero MCTS — Dirichlet noise at the root, raw masked-softmax priors. Every ply is a training sample. Loss is CE + MSE against the raw visit distribution and root Q. No entropy bonus, no GAE, no tactical boost, no imitation, no OPR — the search itself supplies exploration. (`stage2_trainer.py`, `mcts.py`, `self_play.py`, `training.py`)
+- **Checkpointing**: Each stage saves every `STAGE{1,2}_CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, paired with `training_state.json` for resume.
 
 ### Model
 

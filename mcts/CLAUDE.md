@@ -1,0 +1,152 @@
+# mcts/ — MCTS Training with RL Warm Start
+
+MCTS self-play training for the Gomoku policy/value network, started from an RL-trained checkpoint to skip the noisy random-init phase. The actual MCTS training is **stage 2**; stages 0 and 1 produce the warm-start checkpoint.
+
+```bash
+python3 main.py generate_data <working_dir>   # RL teacher.pt -> stage1_data/*.npz   (warm start)
+python3 main.py stage1        <working_dir>   # offline distillation -> stage1_final.pt (warm start)
+python3 main.py stage2        <working_dir>   # MCTS self-play training -> final_policy.pt
+```
+
+The `<working_dir>` must contain `teacher.pt` (a frozen RL checkpoint) before `generate_data`.
+
+## Why a Warm Start
+
+A randomly initialized network produces near-uniform priors and meaningless leaf values, so early MCTS self-play wastes simulations on uninformative exploration and trains the network on essentially-random visit distributions. The warm start sidesteps this stage entirely: the RL checkpoint already plays competently, so the very first MCTS rollout in stage 2 is informative.
+
+The warm start has two phases because the RL checkpoint is a *policy network*, not an MCTS-shaped target. Stage 0 runs MCTS on the RL teacher to produce search-shaped supervision; stage 1 distills a fresh student to that supervision. The output is a network whose policy/value heads are already aligned with the MCTS distribution shape stage 2 will produce.
+
+## Pipeline Stages
+
+### Stage 0: `generate_data` — teacher MCTS rollouts (`data_generator.py`)
+
+Warm-start data prep. The frozen RL teacher runs pure MCTS self-play and writes every ply as a `(obs [3,15,15] uint8, visit_dist [225] f32, root_Q f32)` tuple into sharded `.npz` files. Two temperatures decouple supervision from coverage:
+
+- **`PRIOR_TEMPERATURE`** (entropy multiplier on the prior): per-position, the prior is rescaled so its entropy = `H(softmax(logits)) * PRIOR_TEMPERATURE`. Softens the teacher's logits inside MCTS so the search explores beyond its top moves.
+- **`ACTION_TEMPERATURE`**: applied only at action sampling time (`visits ** (1/T)` then renormalize). The supervision target stored in the shard is the *original* visit distribution — sampling temperature broadens trajectories without distorting targets.
+
+No Dirichlet noise during generation. Resumable: shards already on disk are skipped, and per-shard RNG seeding (`_seed_shard_rngs`) ensures different shards get different content.
+
+### Stage 1: `stage1` — offline distillation (`stage1_trainer.py`)
+
+Warm-start training. A freshly initialized `GomokuPolicyNet` student trains on the static stage-0 shards. No MCTS. Per update:
+
+1. Pull `RAW_BATCH_PER_UPDATE` samples (epoch permutation seeded by `(SEED, epoch)`).
+2. 8-fold dihedral augmentation (see "Distribution augmentation" below).
+3. Gradient accumulation in micro-batches of `TRAIN_BATCH_SIZE`, then `clip_grad_norm_` + step.
+4. EMA-track `KL(target || student)` over the last `STAGE1_KL_EMA_WINDOW` updates.
+5. If `STAGE1_KL_EMA_THRESHOLD` is set and `kl_ema < threshold`, stop early.
+
+Loss is plain CE + `VALUE_LOSS_COEFF * MSE` against the **raw** visit distribution (no sharpening). LR follows `CosineAnnealingLR` from `STAGE1_LR` to `STAGE1_MIN_LR` over `epochs * updates_per_epoch`. Final: `stage1/stage1_final.pt` — the warm-start checkpoint consumed by stage 2.
+
+### Stage 2: `stage2` — MCTS self-play training (`stage2_trainer.py`)
+
+The actual MCTS training. The warm-started student plays itself with vanilla AlphaZero MCTS. Per update:
+
+1. Sample opening IDs (`SEED_PROBABILITY` fraction get a Renju opening, rest start empty).
+2. `play_mcts_games`: model plays both sides in `STAGE2_EPISODES_PER_UPDATE` games, batched into one `mcts_search_batched` call per ply. Every recorded ply becomes a training sample.
+3. `compute_block_rates`: block-win-in-1 hit-rate diagnostic, split black/white.
+4. `train_on_mcts_batch` with `entropy_divisor=None` — targets are the raw visit distributions, no sharpening.
+5. Clear the NN eval cache and `torch.cuda.empty_cache()`.
+
+Stage 2 uses `entropy_multiplier=None` (raw masked softmax priors), Dirichlet noise (`STAGE2_DIRICHLET_ALPHA`/`EPSILON`) at the root for exploration, and `action_temperature=1.0`. Loss is CE + MSE — no entropy bonus, no GAE, no tactical boost, no imitation, no OPR. The search itself supplies exploration.
+
+Final: `stage2/final_policy.pt`.
+
+## File Responsibilities
+
+- `main.py` — Hyperparameter constants (single source of truth) + CLI dispatcher to the three stage entry points.
+- `data_generator.py` — Stage-0 rollouts + sharded `.npz` writer with crash-safe rename.
+- `stage1_trainer.py` — Offline distillation loop, KL-EMA early-exit, cosine LR, resumable from `stage1/training_state.json`.
+- `stage2_trainer.py` — MCTS self-play training loop, cosine LR, resumable from `stage2/training_state.json`.
+- `mcts.py` — PUCT tree search, batched cache-aware leaf evaluation, D4 NN-eval cache.
+- `self_play.py` — `play_mcts_games` (used by both stage 0 and stage 2) + `compute_block_rates` diagnostic.
+- `training.py` — `train_on_mcts_batch` (CE + MSE, optional entropy-divisor sharpening) and `augment_mcts_batch_8fold`.
+- `entropy_ops.py` — `rescale_to_entropy` / `rescale_to_entropy_np`: per-row temperature solved by bisection so that the rescaled softmax has a requested entropy. Used for prior softening (multiplier mode) and visit sharpening (divisor mode).
+- `csv_logger.py` — `Stage1CSVLogger` and `Stage2CSVLogger` write `training_updates.csv` per stage with stage-specific columns.
+- `gomoku.py` → symlink to `main/gomoku.py`
+- `model.py` → symlink to `main/model.py`
+- `enhancement.py` → symlink to `main/enhancement.py` (only `find_all_win_in_1` and `find_blocking_moves` are used, for the block-rate diagnostic)
+
+## MCTS Search (`mcts.py`)
+
+PUCT selection: `Q(child) + c_puct * P(child) * sqrt(N_parent) / (1 + N_child)`.
+
+### Value & sign convention
+
+- The model outputs value from the **side-to-move's perspective**.
+- Each node stores Q (= `child_total / child_n`) from the **parent's perspective** (how good this action was for the parent).
+- `backup(leaf, value, gamma)` applies `v ← -v * gamma` at every level, so each ply flips perspective AND discounts. A terminal `±1` reaches the root with magnitude `gamma^depth` and alternating sign — "lose later" is strictly better than "lose sooner".
+- Terminal nodes: the player who just moved won (or drew), so `terminal_value = +1` (or `0`) from the parent's perspective. `backup` is called with `-terminal_value` so the side-to-move-at-leaf perspective convention is preserved.
+- Root has no parent. It gets `visit_count = 1` as a virtual visit so PUCT uses priors on the first selection. The extracted `root_Q` is the visit-weighted mean of children's Q (= side-to-move's perspective at the root, suitable as a value training target).
+
+### Batched search
+
+For N concurrent positions, each simulation:
+1. PUCT-select to a leaf in each tree (children are materialized lazily via `select_child`).
+2. Terminal leaves → backup the cached terminal value, skip eval.
+3. Non-terminal leaves → clone the board, replay the action path, collect observations.
+4. **Cache-aware** batched forward pass on the unique misses only (see below).
+5. Expand (store priors over legal actions; child `MCTSNode`s are still lazy), backup leaf values.
+
+Stat storage on each node uses parallel **Python lists** (not numpy arrays) — `child_priors`, `child_q`, `child_total: list[float]`, `child_n: list[int]`, `child_actions: list[int]`, `child_node: list[Optional[MCTSNode]]`. Native-list indexing in the PUCT inner loop is ~3× faster than numpy scalar indexing.
+
+### D4-canonical NN eval cache
+
+Across one update, many MCTS positions repeat under D4 symmetry. `_evaluate_with_cache`:
+
+1. For each obs, picks the lexicographically smallest of its 8 D4 transforms as a canonical key (`canonicalize_obs`, packs the 2 stone planes into 57 bytes).
+2. Misses are forwarded through the model in canonical orientation; the result (post-mask, post-softmax, post-entropy-rescale prior + value) is cached.
+3. Hits collapse to a permutation lookup: `priors[i] = canonical_priors[_FORWARD_PERM[s]]`.
+
+Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within an update; the cache is cleared at the optimizer.step() boundary (`clear_nn_eval_cache`).
+
+### Dirichlet noise
+
+Added to root priors only, on legal actions. Skipped when `dirichlet_epsilon == 0`.
+
+## Entropy Rescaling (`entropy_ops.py`)
+
+Both prior softening and visit sharpening are softmax temperature scaling. The naive `p**alpha / Z` form gives an entropy that depends on the input's shape. `rescale_to_entropy` instead solves for the per-row temperature that yields a requested target entropy via bisection in log-tau space (24 iters, ~1.4e-6 nat precision). Degenerate near-onehot rows fall back to plain softmax.
+
+Two callers:
+- **Prior softening** (`mcts.py::_evaluate_with_cache`): `target_H = min(H_model * entropy_multiplier, ln 225)`. Used during stage 0 with `entropy_multiplier = PRIOR_TEMPERATURE = 1.28`. Stage 2 passes `entropy_multiplier=None`, which skips rescale and uses raw masked softmax.
+- **Visit sharpening** (`training.py::train_on_mcts_batch`): `target_H = H_visit / entropy_divisor`. Currently both stages pass `entropy_divisor=None`, so the raw visit distribution is the supervision target. The hook is preserved for experimentation.
+
+## Training (`training.py`)
+
+### Loss
+
+```
+loss = policy_loss + VALUE_LOSS_COEFF * value_loss
+```
+
+- **Policy loss**: `-(target * log_softmax(logits)).sum(dim=-1).mean()`, where `target` is either the raw visit distribution or the entropy-rescaled version when `entropy_divisor` is set.
+- **Value loss**: MSE against MCTS root Q.
+- **`kl_target_student`** = CE(target, student) − H(target). Logged for both stages.
+
+Logits are masked with `LOGIT_MASK_VALUE` on illegal squares before softmax.
+
+### Distribution augmentation
+
+`augment_mcts_batch_8fold` applies the 8 dihedral transforms. For obs and masks it uses spatial flips/transposes (matching `augment_batch_8fold` in `enhancement.py`). For the `[225]` visit distribution it precomputes 8 inverse permutation tables from `enhancement.py`'s `new_rows`/`new_cols` coordinate transforms: `new_dist[s, new_idx] = old_dist[inv_perm[s, new_idx]]`. The forward permutation table in `mcts.py::_FORWARD_PERM` and the inverse table in `training.py::DIST_PERM_TABLES` derive from the same coordinate transforms — they must stay in sync.
+
+Gradient accumulation across micro-batches of `TRAIN_BATCH_SIZE`, then `clip_grad_norm_(GRAD_CLIP_NORM)` + `optimizer.step()`.
+
+## Hyperparameters & Schedules
+
+All hyperparameters are module-level constants at the top of `main.py` (no CLI tuning surface).
+
+- **Optimizer**: `AdamW(fused=True)` with `WEIGHT_DECAY` (`1 / 2**24`).
+- **LR**: `CosineAnnealingLR` per stage. Stage 1 from `STAGE1_LR` → `STAGE1_MIN_LR` over `epochs * updates_per_epoch`. Stage 2 from `STAGE2_LR` → `STAGE2_MIN_LR` over `STAGE2_TOTAL_UPDATES`.
+- **MCTS backup discount**: `DISCOUNT_GAMMA` (shared by all stages).
+- **PUCT**: `C_PUCT` (shared).
+- **Checkpointing**: every `STAGE{1,2}_CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, paired with `training_state.json` for resume.
+
+## Resume Semantics
+
+Each stage owns its `training_state.json` and is independently resumable from the most recent checkpoint named in that file:
+
+- **Stage 1**: state stores `current_update` and `kl_ema`. Resume re-loads model, optimizer, scheduler. Final write produces both `checkpoint_update_{N}.pt` and `stage1_final.pt`.
+- **Stage 2**: state stores `current_update`. Stage 1's `stage1_final.pt` is required only for a fresh start; once stage 2 has its own state file, it resumes independently. Final write produces `final_policy.pt` (also a `checkpoint_update_{N}.pt`).
+- **Stage 0**: no state file — uses on-disk shard presence as the resume signal. Per-shard RNG seeding keeps newly generated shards from duplicating skipped ones.

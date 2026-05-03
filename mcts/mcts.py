@@ -20,7 +20,7 @@ from gomoku import GameState, GomokuBoard, encode_observation, idx_to_pos
 
 # Forward permutation table: _FORWARD_PERM[s, old_flat] = new_flat.
 # Coordinate convention matches main/enhancement.py:268-269 (and the inverse
-# table in mcts_post_train/training.py); both must stay in sync.
+# table in mcts/training.py); both must stay in sync.
 def _build_forward_perm() -> np.ndarray:
     coords = np.arange(225)
     r = coords // 15

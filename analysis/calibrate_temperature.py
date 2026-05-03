@@ -1,5 +1,5 @@
 """
-Empirically determine INITIAL_TEMPERATURE for MCTS post-training.
+Empirically determine INITIAL_TEMPERATURE for MCTS training.
 
 Plays MCTS self-play games at several prior temperatures, measures
 H_mcts / H_model on the collected positions, then finds the fixed point
