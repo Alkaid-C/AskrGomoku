@@ -37,13 +37,13 @@ PRIOR_TEMPERATURE = 1.28        # teacher logits → MCTS prior (entropy multipl
 ACTION_TEMPERATURE = 2.0        # MCTS visits → move sampling; broadens trajectories
 
 # === Stage 1 ===
-STAGE1_EPOCHS = 5
+STAGE1_EPOCHS = 32
 RAW_BATCH_PER_UPDATE = 512
 STAGE1_LR = 1e-3
 STAGE1_MIN_LR = 1e-4
 STAGE1_KL_EMA_WINDOW = 32
 STAGE1_KL_EMA_THRESHOLD: Optional[float] = None  # None → run all epochs
-STAGE1_CHECKPOINT_INTERVAL = 64
+STAGE1_CHECKPOINT_INTERVAL = 4
 
 # === Stage 2 ===
 STAGE2_TOTAL_UPDATES = 8192
@@ -57,7 +57,7 @@ STAGE2_CHECKPOINT_INTERVAL = 32
 
 # === Shared ===
 TRAIN_BATCH_SIZE = 512          # GPU micro-batch cap
-VALUE_LOSS_COEFF = 0.5
+VALUE_LOSS_COEFF = 1.0
 GRAD_CLIP_NORM = 16.0
 WEIGHT_DECAY = 1.0 / 2 ** 24
 C_PUCT = 1.25

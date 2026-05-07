@@ -6,6 +6,7 @@ Supports batched search across multiple game positions simultaneously.
 """
 
 import math
+from collections import OrderedDict
 from typing import Callable, Optional, cast
 
 import numpy as np
@@ -45,13 +46,31 @@ _SPATIAL_TRANSFORMS: list[Callable[[np.ndarray], np.ndarray]] = [
     lambda o: o[:, ::-1, ::-1].transpose(0, 2, 1),  # s=7: anti-transpose
 ]
 
-# Cache maps canonical-obs bytes -> (canonical_priors_scaled [225] float32, value).
+# Forward pass uses a fixed batch size: short batches are zero-padded and
+# longer ones are split into microbatches. Two reasons: (a) keep caching-
+# allocator segments uniform — variable M caused a ~14 GB allocator high-water
+# mark from fragmentation in stage 0; (b) land in the GPU's throughput sweet
+# spot. This model has small spatial dims (15x15) and low arithmetic intensity
+# (attention scores [B, 4, 225, 225] dominate bandwidth), so per-position
+# throughput on the target GPU peaks at B=64 and decreases monotonically as B
+# grows — larger batches blow past L2 and become bandwidth-bound.
+_FIXED_FWD_BATCH = 64
+
+# Cache maps canonical-obs bytes -> (canonical_priors_scaled raw bytes, value).
+# Priors are stored as raw float32 bytes (900 B) rather than as an ndarray, to
+# strip ~120 B of numpy header overhead per entry; reconstructed via
+# `np.frombuffer` on hit (zero-copy, read-only view; permutation indexing
+# produces a fresh writable array).
+#
 # `canonical_priors_scaled` is the post-mask, post-softmax, post-entropy-rescale
 # distribution in canonical orientation (illegal squares are exactly 0). Caching
 # the scaled distribution rather than raw logits is sound because the entropy
-# multiplier T is constant within a single training update, and the cache is
-# cleared once per update at the optimizer.step() boundary.
-_NN_EVAL_CACHE: dict[bytes, tuple[np.ndarray, float]] = {}
+# multiplier T is constant within any window where the cache lives: stage 2
+# clears the cache at every optimizer.step() (model weights change), and stage 0
+# data generation runs against a frozen teacher so entries stay valid across
+# shards. LRU eviction caps memory; OrderedDict preserves insertion/access order.
+_NN_EVAL_CACHE_MAX_ENTRIES = 1024 * 1024 * 16
+_NN_EVAL_CACHE: "OrderedDict[bytes, tuple[bytes, float]]" = OrderedDict()
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
 
@@ -283,12 +302,31 @@ def _evaluate_with_cache(
     _CACHE_MISSES += len(miss_indices)
 
     if miss_indices:
+        M = len(miss_indices)
         m_obs_np = np.stack(miss_canonical_obs)  # [M, 3, 15, 15] uint8, canonical
-        miss_obs_tensor = torch.from_numpy(m_obs_np).float().to(device)
-        with torch.inference_mode():
-            m_logits, m_values = model(miss_obs_tensor)
-        m_logits_np = m_logits.squeeze(1).view(len(miss_indices), 225).cpu().numpy()
-        m_values_np = m_values.squeeze(-1).cpu().numpy()
+
+        # Forward in chunks of _FIXED_FWD_BATCH; the trailing chunk is padded
+        # with zeros so every model call sees the same input shape. Padded
+        # rows are sliced off after concat — they never enter the cache.
+        logits_chunks: list[np.ndarray] = []
+        values_chunks: list[np.ndarray] = []
+        for s in range(0, M, _FIXED_FWD_BATCH):
+            chunk_np = m_obs_np[s:s + _FIXED_FWD_BATCH]
+            if chunk_np.shape[0] < _FIXED_FWD_BATCH:
+                pad = np.zeros(
+                    (_FIXED_FWD_BATCH - chunk_np.shape[0], 3, 15, 15),
+                    dtype=chunk_np.dtype,
+                )
+                chunk_np = np.concatenate([chunk_np, pad], axis=0)
+            chunk_t = torch.from_numpy(chunk_np).float().to(device)
+            with torch.inference_mode():
+                chunk_logits, chunk_values = model(chunk_t)
+            logits_chunks.append(
+                chunk_logits.squeeze(1).view(_FIXED_FWD_BATCH, 225).cpu().numpy()
+            )
+            values_chunks.append(chunk_values.squeeze(-1).cpu().numpy())
+        m_logits_np = np.concatenate(logits_chunks, axis=0)[:M]
+        m_values_np = np.concatenate(values_chunks, axis=0)[:M]
 
         # Canonical legal mask is implied by the canonical obs: any square
         # occupied in either stone plane is illegal.
@@ -309,14 +347,18 @@ def _evaluate_with_cache(
         for k, i in enumerate(miss_indices):
             key = keys_and_s[i][0]
             _NN_EVAL_CACHE[key] = (
-                canonical_priors_scaled[k].copy(),
+                np.ascontiguousarray(canonical_priors_scaled[k], dtype=np.float32).tobytes(),
                 float(m_values_np[k]),
             )
+        while len(_NN_EVAL_CACHE) > _NN_EVAL_CACHE_MAX_ENTRIES:
+            _NN_EVAL_CACHE.popitem(last=False)
 
     priors = np.empty((n, 225), dtype=np.float32)
     values = np.empty(n, dtype=np.float32)
     for i, (key, s) in enumerate(keys_and_s):
-        canonical_priors, value = _NN_EVAL_CACHE[key]
+        canonical_priors_bytes, value = _NN_EVAL_CACHE[key]
+        _NN_EVAL_CACHE.move_to_end(key)
+        canonical_priors = np.frombuffer(canonical_priors_bytes, dtype=np.float32)
         priors[i] = canonical_priors[_FORWARD_PERM[s]]
         values[i] = value
     return priors, values

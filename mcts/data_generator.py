@@ -25,9 +25,10 @@ import time
 import numpy as np
 import torch
 from gomoku import RENJU_OPENING_SEQUENCES, SEED_PROBABILITY
-from mcts import clear_nn_eval_cache
 from model import GomokuPolicyNet
 from self_play import play_mcts_games
+
+from mcts import get_nn_eval_cache_size, get_nn_eval_cache_stats
 
 SHARD_FILENAME = "stage1_shard_{:04d}.npz"
 
@@ -103,6 +104,7 @@ def generate_stage1_data(
             else:
                 opening_ids.append(-1)
 
+        hits_before, misses_before = get_nn_eval_cache_stats()
         t0 = time.time()
         records = play_mcts_games(
             model=model,
@@ -117,9 +119,13 @@ def generate_stage1_data(
             gamma=gamma,
             action_temperature=action_temperature,
         )
-        clear_nn_eval_cache()
         torch.cuda.empty_cache()
         t_elapsed = time.time() - t0
+        hits_after, misses_after = get_nn_eval_cache_stats()
+        shard_hits = hits_after - hits_before
+        shard_misses = misses_after - misses_before
+        shard_lookups = shard_hits + shard_misses
+        hit_rate = shard_hits / shard_lookups if shard_lookups > 0 else 0.0
 
         all_obs: list[np.ndarray] = []
         all_dists: list[np.ndarray] = []
@@ -153,7 +159,10 @@ def generate_stage1_data(
         print(
             f"  [{shard_idx+1}/{n_shards}] {os.path.basename(path)}: "
             f"{n_games} games, {len(all_obs)} samples, "
-            f"{t_elapsed:.0f}s | total {elapsed_total/60:.1f}m, eta {eta/60:.1f}m"
+            f"{t_elapsed:.0f}s | "
+            f"cache hit {hit_rate:.1%} ({shard_hits}/{shard_lookups}), "
+            f"size {get_nn_eval_cache_size()} | "
+            f"total {elapsed_total/60:.1f}m, eta {eta/60:.1f}m"
         )
 
     print("Data generation complete.")

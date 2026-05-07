@@ -99,7 +99,7 @@ Across one update, many MCTS positions repeat under D4 symmetry. `_evaluate_with
 2. Misses are forwarded through the model in canonical orientation; the result (post-mask, post-softmax, post-entropy-rescale prior + value) is cached.
 3. Hits collapse to a permutation lookup: `priors[i] = canonical_priors[_FORWARD_PERM[s]]`.
 
-Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within an update; the cache is cleared at the optimizer.step() boundary (`clear_nn_eval_cache`).
+Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within any window where the cache lives. The cache is an `OrderedDict` with LRU eviction capped at `_NN_EVAL_CACHE_MAX_ENTRIES` (16M entries, ~20 GB). Stage 2 calls `clear_nn_eval_cache` at every optimizer.step() (model weights change). Stage 0 (data generation) runs against a frozen teacher and does **not** clear between shards — entries stay valid and the LRU cap bounds memory.
 
 ### Dirichlet noise
 
