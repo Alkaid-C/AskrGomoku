@@ -9,6 +9,7 @@
 
 # code
 !*.py
+!*.cpp
 
 # deploy code
 !*.html
