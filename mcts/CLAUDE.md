@@ -46,7 +46,7 @@ The actual MCTS training. The warm-started student plays itself with vanilla Alp
 1. Sample opening IDs (`SEED_PROBABILITY` fraction get a Renju opening, rest start empty).
 2. `play_mcts_games`: model plays both sides in `STAGE2_EPISODES_PER_UPDATE` games, batched into one `mcts_search_batched` call per ply. Every recorded ply becomes a training sample.
 3. `compute_block_rates`: block-win-in-1 hit-rate diagnostic, split black/white.
-4. `train_on_mcts_batch` with `entropy_divisor=None` — targets are the raw visit distributions, no sharpening.
+4. `train_on_mcts_batch` — targets are the raw visit distributions.
 5. Clear the NN eval cache and `torch.cuda.empty_cache()`.
 
 Stage 2 uses `entropy_multiplier=None` (raw masked softmax priors), Dirichlet noise (`STAGE2_DIRICHLET_ALPHA`/`EPSILON`) at the root for exploration, and `action_temperature=1.0`. Loss is CE + MSE — no entropy bonus, no GAE, no tactical boost, no imitation, no OPR. The search itself supplies exploration.
@@ -61,8 +61,8 @@ Final: `stage2/final_policy.pt`.
 - `stage2_trainer.py` — MCTS self-play training loop, cosine LR, resumable from `stage2/training_state.json`.
 - `mcts.py` — PUCT tree search, batched cache-aware leaf evaluation, D4 NN-eval cache.
 - `self_play.py` — `play_mcts_games` (used by both stage 0 and stage 2) + `compute_block_rates` diagnostic.
-- `training.py` — `train_on_mcts_batch` (CE + MSE, optional entropy-divisor sharpening) and `augment_mcts_batch_8fold`.
-- `entropy_ops.py` — `rescale_to_entropy` / `rescale_to_entropy_np`: per-row temperature solved by bisection so that the rescaled softmax has a requested entropy. Used for prior softening (multiplier mode) and visit sharpening (divisor mode).
+- `training.py` — `train_on_mcts_batch` (CE + MSE against raw visit distributions) and `augment_mcts_batch_8fold`.
+- `entropy_ops.py` — `rescale_to_entropy_np`: per-row softmax temperature solved by bisection so that the rescaled distribution has a requested entropy. Used only by `mcts.py::_evaluate_with_cache` for prior softening.
 - `csv_logger.py` — `Stage1CSVLogger` and `Stage2CSVLogger` write `training_updates.csv` per stage with stage-specific columns.
 - `gomoku.py` → symlink to `main/gomoku.py`
 - `model.py` → symlink to `main/model.py`
@@ -96,10 +96,10 @@ Stat storage on each node uses parallel **Python lists** (not numpy arrays) — 
 Across one update, many MCTS positions repeat under D4 symmetry. `_evaluate_with_cache`:
 
 1. For each obs, picks the lexicographically smallest of its 8 D4 transforms as a canonical key (`canonicalize_obs`, packs the 2 stone planes into 57 bytes).
-2. Misses are forwarded through the model in canonical orientation; the result (post-mask, post-softmax, post-entropy-rescale prior + value) is cached.
+2. Misses are forwarded through the model in canonical orientation in fixed-size chunks of `_FIXED_FWD_BATCH`, with short trailing chunks zero-padded to the same shape. Two reasons: (a) uniform chunk shapes prevent allocator fragmentation (variable batch sizes caused a ~14 GB high-water mark in stage 0); (b) per-position throughput peaks at this size for this model's attention-dominated arithmetic and degrades with larger batches. The result (post-mask, post-softmax prior + value) is cached.
 3. Hits collapse to a permutation lookup: `priors[i] = canonical_priors[_FORWARD_PERM[s]]`.
 
-Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within any window where the cache lives. The cache is an `OrderedDict` with LRU eviction capped at `_NN_EVAL_CACHE_MAX_ENTRIES` (16M entries, ~20 GB). Stage 2 calls `clear_nn_eval_cache` at every optimizer.step() (model weights change). Stage 0 (data generation) runs against a frozen teacher and does **not** clear between shards — entries stay valid and the LRU cap bounds memory.
+Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within any window where the cache lives. The cache is an `OrderedDict` with LRU eviction capped at `_NN_EVAL_CACHE_MAX_ENTRIES`. Stage 2 calls `clear_nn_eval_cache` at every optimizer.step() (model weights change). Stage 0 (data generation) runs against a frozen teacher and does **not** clear between shards — entries stay valid and the LRU cap bounds memory.
 
 ### Dirichlet noise
 
@@ -107,11 +107,9 @@ Added to root priors only, on legal actions. Skipped when `dirichlet_epsilon == 
 
 ## Entropy Rescaling (`entropy_ops.py`)
 
-Both prior softening and visit sharpening are softmax temperature scaling. The naive `p**alpha / Z` form gives an entropy that depends on the input's shape. `rescale_to_entropy` instead solves for the per-row temperature that yields a requested target entropy via bisection in log-tau space (24 iters, ~1.4e-6 nat precision). Degenerate near-onehot rows fall back to plain softmax.
+Prior softening is softmax temperature scaling. The naive `p**alpha / Z` form gives an entropy that depends on the input's shape. `rescale_to_entropy_np` instead solves for the per-row temperature that yields a requested target entropy via bisection in log-tau space (24 iters, ~1.4e-6 nat precision). Degenerate near-onehot rows fall back to plain softmax.
 
-Two callers:
-- **Prior softening** (`mcts.py::_evaluate_with_cache`): `target_H = min(H_model * entropy_multiplier, ln 225)`. Used during stage 0 with `entropy_multiplier = PRIOR_TEMPERATURE = 1.28`. Stage 2 passes `entropy_multiplier=None`, which skips rescale and uses raw masked softmax.
-- **Visit sharpening** (`training.py::train_on_mcts_batch`): `target_H = H_visit / entropy_divisor`. Currently both stages pass `entropy_divisor=None`, so the raw visit distribution is the supervision target. The hook is preserved for experimentation.
+Single caller — **prior softening** (`mcts.py::_evaluate_with_cache`): `target_H = min(H_model * entropy_multiplier, ln 225)`. Used during stage 0 with `entropy_multiplier = PRIOR_TEMPERATURE`. Stage 2 passes `entropy_multiplier=None`, which skips the rescale and uses raw masked softmax.
 
 ## Training (`training.py`)
 
@@ -121,7 +119,7 @@ Two callers:
 loss = policy_loss + VALUE_LOSS_COEFF * value_loss
 ```
 
-- **Policy loss**: `-(target * log_softmax(logits)).sum(dim=-1).mean()`, where `target` is either the raw visit distribution or the entropy-rescaled version when `entropy_divisor` is set.
+- **Policy loss**: `-(target * log_softmax(logits)).sum(dim=-1).mean()`, where `target` is the raw visit distribution.
 - **Value loss**: MSE against MCTS root Q.
 - **`kl_target_student`** = CE(target, student) − H(target). Logged for both stages.
 

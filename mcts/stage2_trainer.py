@@ -15,7 +15,7 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 from csv_logger import Stage2CSVLogger
-from gomoku import RENJU_OPENING_SEQUENCES, SEED_PROBABILITY, GameState
+from gomoku import RENJU_OPENING_SEQUENCES, GameState
 from mcts import clear_nn_eval_cache, get_nn_eval_cache_stats
 from model import GomokuPolicyNet
 from self_play import compute_block_rates, play_mcts_games
@@ -111,10 +111,12 @@ def run_stage2(
     c_puct: float,
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
+    seed_probability: float,
     gamma: float,
     learning_rate: float,
     min_lr: float,
     weight_decay: float,
+    value_loss_coeff: float,
     checkpoint_interval: int,
     device: torch.device,
 ) -> None:
@@ -160,7 +162,7 @@ def run_stage2(
 
         opening_ids: list[int] = []
         for _ in range(episodes_per_update):
-            if random.random() < SEED_PROBABILITY:
+            if random.random() < seed_probability:
                 opening_ids.append(random.randint(0, num_openings - 1))
             else:
                 opening_ids.append(-1)
@@ -206,7 +208,7 @@ def run_stage2(
 
         t0 = time.time()
         train_results = train_on_mcts_batch(
-            model, records, optimizer, device, entropy_divisor=None,
+            model, records, optimizer, device, value_loss_coeff=value_loss_coeff,
         )
         clear_nn_eval_cache()
         torch.cuda.empty_cache()

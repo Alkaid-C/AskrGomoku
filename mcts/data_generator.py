@@ -24,7 +24,7 @@ import time
 
 import numpy as np
 import torch
-from gomoku import RENJU_OPENING_SEQUENCES, SEED_PROBABILITY
+from gomoku import RENJU_OPENING_SEQUENCES
 from model import GomokuPolicyNet
 from self_play import play_mcts_games
 
@@ -63,6 +63,7 @@ def generate_stage1_data(
     c_puct: float,
     prior_temperature: float,
     action_temperature: float,
+    seed_probability: float,
     gamma: float,
     seed: int,
     device: torch.device,
@@ -99,7 +100,7 @@ def generate_stage1_data(
 
         opening_ids: list[int] = []
         for _ in range(n_games):
-            if random.random() < SEED_PROBABILITY:
+            if random.random() < seed_probability:
                 opening_ids.append(random.randint(0, num_openings - 1))
             else:
                 opening_ids.append(-1)

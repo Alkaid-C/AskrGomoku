@@ -47,14 +47,7 @@ _SPATIAL_TRANSFORMS: list[Callable[[np.ndarray], np.ndarray]] = [
     lambda o: o[:, ::-1, ::-1].transpose(0, 2, 1),  # s=7: anti-transpose
 ]
 
-# Forward pass uses a fixed batch size: short batches are zero-padded and
-# longer ones are split into microbatches. Two reasons: (a) keep caching-
-# allocator segments uniform — variable M caused a ~14 GB allocator high-water
-# mark from fragmentation in stage 0; (b) land in the GPU's throughput sweet
-# spot. This model has small spatial dims (15x15) and low arithmetic intensity
-# (attention scores [B, 4, 225, 225] dominate bandwidth), so per-position
-# throughput on the target GPU peaks at B=64 and decreases monotonically as B
-# grows — larger batches blow past L2 and become bandwidth-bound.
+# Fixed chunk size with zero-padding: uniform shapes prevent allocator fragmentation and hit the throughput sweet spot (see CLAUDE.md).
 _FIXED_FWD_BATCH = 64
 
 # Cache maps canonical-obs bytes -> (canonical_priors_scaled raw bytes, value).
@@ -66,11 +59,11 @@ _FIXED_FWD_BATCH = 64
 # `canonical_priors_scaled` is the post-mask, post-softmax, post-entropy-rescale
 # distribution in canonical orientation (illegal squares are exactly 0). Caching
 # the scaled distribution rather than raw logits is sound because the entropy
-# multiplier T is constant within any window where the cache lives: stage 2
+# multiplier is constant within any window where the cache lives: stage 2
 # clears the cache at every optimizer.step() (model weights change), and stage 0
 # data generation runs against a frozen teacher so entries stay valid across
 # shards. LRU eviction caps memory; OrderedDict preserves insertion/access order.
-_NN_EVAL_CACHE_MAX_ENTRIES = 1024 * 1024 * 16
+_NN_EVAL_CACHE_MAX_ENTRIES = 1024 * 1024 * 8
 _NN_EVAL_CACHE: "OrderedDict[bytes, tuple[bytes, float]]" = OrderedDict()
 _CACHE_HITS = 0
 _CACHE_MISSES = 0
