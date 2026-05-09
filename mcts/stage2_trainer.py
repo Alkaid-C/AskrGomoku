@@ -117,6 +117,7 @@ def run_stage2(
     min_lr: float,
     weight_decay: float,
     value_loss_coeff: float,
+    optimize_steps_per_update: int,
     checkpoint_interval: int,
     device: torch.device,
 ) -> None:
@@ -206,13 +207,30 @@ def run_stage2(
         cache_hit_rate = cache_hits / cache_total if cache_total > 0 else 0.0
         current_lr = optimizer.param_groups[0]['lr']
 
-        t0 = time.time()
-        train_results = train_on_mcts_batch(
-            model, records, optimizer, device, value_loss_coeff=value_loss_coeff,
-        )
+        # Drop the self-play NN eval cache before training so the PyTorch
+        # allocator can reuse those blocks for training activations.
         clear_nn_eval_cache()
-        torch.cuda.empty_cache()
+
+        t0 = time.time()
+        sum_policy_loss = 0.0
+        sum_value_loss = 0.0
+        sum_kl = 0.0
+        for _ in range(optimize_steps_per_update):
+            step_results = train_on_mcts_batch(
+                model, records, optimizer, device, value_loss_coeff=value_loss_coeff,
+            )
+            sum_policy_loss += step_results['policy_loss']
+            sum_value_loss += step_results['value_loss']
+            sum_kl += step_results['kl_target_student']
+        train_results = {
+            'policy_loss': sum_policy_loss / optimize_steps_per_update,
+            'value_loss': sum_value_loss / optimize_steps_per_update,
+            'kl_target_student': sum_kl / optimize_steps_per_update,
+        }
         t_train = time.time() - t0
+        # Return freed blocks to CUDA after training (training produces the
+        # largest transient allocations).
+        torch.cuda.empty_cache()
 
         scheduler.step()
 

@@ -30,16 +30,16 @@ import torch
 # ============================================================================
 
 # === Data generation ===
-NUM_GAMES = 1024
-NUM_SIMULATIONS_GEN = 1024
+NUM_GAMES = 16384
+NUM_SIMULATIONS_GEN = 2048
 GAMES_PER_SHARD = 1024
 PRIOR_TEMPERATURE = 1.28        # teacher logits → MCTS prior (entropy multiplier)
 ACTION_TEMPERATURE = 1.0        # MCTS visits → move sampling; broadens trajectories
 SEED_PROBABILITY = 0.5          # fraction of games started from a Renju opening (overrides gomoku.SEED_PROBABILITY for MCTS)
 
 # === Stage 1 ===
-STAGE1_EPOCHS = 8
-RAW_BATCH_PER_UPDATE = 1024
+STAGE1_EPOCHS = 4
+RAW_BATCH_PER_UPDATE = 4096
 STAGE1_LR = 1.0/1024
 STAGE1_MIN_LR = 1.0/1024
 STAGE1_KL_EMA_WINDOW = 32
@@ -47,11 +47,12 @@ STAGE1_KL_EMA_THRESHOLD: Optional[float] = None  # None → run all epochs
 STAGE1_CHECKPOINT_INTERVAL = 128
 
 # === Stage 2 ===
-STAGE2_TOTAL_UPDATES = 8192
+STAGE2_TOTAL_UPDATES = 2048
 STAGE2_EPISODES_PER_UPDATE = 256
-NUM_SIMULATIONS_S2 = 1024
-STAGE2_LR = 1.0 / 2048
-STAGE2_MIN_LR = STAGE2_LR / 2
+NUM_SIMULATIONS_S2 = 2048
+STAGE2_OPTIMIZE_STEPS_PER_UPDATE = 2  # train K times on each self-play batch; LR is divided by K
+STAGE2_LR = 1.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE
+STAGE2_MIN_LR = STAGE2_LR / 8
 STAGE2_DIRICHLET_ALPHA = 0.15
 STAGE2_DIRICHLET_EPSILON = 0.25
 STAGE2_CHECKPOINT_INTERVAL = 32
@@ -155,6 +156,7 @@ def main() -> None:
             min_lr=STAGE2_MIN_LR,
             weight_decay=WEIGHT_DECAY,
             value_loss_coeff=VALUE_LOSS_COEFF,
+            optimize_steps_per_update=STAGE2_OPTIMIZE_STEPS_PER_UPDATE,
             checkpoint_interval=STAGE2_CHECKPOINT_INTERVAL,
             device=DEVICE,
         )
