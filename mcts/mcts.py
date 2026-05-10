@@ -214,8 +214,6 @@ def _evaluate_with_cache(
                 np.ascontiguousarray(canonical_priors_scaled[k], dtype=np.float32).tobytes(),
                 float(m_values_np[k]),
             )
-        while len(_NN_EVAL_CACHE) > _NN_EVAL_CACHE_MAX_ENTRIES:
-            _NN_EVAL_CACHE.popitem(last=False)
 
     priors = np.empty((n, 225), dtype=np.float32)
     values = np.empty(n, dtype=np.float32)
@@ -225,6 +223,13 @@ def _evaluate_with_cache(
         canonical_priors = np.frombuffer(canonical_priors_bytes, dtype=np.float32)
         priors[i] = canonical_priors[_FORWARD_PERM[s]]
         values[i] = value
+
+    # Evict only after every key in this batch has been marked recently-used.
+    # Doing this before the lookup loop could pop hits at the LRU front that
+    # this batch still needs to read.
+    while len(_NN_EVAL_CACHE) > _NN_EVAL_CACHE_MAX_ENTRIES:
+        _NN_EVAL_CACHE.popitem(last=False)
+
     return priors, values
 
 
