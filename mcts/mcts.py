@@ -234,6 +234,37 @@ def _evaluate_with_cache(
 
 
 # ============================================================================
+# Root Dirichlet noise neighborhood
+# ============================================================================
+
+# Chebyshev radius around existing stones inside which root Dirichlet noise is
+# applied. 4 matches the tactical horizon of a single stone (a five-in-a-row
+# uses neighbors up to 4 squares away in any direction). Narrowing the noise
+# support to this region keeps Kα close to the AlphaZero ~10 sweet spot even
+# though Gomoku has 225 legal moves at the opening.
+_DIRICHLET_NEIGHBORHOOD_RADIUS = 4
+
+
+def _stone_neighborhood_mask(c0: np.ndarray, c1: np.ndarray, radius: int) -> np.ndarray:
+    """15x15 bool mask of squares within `radius` (Chebyshev) of any stone.
+
+    Returns all-False on an empty board; the caller falls back to the legal
+    mask in that case.
+    """
+    occupied = (c0 | c1).astype(bool)
+    if not occupied.any():
+        return np.zeros_like(occupied, dtype=bool)
+    H, W = occupied.shape
+    pad = np.pad(occupied, radius, mode="constant")
+    out = np.zeros((H, W), dtype=bool)
+    span = 2 * radius + 1
+    for dr in range(span):
+        for dc in range(span):
+            out |= pad[dr : dr + H, dc : dc + W]
+    return out
+
+
+# ============================================================================
 # Batched MCTS Search
 # ============================================================================
 
@@ -261,8 +292,11 @@ def mcts_search_batched(
             H(softmax(logits)) * entropy_multiplier. When None, priors are the
             masked softmax of the raw logits (vanilla AlphaZero).
         device: Torch device
-        dirichlet_alpha: Dirichlet noise parameter
-        dirichlet_epsilon: Dirichlet noise weight (0 = no noise)
+        dirichlet_alpha: Dirichlet noise concentration (per-axis).
+        dirichlet_epsilon: Dirichlet noise mixing weight (0 = no noise). When
+            > 0, noise support is restricted to legal moves within
+            _DIRICHLET_NEIGHBORHOOD_RADIUS (Chebyshev) of an existing stone;
+            on an empty board it falls back to all legal moves.
         gamma: Per-ply discount in backup; backed-up Q carries a gamma^depth
             factor, so deeper terminals contribute less than shallow ones.
 
@@ -277,11 +311,15 @@ def mcts_search_batched(
     # --- Root initialization: batch forward pass ---
     obs_list = []
     legal_masks = []
+    neighborhood_masks = []
     for board in boards:
         c0, c1, _ = board.GetBoardState()
         obs_list.append(encode_observation(c0, c1))
         legal_mask, _ = board.GetLegalMoves()
         legal_masks.append(legal_mask)
+        neighborhood_masks.append(
+            _stone_neighborhood_mask(c0, c1, _DIRICHLET_NEIGHBORHOOD_RADIUS)
+        )
 
     priors, _root_values = _evaluate_with_cache(
         model, obs_list, entropy_multiplier, device
@@ -293,16 +331,27 @@ def mcts_search_batched(
         root = MCTSNode()
         root.visit_count = 1  # virtual visit so PUCT uses priors on first selection
 
-        legal_flat = legal_masks[i].reshape(225)
+        legal_flat = legal_masks[i].reshape(225).astype(bool)
         prior_i = priors[i]
 
-        # Add Dirichlet noise (skipped when epsilon=0; alpha=0 would NaN out)
+        # Add Dirichlet noise (skipped when epsilon=0; alpha=0 would NaN out).
+        # Noise is restricted to legal moves within _DIRICHLET_NEIGHBORHOOD_RADIUS
+        # (Chebyshev) of an existing stone; on empty boards fall back to all
+        # legal moves. Positions outside the noise support keep their plain
+        # (1 - ε) · P mass; the ε mass is distributed over the noise support
+        # only. Total over legal_indices still sums to 1.
         legal_indices = np.where(legal_flat)[0]
         if dirichlet_epsilon > 0:
-            noise = np.random.dirichlet([dirichlet_alpha] * len(legal_indices))
+            near_flat = neighborhood_masks[i].reshape(225) & legal_flat
+            if not near_flat.any():
+                near_flat = legal_flat
+            noise_indices = np.where(near_flat)[0]
+            noise = np.random.dirichlet([dirichlet_alpha] * len(noise_indices))
+            noise_full = np.zeros(225, dtype=np.float32)
+            noise_full[noise_indices] = noise.astype(np.float32)
             final_priors = (
                 (1 - dirichlet_epsilon) * prior_i[legal_indices]
-                + dirichlet_epsilon * noise
+                + dirichlet_epsilon * noise_full[legal_indices]
             ).astype(np.float32)
         else:
             final_priors = prior_i[legal_indices].astype(np.float32)

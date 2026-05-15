@@ -103,7 +103,7 @@ Caching the *fully scaled* prior (not raw logits) is sound because `entropy_mult
 
 ### Dirichlet noise
 
-Added to root priors only, on legal actions. Skipped when `dirichlet_epsilon == 0`.
+Added to root priors only. Support is restricted to **legal moves within Chebyshev distance `_DIRICHLET_NEIGHBORHOOD_RADIUS` (= 4) of any existing stone** — the tactical horizon of a single stone. This keeps `Kα` close to the AlphaZero ~10 sweet spot even though Gomoku has 225 legal moves at the opening, and avoids spending exploration mass on faraway empty corners that can never matter on a ~25-ply game. On an empty board the restriction is skipped and noise covers all legal moves. The ε mass is distributed only over the noise support; positions outside it keep their plain `(1 − ε)·P` mass, and the resulting priors over legal moves still sum to 1. Skipped entirely when `dirichlet_epsilon == 0`.
 
 ## Entropy Rescaling (`entropy_ops.py`)
 
