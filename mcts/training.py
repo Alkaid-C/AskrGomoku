@@ -178,13 +178,6 @@ def train_on_mcts_batch(
     )
     n_augmented = obs_tensor.shape[0]
 
-    # Shuffle
-    perm = torch.randperm(n_augmented, device=device)
-    obs_tensor = obs_tensor[perm]
-    dist_tensor = dist_tensor[perm]
-    mask_tensor = mask_tensor[perm]
-    value_tensor = value_tensor[perm]
-
     # Gradient accumulation across micro-batches
     optimizer.zero_grad()
     n_micro_batches = 0

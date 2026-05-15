@@ -10,6 +10,7 @@ import json
 import os
 import random
 import time
+from collections import deque
 from typing import Optional, Tuple
 
 import numpy as np
@@ -118,6 +119,9 @@ def run_stage2(
     weight_decay: float,
     value_loss_coeff: float,
     optimize_steps_per_update: int,
+    replay_buffer_rounds: int,
+    sample_ratio: float,
+    decay_ratio: float,
     checkpoint_interval: int,
     device: torch.device,
 ) -> None:
@@ -127,7 +131,8 @@ def run_stage2(
     print(f"Output: {output_dir}")
     print(f"MCTS: {num_simulations} sims, c_puct={c_puct}, gamma={gamma}")
     print(f"Dirichlet: alpha={dirichlet_alpha}, epsilon={dirichlet_epsilon}")
-    print(f"Training: {total_updates} updates, {episodes_per_update} games/update")
+    print(f"Training: {total_updates} updates, {episodes_per_update} games/update, replay buffer={replay_buffer_rounds} rounds")
+    print(f"Replay sampling: k_0=sample_ratio*len(round_0)={sample_ratio}, decay={decay_ratio:.4f}")
     print(f"LR: {learning_rate} -> {min_lr} (cosine)")
     print()
 
@@ -157,6 +162,7 @@ def run_stage2(
 
     training_start = time.time()
     num_openings = len(RENJU_OPENING_SEQUENCES)
+    replay_buffer: deque[list] = deque(maxlen=replay_buffer_rounds)
 
     for update in range(start_update, total_updates):
         t_start = time.time()
@@ -190,6 +196,9 @@ def run_stage2(
         game_lengths = []
         black_wins = 0
         draws = 0
+        sum_raw_H = 0.0
+        sum_mcts_H = 0.0
+        n_plies = 0
         for record in records:
             game_lengths.append(len(record.observations))
             assert record.outcome is not None, "Game did not terminate"
@@ -197,10 +206,16 @@ def run_stage2(
                 draws += 1
             elif record.outcome == GameState.BLACK_WIN:
                 black_wins += 1
+            sum_raw_H += sum(record.raw_entropy)
+            for vd in record.visit_distributions:
+                sum_mcts_H += float(-(vd * np.log(vd + 1e-30)).sum())
+            n_plies += len(record.observations)
 
         black_win_rate = black_wins / episodes_per_update
         draw_rate = draws / episodes_per_update
         avg_game_length = float(np.mean(game_lengths)) if game_lengths else 0.0
+        avg_raw_entropy = sum_raw_H / n_plies if n_plies > 0 else 0.0
+        avg_mcts_entropy = sum_mcts_H / n_plies if n_plies > 0 else 0.0
 
         cache_hits, cache_misses = get_nn_eval_cache_stats()
         cache_total = cache_hits + cache_misses
@@ -211,13 +226,33 @@ def run_stage2(
         # allocator can reuse those blocks for training activations.
         clear_nn_eval_cache()
 
+        replay_buffer.append(records)
+        # Warmup (buffer not yet full): train on the most recent round in full.
+        # Post-warmup: per-round decaying budget walking newest -> oldest:
+        #   k_0 = round(sample_ratio * len(round_0))
+        #   k_i = round(k_0 * decay_ratio ** i), clamped to [0, len(round_i)]; skip if 0.
+        if len(replay_buffer) < replay_buffer_rounds:
+            ordered_rounds: list[list] = [records]
+            per_round_k = [len(records)]
+        else:
+            ordered_rounds = list(reversed(replay_buffer))
+            k_0 = round(sample_ratio * len(ordered_rounds[0]))
+            per_round_k = [
+                max(0, min(len(rd), round(k_0 * decay_ratio ** i)))
+                for i, rd in enumerate(ordered_rounds)
+            ]
+
         t0 = time.time()
         sum_policy_loss = 0.0
         sum_value_loss = 0.0
         sum_kl = 0.0
         for _ in range(optimize_steps_per_update):
+            step_records: list = []
+            for rd, k_i in zip(ordered_rounds, per_round_k):
+                if k_i > 0:
+                    step_records.extend(random.sample(rd, k_i))
             step_results = train_on_mcts_batch(
-                model, records, optimizer, device, value_loss_coeff=value_loss_coeff,
+                model, step_records, optimizer, device, value_loss_coeff=value_loss_coeff,
             )
             sum_policy_loss += step_results['policy_loss']
             sum_value_loss += step_results['value_loss']
@@ -248,11 +283,13 @@ def run_stage2(
         print(
             f"Update {update+1:4d}/{total_updates} | "
             f"BlackWR: {black_win_rate:.0%} D: {draw_rate:.0%} | "
-            f"Len: {avg_game_length:.0f} | "
+            f"Len: {avg_game_length:.1f} | "
+            f"H: r{avg_raw_entropy:.2f}/m{avg_mcts_entropy:.2f} | "
             f"PLoss: {train_results['policy_loss']:.4f} VLoss: {train_results['value_loss']:.4f} | "
             f"KL: {train_results['kl_target_student']:.4f} | "
             f"{blk_line} | "
             f"Cache: {cache_hit_rate:.0%} ({cache_hits}/{cache_total}) | "
+            f"Buf: {len(replay_buffer)}/{replay_buffer_rounds} | "
             f"{(time.time() - t_start):.1f}s (sp:{t_selfplay:.1f} tr:{t_train:.1f}) | "
             f"{_fmt_time(elapsed)}/{_fmt_time(eta)}"
         )
@@ -263,6 +300,8 @@ def run_stage2(
             'kl_target_student': train_results['kl_target_student'],
             'lr': current_lr,
             'avg_game_length': avg_game_length,
+            'avg_raw_entropy': avg_raw_entropy,
+            'avg_mcts_entropy': avg_mcts_entropy,
             'black_win_rate': black_win_rate,
             'draw_rate': draw_rate,
             'time_selfplay': t_selfplay,

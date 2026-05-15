@@ -33,7 +33,8 @@ class Stage2CSVLogger:
 
     COLUMNS: ClassVar[list[str]] = [
         'update', 'policy_loss', 'value_loss', 'kl_target_student',
-        'lr', 'avg_game_length', 'black_win_rate', 'draw_rate',
+        'lr', 'avg_game_length', 'avg_raw_entropy', 'avg_mcts_entropy',
+        'black_win_rate', 'draw_rate',
         'black_block_opps', 'black_block_mcts_rate', 'black_block_raw_rate',
         'white_block_opps', 'white_block_mcts_rate', 'white_block_raw_rate',
         'time_selfplay', 'time_train',

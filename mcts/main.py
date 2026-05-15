@@ -38,7 +38,7 @@ ACTION_TEMPERATURE = 1.0        # MCTS visits → move sampling; broadens trajec
 SEED_PROBABILITY = 0.5          # fraction of games started from a Renju opening (overrides gomoku.SEED_PROBABILITY for MCTS)
 
 # === Stage 1 ===
-STAGE1_EPOCHS = 4
+STAGE1_EPOCHS = 8
 RAW_BATCH_PER_UPDATE = 4096
 STAGE1_LR = 1.0/1024
 STAGE1_MIN_LR = 1.0/1024
@@ -56,6 +56,9 @@ STAGE2_MIN_LR = STAGE2_LR / 8
 STAGE2_DIRICHLET_ALPHA = 0.15
 STAGE2_DIRICHLET_EPSILON = 0.25
 STAGE2_CHECKPOINT_INTERVAL = 32
+STAGE2_REPLAY_BUFFER_ROUNDS = 8      # number of past self-play rounds to retain for training
+STAGE2_SAMPLE_RATIO = 0.5           # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
+STAGE2_DECAY_RATIO = 0.5 ** 0.5     # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
 
 # === Shared ===
 TRAIN_BATCH_SIZE = 512          # GPU micro-batch cap
@@ -63,7 +66,7 @@ VALUE_LOSS_COEFF = 1.0
 GRAD_CLIP_NORM = 16.0
 WEIGHT_DECAY = 1.0 / 2 ** 24
 C_PUCT = 1.25
-DISCOUNT_GAMMA = 0.98
+DISCOUNT_GAMMA = 63.0/64
 SEED = 42
 
 # ============================================================================
@@ -157,6 +160,9 @@ def main() -> None:
             weight_decay=WEIGHT_DECAY,
             value_loss_coeff=VALUE_LOSS_COEFF,
             optimize_steps_per_update=STAGE2_OPTIMIZE_STEPS_PER_UPDATE,
+            replay_buffer_rounds=STAGE2_REPLAY_BUFFER_ROUNDS,
+            sample_ratio=STAGE2_SAMPLE_RATIO,
+            decay_ratio=STAGE2_DECAY_RATIO,
             checkpoint_interval=STAGE2_CHECKPOINT_INTERVAL,
             device=DEVICE,
         )

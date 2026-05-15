@@ -248,7 +248,7 @@ def mcts_search_batched(
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
     gamma: float,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Run batched MCTS search on multiple board positions.
 
@@ -269,6 +269,8 @@ def mcts_search_batched(
     Returns:
         visit_distributions: [N, 225] normalized visit counts
         root_values: [N] weighted mean Q from root's perspective
+        raw_entropies: [N] entropy of the masked-softmax prior at the root,
+            pre-Dirichlet. For logging/diagnostics.
     """
     n_games = len(boards)
 
@@ -408,4 +410,5 @@ def mcts_search_batched(
             visit_distributions[i, actions] = ns_arr.astype(np.float32) / total_child_visits
             root_q_values[i] = float((ns_arr * qs_arr).sum() / total_child_visits)
 
-    return visit_distributions, root_q_values
+    raw_entropies = -(priors * np.log(priors + 1e-30)).sum(axis=-1)
+    return visit_distributions, root_q_values, raw_entropies

@@ -32,6 +32,7 @@ class MCTSGameRecord:
     observations: list[np.ndarray] = field(default_factory=list)        # [3, 15, 15] per move, side-to-move perspective
     visit_distributions: list[np.ndarray] = field(default_factory=list) # [225] normalized
     root_values: list[float] = field(default_factory=list)              # MCTS root Q, side-to-move perspective
+    raw_entropy: list[float] = field(default_factory=list)              # entropy of model's masked-softmax prior at root, pre-Dirichlet (diagnostic)
     outcome: Optional[GameState] = None
 
 
@@ -91,7 +92,7 @@ def play_mcts_games(
     while active_indices:
         active_boards = [boards[i] for i in active_indices]
 
-        visit_dists, root_values = mcts_search_batched(
+        visit_dists, root_values, raw_entropies = mcts_search_batched(
             model, active_boards, num_simulations, c_puct,
             entropy_multiplier, device,
             dirichlet_alpha=dirichlet_alpha,
@@ -106,6 +107,7 @@ def play_mcts_games(
             records[i].observations.append(obs)
             records[i].visit_distributions.append(visit_dists[j])
             records[i].root_values.append(float(root_values[j]))
+            records[i].raw_entropy.append(float(raw_entropies[j]))
 
             if action_temperature == 1.0:
                 sample_dist = visit_dists[j]
