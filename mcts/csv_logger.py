@@ -39,6 +39,7 @@ class Stage2CSVLogger:
         'white_block_opps', 'white_block_mcts_rate', 'white_block_raw_rate',
         'time_selfplay', 'time_train',
         'cache_hit_rate', 'cache_hits', 'cache_misses',
+        'harvest_samples', 'harvest_value_only_frac', 'harvest_mean_weight',
     ]
 
     def __init__(self, output_dir: str):

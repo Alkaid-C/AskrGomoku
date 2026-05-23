@@ -34,6 +34,11 @@ class MCTSGameRecord:
     root_values: list[float] = field(default_factory=list)              # MCTS root Q, side-to-move perspective
     raw_entropy: list[float] = field(default_factory=list)              # entropy of model's masked-softmax prior at root, pre-Dirichlet (diagnostic)
     outcome: Optional[GameState] = None
+    # Internal search-tree nodes harvested as additional weighted samples.
+    # Each entry: (obs uint8[3,15,15], policy f32[225], value f32,
+    #              policy_weight f32, value_weight f32). Empty unless harvesting
+    #              is enabled (stage 2). Populated after within-game dedup.
+    harvested: list[tuple] = field(default_factory=list)
 
 
 # ============================================================================
@@ -53,6 +58,8 @@ def play_mcts_games(
     dirichlet_epsilon: float,
     gamma: float,
     action_temperature: float = 1.0,
+    harvest_min_visits: Optional[int] = None,
+    harvest_policy_min_visits: Optional[int] = None,
 ) -> list[MCTSGameRecord]:
     """
     Play pure-self-play MCTS games with batched search.
@@ -78,26 +85,40 @@ def play_mcts_games(
             *only* at action sampling time. The supervision target recorded
             into the MCTSGameRecord is the original visit distribution; this
             broadens trajectory coverage without altering targets.
+        harvest_min_visits: When set, harvest internal search-tree nodes whose
+            visit statistic N clears this (value) threshold as additional
+            training samples. None disables harvesting (e.g. stage 0).
+        harvest_policy_min_visits: Higher threshold; harvested nodes with
+            N >= this value also get a policy-loss weight, others get
+            policy_weight 0 (value-only). Required when harvest_min_visits set.
 
     Returns:
-        List of MCTSGameRecord with training data from every ply.
+        List of MCTSGameRecord with training data from every ply. When
+        harvesting is enabled, each record's `harvested` list holds the
+        within-game-deduped internal-node samples.
     """
     assert len(opening_ids) == num_games
 
     boards: list[GomokuBoard] = [GomokuBoard(opening_id=opening_ids[i]) for i in range(num_games)]
     records: list[MCTSGameRecord] = [MCTSGameRecord() for _ in range(num_games)]
 
+    # Per-game accumulator for harvested nodes, keyed by obs bytes (exact
+    # position incl. side-to-move). Value is the highest-N instance seen so far:
+    # obs_key -> (obs, policy, value, N). Cross-ply dedup within one game.
+    harvest_acc: list[dict[bytes, tuple]] = [{} for _ in range(num_games)]
+
     active_indices = list(range(num_games))
 
     while active_indices:
         active_boards = [boards[i] for i in active_indices]
 
-        visit_dists, root_values, raw_entropies = mcts_search_batched(
+        visit_dists, root_values, raw_entropies, harvested = mcts_search_batched(
             model, active_boards, num_simulations, c_puct,
             entropy_multiplier, device,
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,
             gamma=gamma,
+            harvest_min_visits=harvest_min_visits,
         )
 
         still_active: list[int] = []
@@ -108,6 +129,14 @@ def play_mcts_games(
             records[i].visit_distributions.append(visit_dists[j])
             records[i].root_values.append(float(root_values[j]))
             records[i].raw_entropy.append(float(raw_entropies[j]))
+
+            # Merge this tree's harvested nodes into the game's accumulator,
+            # keeping the highest-N instance per position.
+            for h_obs, h_policy, h_value, h_n in harvested[j]:
+                key = h_obs.tobytes()
+                prev = harvest_acc[i].get(key)
+                if prev is None or h_n > prev[3]:
+                    harvest_acc[i][key] = (h_obs, h_policy, h_value, h_n)
 
             if action_temperature == 1.0:
                 sample_dist = visit_dists[j]
@@ -124,6 +153,25 @@ def play_mcts_games(
                 still_active.append(i)
 
         active_indices = still_active
+
+    # Finalize harvested samples: drop positions that were also played (the
+    # played root is the highest-N instance and is already a weight-1 sample),
+    # then assign per-sample weights. value_weight applies to every emitted
+    # node (all cleared harvest_min_visits); policy_weight is 0 below the
+    # higher policy threshold (visit distribution not yet a reliable target).
+    if harvest_min_visits is not None:
+        assert harvest_policy_min_visits is not None
+        budget = float(num_simulations)
+        for i in range(num_games):
+            played_keys = {obs.tobytes() for obs in records[i].observations}
+            for key, (h_obs, h_policy, h_value, h_n) in harvest_acc[i].items():
+                if key in played_keys:
+                    continue
+                value_weight = min(h_n / budget, 1.0)
+                policy_weight = value_weight if h_n >= harvest_policy_min_visits else 0.0
+                records[i].harvested.append(
+                    (h_obs, h_policy, h_value, np.float32(policy_weight), np.float32(value_weight))
+                )
 
     return records
 

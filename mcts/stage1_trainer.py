@@ -160,8 +160,12 @@ def run_stage1(
         mb_mask = (1 - occupied).bool()
         mb_obs = mb_obs_u8.float()
 
-        obs_aug, dist_aug, mask_aug, val_aug = augment_mcts_batch_8fold(
-            mb_obs, mb_dist, mb_mask, mb_values
+        # Stage 1 has no harvested samples — every sample is a full-weight
+        # distillation target. Pass unit weights and discard the (also unit)
+        # augmented weights; the loss below is a plain unweighted mean.
+        ones = torch.ones(mb_obs.shape[0], device=device)
+        obs_aug, dist_aug, mask_aug, val_aug, _, _ = augment_mcts_batch_8fold(
+            mb_obs, mb_dist, mb_mask, mb_values, ones, ones
         )
         n_aug = obs_aug.shape[0]
         shuffle = torch.randperm(n_aug, device=device)

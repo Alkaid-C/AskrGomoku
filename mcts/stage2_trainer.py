@@ -112,6 +112,7 @@ def run_stage2(
     c_puct: float,
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
+    action_temperature: float,
     seed_probability: float,
     gamma: float,
     learning_rate: float,
@@ -123,6 +124,8 @@ def run_stage2(
     sample_ratio: float,
     decay_ratio: float,
     checkpoint_interval: int,
+    harvest_value_min_visits: int,
+    harvest_policy_min_visits: int,
     device: torch.device,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
@@ -187,7 +190,9 @@ def run_stage2(
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,
             gamma=gamma,
-            action_temperature=1.0,
+            action_temperature=action_temperature,
+            harvest_min_visits=harvest_value_min_visits,
+            harvest_policy_min_visits=harvest_policy_min_visits,
         )
         block_stats = compute_block_rates(records, model, device)
         model.train()
@@ -199,6 +204,9 @@ def run_stage2(
         sum_raw_H = 0.0
         sum_mcts_H = 0.0
         n_plies = 0
+        harvest_total = 0
+        harvest_value_only = 0
+        harvest_weight_sum = 0.0
         for record in records:
             game_lengths.append(len(record.observations))
             assert record.outcome is not None, "Game did not terminate"
@@ -210,6 +218,15 @@ def run_stage2(
             for vd in record.visit_distributions:
                 sum_mcts_H += float(-(vd * np.log(vd + 1e-30)).sum())
             n_plies += len(record.observations)
+            for harvested_sample in record.harvested:
+                policy_w, value_w = harvested_sample[3], harvested_sample[4]
+                harvest_total += 1
+                harvest_weight_sum += float(value_w)
+                if float(policy_w) == 0.0:
+                    harvest_value_only += 1
+
+        harvest_value_only_frac = harvest_value_only / harvest_total if harvest_total > 0 else 0.0
+        harvest_mean_weight = harvest_weight_sum / harvest_total if harvest_total > 0 else 0.0
 
         black_win_rate = black_wins / episodes_per_update
         draw_rate = draws / episodes_per_update
@@ -288,6 +305,7 @@ def run_stage2(
             f"PLoss: {train_results['policy_loss']:.4f} VLoss: {train_results['value_loss']:.4f} | "
             f"KL: {train_results['kl_target_student']:.4f} | "
             f"{blk_line} | "
+            f"Harv: {harvest_total} (vo:{harvest_value_only_frac:.0%} w:{harvest_mean_weight:.2f}) | "
             f"Cache: {cache_hit_rate:.0%} ({cache_hits}/{cache_total}) | "
             f"Buf: {len(replay_buffer)}/{replay_buffer_rounds} | "
             f"{(time.time() - t_start):.1f}s (sp:{t_selfplay:.1f} tr:{t_train:.1f}) | "
@@ -309,6 +327,9 @@ def run_stage2(
             'cache_hit_rate': cache_hit_rate,
             'cache_hits': cache_hits,
             'cache_misses': cache_misses,
+            'harvest_samples': harvest_total,
+            'harvest_value_only_frac': harvest_value_only_frac,
+            'harvest_mean_weight': harvest_mean_weight,
             **block_stats,
         })
 

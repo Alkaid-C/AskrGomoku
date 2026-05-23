@@ -44,14 +44,20 @@ Loss is plain CE + `VALUE_LOSS_COEFF * MSE` against the **raw** visit distributi
 The actual MCTS training. The warm-started student plays itself with vanilla AlphaZero MCTS. Per update:
 
 1. Sample opening IDs (`SEED_PROBABILITY` fraction get a Renju opening, rest start empty).
-2. `play_mcts_games`: model plays both sides in `STAGE2_EPISODES_PER_UPDATE` games, batched into one `mcts_search_batched` call per ply. Every recorded ply becomes a training sample.
+2. `play_mcts_games`: model plays both sides in `STAGE2_EPISODES_PER_UPDATE` games, batched into one `mcts_search_batched` call per ply. Every recorded ply becomes a training sample, plus harvested internal nodes (see "Subtree harvesting").
 3. `compute_block_rates`: block-win-in-1 hit-rate diagnostic, split black/white.
-4. `train_on_mcts_batch` — targets are the raw visit distributions.
+4. `train_on_mcts_batch` — targets are the raw visit distributions; harvested samples carry per-sample policy/value weights.
 5. Clear the NN eval cache and `torch.cuda.empty_cache()`.
 
 Stage 2 uses `entropy_multiplier=None` (raw masked softmax priors), Dirichlet noise (`STAGE2_DIRICHLET_ALPHA`/`EPSILON`) at the root for exploration, and `action_temperature=1.0`. Loss is CE + MSE — no entropy bonus, no GAE, no tactical boost, no imitation, no OPR. The search itself supplies exploration.
 
 Final: `stage2/final_policy.pt`.
+
+#### Subtree harvesting
+
+Each ply's full search evaluates thousands of leaf positions but, by default, only the played root becomes a training sample. Harvesting recovers more of that compute: the C++ `MCTSNode.harvest(min_visits)` walks the tree and emits every internal node (depth ≥ 1) whose visit statistic `N = Σ child_n` clears a threshold. Each emitted node carries its value target (`Σ child_total / N`, identical formula and sign convention to `root_Q`) and policy target (its own child visit distribution); `mcts_search_batched` reconstructs the obs by replaying the node's action path from the root board.
+
+Two thresholds track target reliability: the value target (a low-order mean) is reliable at lower `N` than the policy distribution (higher-order), so `STAGE2_HARVEST_VALUE_MIN_VISITS` < `STAGE2_HARVEST_POLICY_MIN_VISITS`. A node clearing only the value threshold contributes value loss only (`policy_weight = 0`). Each harvested sample is weighted `min(N / NUM_SIMULATIONS_S2, 1)` — inverse-variance-optimal for a mean estimator — so played roots (effectively full budget, weight 1) dominate automatically. **Within-game dedup**: a board reached as internal nodes of several plies' trees (and possibly as a played root) is kept once at its highest-`N` instance; positions also played are dropped (the played root subsumes them). Scope is one game; cross-game repeats are kept. Each loss term is a per-sample weighted **mean** — the weighted sum divided by that term's own weight total (`Σ policy_weight` for CE, `Σ value_weight` for MSE) — i.e. the inverse-variance-weighted estimator. Normalizing by the weight total rather than the sample count keeps the played-root scale stable as harvest volume varies, drops value-only nodes out of the policy denominator, and reduces exactly to the previous unweighted mean when all weights are 1 (no harvest). Reported `policy_loss`/`value_loss`/`kl_target_student` are means over played roots only, so they stay comparable across runs; `VALUE_LOSS_COEFF` may need retuning since the policy and value terms now carry different weight totals.
 
 ## File Responsibilities
 
@@ -59,9 +65,10 @@ Final: `stage2/final_policy.pt`.
 - `data_generator.py` — Stage-0 rollouts + sharded `.npz` writer with crash-safe rename.
 - `stage1_trainer.py` — Offline distillation loop, KL-EMA early-exit, cosine LR, resumable from `stage1/training_state.json`.
 - `stage2_trainer.py` — MCTS self-play training loop, cosine LR, resumable from `stage2/training_state.json`.
-- `mcts.py` — PUCT tree search, batched cache-aware leaf evaluation, D4 NN-eval cache.
-- `self_play.py` — `play_mcts_games` (used by both stage 0 and stage 2) + `compute_block_rates` diagnostic.
-- `training.py` — `train_on_mcts_batch` (CE + MSE against raw visit distributions) and `augment_mcts_batch_8fold`.
+- `mcts.py` — PUCT tree search, batched cache-aware leaf evaluation, D4 NN-eval cache. `mcts_search_batched` also reconstructs harvested-node obs when `harvest_min_visits` is set.
+- `mcts_ext.cpp` — C++ `MCTSNode` (PUCT `select_child`, `backup`, and `harvest(min_visits)` subtree walk). Rebuild in-place with `python3 setup_ext.py build_ext --inplace` after editing.
+- `self_play.py` — `play_mcts_games` (used by both stage 0 and stage 2) + `compute_block_rates` diagnostic. Holds the within-game harvest dedup + per-sample weighting (`MCTSGameRecord.harvested`).
+- `training.py` — `train_on_mcts_batch` (per-sample weighted CE + MSE against raw visit distributions; weight-1 played roots + weighted harvested samples) and `augment_mcts_batch_8fold`.
 - `entropy_ops.py` — `rescale_to_entropy_np`: per-row softmax temperature solved by bisection so that the rescaled distribution has a requested entropy. Used only by `mcts.py::_evaluate_with_cache` for prior softening.
 - `csv_logger.py` — `Stage1CSVLogger` and `Stage2CSVLogger` write `training_updates.csv` per stage with stage-specific columns.
 - `gomoku.py` → symlink to `main/gomoku.py`

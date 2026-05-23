@@ -80,7 +80,9 @@ def augment_mcts_batch_8fold(
     visit_dists: torch.Tensor,
     masks: torch.Tensor,
     values: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    policy_weights: torch.Tensor,
+    value_weights: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Apply 8-fold dihedral augmentation to MCTS training data.
 
@@ -89,9 +91,12 @@ def augment_mcts_batch_8fold(
         visit_dists: [B, 225] normalized visit distributions
         masks: [B, 15, 15] legal move masks
         values: [B] target values
+        policy_weights: [B] per-sample policy-loss weights
+        value_weights: [B] per-sample value-loss weights
 
     Returns:
-        Augmented (obs, visit_dists, masks, values) with batch size 8*B
+        Augmented (obs, visit_dists, masks, values, policy_weights,
+        value_weights) with batch size 8*B
     """
     # Spatial transforms for obs and masks (same as enhancement.py)
     obs_t = obs.transpose(-2, -1)
@@ -118,10 +123,12 @@ def augment_mcts_batch_8fold(
         aug_dists.append(visit_dists[:, perm_tables[s]])  # [B, 225]
     all_dists = torch.cat(aug_dists, dim=0)  # [8B, 225]
 
-    # Values just repeat
+    # Values and per-sample weights are scalars per sample: just repeat.
     all_values = values.repeat(8)
+    all_policy_weights = policy_weights.repeat(8)
+    all_value_weights = value_weights.repeat(8)
 
-    return all_obs, all_dists, all_masks, all_values
+    return all_obs, all_dists, all_masks, all_values, all_policy_weights, all_value_weights
 
 
 # ============================================================================
@@ -150,37 +157,71 @@ def train_on_mcts_batch(
         Dict with training metrics, including `kl_target_student` =
         CE(target, student) - H(target).
     """
-    # Collect all training samples from game records
+    # Collect all training samples from game records. Played roots are weight-1
+    # on both losses (the existing supervision). Harvested internal nodes carry
+    # their own per-sample policy/value weights (0 policy weight = value-only).
     all_obs = []
     all_dists = []
     all_values = []
     all_masks = []
+    all_policy_weights = []
+    all_value_weights = []
 
+    def _add_sample(obs, dist, val, policy_w, value_w):
+        all_obs.append(obs)
+        all_dists.append(dist)
+        all_values.append(val)
+        # Derive legal mask from observation (empty = legal)
+        occupied = obs[0] | obs[1]
+        all_masks.append((1 - occupied).astype(np.uint8))
+        all_policy_weights.append(policy_w)
+        all_value_weights.append(value_w)
+
+    n_played = 0
     for record in game_records:
         for obs, dist, val in zip(record.observations, record.visit_distributions, record.root_values):
-            all_obs.append(obs)
-            all_dists.append(dist)
-            all_values.append(val)
-            # Derive legal mask from observation (empty = legal)
-            occupied = obs[0] | obs[1]
-            legal_mask = (1 - occupied).astype(np.uint8)
-            all_masks.append(legal_mask)
+            _add_sample(obs, dist, val, 1.0, 1.0)
+            n_played += 1
+        for h_obs, h_policy, h_value, h_policy_w, h_value_w in record.harvested:
+            _add_sample(h_obs, h_policy, float(h_value), float(h_policy_w), float(h_value_w))
 
     # Convert to tensors
     obs_tensor = torch.from_numpy(np.stack(all_obs)).float().to(device)
     dist_tensor = torch.from_numpy(np.stack(all_dists)).float().to(device)
     mask_tensor = torch.from_numpy(np.stack(all_masks)).bool().to(device)
     value_tensor = torch.tensor(all_values, dtype=torch.float32, device=device)
+    policy_w_tensor = torch.tensor(all_policy_weights, dtype=torch.float32, device=device)
+    value_w_tensor = torch.tensor(all_value_weights, dtype=torch.float32, device=device)
 
     # Apply 8-fold augmentation
-    obs_tensor, dist_tensor, mask_tensor, value_tensor = augment_mcts_batch_8fold(
-        obs_tensor, dist_tensor, mask_tensor, value_tensor
+    obs_tensor, dist_tensor, mask_tensor, value_tensor, policy_w_tensor, value_w_tensor = (
+        augment_mcts_batch_8fold(
+            obs_tensor, dist_tensor, mask_tensor, value_tensor, policy_w_tensor, value_w_tensor
+        )
     )
     n_augmented = obs_tensor.shape[0]
 
-    # Gradient accumulation across micro-batches
+    # Gradient accumulation across micro-batches.
+    #
+    # Each loss term is a per-sample *weighted mean* — the weighted sum divided
+    # by that term's own weight total (the inverse-variance-weighted estimator,
+    # consistent with the w = N/budget weighting). Normalizing by the weight sum
+    # rather than the sample count keeps the played-root scale stable as harvest
+    # volume varies, and the value-only nodes (policy_weight 0) drop out of the
+    # policy denominator automatically. When every weight is 1.0 (no harvested
+    # samples) each term reduces exactly to the previous unweighted mean. Played
+    # roots have weight 1.0; harvested internal nodes have weight N/budget < 1.
+    #
+    # The denominators are global over the augmented batch, so they are constant
+    # across micro-batches and the accumulated gradient is exact.
+    #
+    # Reported policy_loss / value_loss / kl are unweighted means over the
+    # played-root (weight-1) samples only — identified by value_weight == 1.0 —
+    # so they stay comparable to runs without harvesting.
+    policy_w_total = policy_w_tensor.sum().clamp_min(1.0)
+    value_w_total = value_w_tensor.sum().clamp_min(1.0)
     optimizer.zero_grad()
-    n_micro_batches = 0
+    n_played_aug = 0
     total_policy_loss = 0.0
     total_value_loss = 0.0
     total_kl = 0.0
@@ -191,6 +232,8 @@ def train_on_mcts_batch(
         mb_dist = dist_tensor[start:end]
         mb_mask = mask_tensor[start:end]
         mb_values = value_tensor[start:end]
+        mb_policy_w = policy_w_tensor[start:end]
+        mb_value_w = value_w_tensor[start:end]
         mb_size = end - start
 
         target = mb_dist
@@ -203,32 +246,35 @@ def train_on_mcts_batch(
         # Mask illegal moves
         logits = logits.masked_fill(~mb_mask.view(mb_size, 225), LOGIT_MASK_VALUE)
 
-        # Policy loss: cross-entropy vs target distribution
+        # Per-sample policy cross-entropy and value squared error
         log_probs = F.log_softmax(logits, dim=-1)
-        policy_loss = -(target * log_probs).sum(dim=-1).mean()
+        ce = -(target * log_probs).sum(dim=-1)          # [mb_size]
+        se = (pred_values - mb_values) ** 2             # [mb_size]
 
-        # Value loss: MSE vs MCTS root Q
-        value_loss = F.mse_loss(pred_values, mb_values)
-
-        # Combined loss (scaled for gradient accumulation)
-        loss = (policy_loss + value_loss_coeff * value_loss) * (mb_size / n_augmented)
+        # Weighted means: each term's weighted sum over its own global weight total.
+        policy_term = (mb_policy_w * ce).sum()
+        value_term = (mb_value_w * se).sum()
+        loss = policy_term / policy_w_total + value_loss_coeff * value_term / value_w_total
         loss.backward()
 
-        # KL(target || student) = CE(target, student) - H(target)
+        # Diagnostics over played-root samples only (value_weight == 1.0).
         with torch.no_grad():
-            kl = (policy_loss - (-(target * (target + 1e-10).log()).sum(dim=-1).mean())).item()
-
-        total_policy_loss += policy_loss.item() * mb_size
-        total_value_loss += value_loss.item() * mb_size
-        total_kl += kl * mb_size
-        n_micro_batches += mb_size
+            played = mb_value_w == 1.0
+            n_played_mb = int(played.sum().item())
+            if n_played_mb > 0:
+                ent = -(target * (target + 1e-10).log()).sum(dim=-1)  # H(target)
+                total_policy_loss += ce[played].sum().item()
+                total_value_loss += se[played].sum().item()
+                total_kl += (ce[played] - ent[played]).sum().item()
+                n_played_aug += n_played_mb
 
     # Clip gradients and step
     torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
     optimizer.step()
 
+    denom = max(n_played_aug, 1)
     return {
-        'policy_loss': total_policy_loss / n_micro_batches,
-        'value_loss': total_value_loss / n_micro_batches,
-        'kl_target_student': total_kl / n_micro_batches,
+        'policy_loss': total_policy_loss / denom,
+        'value_loss': total_value_loss / denom,
+        'kl_target_student': total_kl / denom,
     }

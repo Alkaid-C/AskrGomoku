@@ -116,6 +116,75 @@ public:
             node = node->parent_raw;
         }
     }
+
+    // Harvest internal nodes as additional training targets.
+    //
+    // Walks the subtree and emits every internal node (depth >= 1) whose visit
+    // statistic N = sum(child_n) clears min_visits. The root itself is never
+    // emitted: it is the played position, already recorded as a sample. Each
+    // emitted node carries (action_path from root, value_target, policy[225], N):
+    //   value_target = sum(child_total) / N   (visit-weighted mean of children's
+    //                  Q, identical formula and sign convention to root_Q)
+    //   policy[a]    = child_n[k] / N  for a = child_actions[k], else 0
+    // Python reconstructs the obs for each node by replaying action_path.
+    using HarvestRecord = std::tuple<std::vector<int>, float, std::vector<float>, int>;
+
+    void harvest_recurse(std::vector<int>& path, int min_visits,
+                         std::vector<HarvestRecord>& out) const {
+        if (!is_expanded) return;
+        int K = static_cast<int>(child_actions.size());
+
+        long total_n = 0;
+        double total_total = 0.0;
+        for (int k = 0; k < K; ++k) {
+            total_n += child_n[k];
+            total_total += child_total[k];
+        }
+
+        // Emit this node when its own statistic clears the threshold. (The
+        // descent gate below is on the parent's visit count to this child, which
+        // can be one larger than the child's own total_n, so re-check here.)
+        if (total_n >= min_visits) {
+            std::vector<float> policy(225, 0.0f);
+            for (int k = 0; k < K; ++k) {
+                policy[child_actions[k]] =
+                    static_cast<float>(child_n[k]) / static_cast<float>(total_n);
+            }
+            float value_target =
+                static_cast<float>(total_total / static_cast<double>(total_n));
+            out.emplace_back(path, value_target, std::move(policy),
+                             static_cast<int>(total_n));
+        }
+
+        // Descend only into children that could themselves clear the threshold.
+        // Visits are non-increasing with depth, so a child reached fewer than
+        // min_visits times cannot have a qualifying descendant.
+        for (int k = 0; k < K; ++k) {
+            const std::shared_ptr<MCTSNode>& child = child_node[k];
+            if (child && child_n[k] >= min_visits) {
+                path.push_back(child_actions[k]);
+                child->harvest_recurse(path, min_visits, out);
+                path.pop_back();
+            }
+        }
+    }
+
+    std::vector<HarvestRecord> harvest(int min_visits) const {
+        std::vector<HarvestRecord> out;
+        if (!is_expanded) return out;
+        std::vector<int> path;
+        int K = static_cast<int>(child_actions.size());
+        // Root is not emitted; descend into qualifying children only.
+        for (int k = 0; k < K; ++k) {
+            const std::shared_ptr<MCTSNode>& child = child_node[k];
+            if (child && child_n[k] >= min_visits) {
+                path.push_back(child_actions[k]);
+                child->harvest_recurse(path, min_visits, out);
+                path.pop_back();
+            }
+        }
+        return out;
+    }
 };
 
 // ============================================================================
@@ -130,6 +199,7 @@ PYBIND11_MODULE(mcts_ext, m) {
         .def("expand",       &MCTSNode::expand,       py::arg("actions"), py::arg("priors"))
         .def("select_child", &MCTSNode::select_child, py::arg("c_puct"))
         .def("backup",       &MCTSNode::backup,       py::arg("value"), py::arg("gamma"))
+        .def("harvest",      &MCTSNode::harvest,      py::arg("min_visits"))
         // Attributes read/written by the Python simulation loop
         .def_readwrite("action",         &MCTSNode::action)
         .def_readwrite("visit_count",    &MCTSNode::visit_count)

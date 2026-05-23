@@ -279,7 +279,8 @@ def mcts_search_batched(
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
     gamma: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    harvest_min_visits: Optional[int] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[list[tuple]]]:
     """
     Run batched MCTS search on multiple board positions.
 
@@ -299,12 +300,19 @@ def mcts_search_batched(
             on an empty board it falls back to all legal moves.
         gamma: Per-ply discount in backup; backed-up Q carries a gamma^depth
             factor, so deeper terminals contribute less than shallow ones.
+        harvest_min_visits: When set, walk each search tree and emit every
+            internal node (depth >= 1) whose visit statistic N = sum(child_n)
+            clears this threshold as an additional training sample. When None,
+            no harvesting is done and the returned per-game lists are empty.
 
     Returns:
         visit_distributions: [N, 225] normalized visit counts
         root_values: [N] weighted mean Q from root's perspective
         raw_entropies: [N] entropy of the masked-softmax prior at the root,
             pre-Dirichlet. For logging/diagnostics.
+        harvested: per-game list of (obs uint8[3,15,15], policy f32[225],
+            value f32, N int) tuples for the internal nodes harvested from that
+            game's search tree. Empty lists when harvest_min_visits is None.
     """
     n_games = len(boards)
 
@@ -460,4 +468,23 @@ def mcts_search_batched(
             root_q_values[i] = float((ns_arr * qs_arr).sum() / total_child_visits)
 
     raw_entropies = -(priors * np.log(priors + 1e-30)).sum(axis=-1)
-    return visit_distributions, root_q_values, raw_entropies
+
+    # --- Harvest internal nodes (optional) ---
+    # Walk each tree for above-threshold internal nodes and reconstruct each
+    # node's obs by replaying its action path on a copy of the root board (same
+    # replay pattern used for leaf evaluation above).
+    harvested: list[list[tuple]] = [[] for _ in range(n_games)]
+    if harvest_min_visits is not None:
+        for i, root in enumerate(roots):
+            for action_path, value_target, policy, n in root.harvest(harvest_min_visits):
+                board_copy = copy_board(boards[i])
+                for action in action_path:
+                    row, col = idx_to_pos(action)
+                    board_copy.Move((row, col))
+                c0, c1, _ = board_copy.GetBoardState()
+                obs = encode_observation(c0, c1)
+                harvested[i].append(
+                    (obs, np.asarray(policy, dtype=np.float32), float(value_target), int(n))
+                )
+
+    return visit_distributions, root_q_values, raw_entropies, harvested

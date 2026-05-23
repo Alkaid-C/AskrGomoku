@@ -55,10 +55,17 @@ STAGE2_LR = 1.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE
 STAGE2_MIN_LR = STAGE2_LR / 8
 STAGE2_DIRICHLET_ALPHA = 0.125
 STAGE2_DIRICHLET_EPSILON = 0.25
+STAGE2_ACTION_TEMPERATURE = 1.0     # MCTS visits → move sampling during self-play
 STAGE2_CHECKPOINT_INTERVAL = 32
 STAGE2_REPLAY_BUFFER_ROUNDS = 8     # number of past self-play rounds to retain for training
 STAGE2_SAMPLE_RATIO = 0.5           # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
 STAGE2_DECAY_RATIO = 0.5            # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
+# Subtree harvesting: emit internal search-tree nodes (N = sum of child visits)
+# as additional weighted training samples. Value target is reliable at lower N
+# than the visit distribution, so the value threshold is lower than the policy
+# threshold; harvested nodes are weighted N / NUM_SIMULATIONS_S2.
+STAGE2_HARVEST_VALUE_MIN_VISITS = NUM_SIMULATIONS_S2 // 8    # value-loss (MSE) threshold
+STAGE2_HARVEST_POLICY_MIN_VISITS = NUM_SIMULATIONS_S2 // 4   # policy-loss (CE) threshold
 
 # === Shared ===
 TRAIN_BATCH_SIZE = 512          # GPU micro-batch cap
@@ -153,6 +160,7 @@ def main() -> None:
             c_puct=C_PUCT,
             dirichlet_alpha=STAGE2_DIRICHLET_ALPHA,
             dirichlet_epsilon=STAGE2_DIRICHLET_EPSILON,
+            action_temperature=STAGE2_ACTION_TEMPERATURE,
             seed_probability=SEED_PROBABILITY,
             gamma=DISCOUNT_GAMMA,
             learning_rate=STAGE2_LR,
@@ -164,6 +172,8 @@ def main() -> None:
             sample_ratio=STAGE2_SAMPLE_RATIO,
             decay_ratio=STAGE2_DECAY_RATIO,
             checkpoint_interval=STAGE2_CHECKPOINT_INTERVAL,
+            harvest_value_min_visits=STAGE2_HARVEST_VALUE_MIN_VISITS,
+            harvest_policy_min_visits=STAGE2_HARVEST_POLICY_MIN_VISITS,
             device=DEVICE,
         )
 
