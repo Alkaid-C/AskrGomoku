@@ -6,6 +6,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
 - **`vanilla/`** — Baseline training pipeline with a simpler model. All `.py` files except `model.py` are symlinks to `main/` to ensure that the training recipe is the same.
+- **`mini/`** — Identical to `vanilla/` in every way — same model structure, same training recipe — just a smaller parameter count.
 - **`mcts/`** — MCTS self-play training, started from an RL checkpoint as warm start to skip the noisy random-init phase. Three CLI subcommands: `generate_data` and `stage1` build the warm-start checkpoint via offline distillation from RL-teacher MCTS rollouts; `stage2` is the actual MCTS training. Symlinks `model.py`, `gomoku.py`, `enhancement.py` from `main/`.
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
 

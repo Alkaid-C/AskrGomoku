@@ -53,12 +53,12 @@ NUM_SIMULATIONS_S2 = 2048
 STAGE2_OPTIMIZE_STEPS_PER_UPDATE = 4  # train K times on each self-play batch; LR is divided by K
 STAGE2_LR = 1.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE
 STAGE2_MIN_LR = STAGE2_LR / 8
-STAGE2_DIRICHLET_ALPHA = 0.15
+STAGE2_DIRICHLET_ALPHA = 0.125
 STAGE2_DIRICHLET_EPSILON = 0.25
 STAGE2_CHECKPOINT_INTERVAL = 32
-STAGE2_REPLAY_BUFFER_ROUNDS = 8      # number of past self-play rounds to retain for training
+STAGE2_REPLAY_BUFFER_ROUNDS = 8     # number of past self-play rounds to retain for training
 STAGE2_SAMPLE_RATIO = 0.5           # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
-STAGE2_DECAY_RATIO = 0.5 ** 0.5     # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
+STAGE2_DECAY_RATIO = 0.5            # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
 
 # === Shared ===
 TRAIN_BATCH_SIZE = 512          # GPU micro-batch cap
