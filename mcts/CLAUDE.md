@@ -120,15 +120,18 @@ Single caller — **prior softening** (`mcts.py::_evaluate_with_cache`): `target
 
 ## Training (`training.py`)
 
-### Loss
+### Loss (`train_on_mcts_batch`, stage 2)
 
 ```
 loss = policy_loss + VALUE_LOSS_COEFF * value_loss
 ```
 
-- **Policy loss**: `-(target * log_softmax(logits)).sum(dim=-1).mean()`, where `target` is the raw visit distribution.
-- **Value loss**: MSE against MCTS root Q.
-- **`kl_target_student`** = CE(target, student) − H(target). Logged for both stages.
+- **Policy loss**: per-sample weighted mean of CE against the raw visit distribution — `(policy_w * ce).sum() / Σ policy_w`.
+- **Value loss**: per-sample weighted mean of squared error against MCTS root Q — `(value_w * se).sum() / Σ value_w`.
+- Played roots have weight 1 on both terms; harvested nodes carry `min(N / NUM_SIMULATIONS_S2, 1)` (0 policy weight = value-only — see "Subtree harvesting"). Both weight totals are global over the full augmented batch, so they are constant across micro-batches and gradient accumulation is exact. When every weight is 1 (no harvest) each term reduces to the previous unweighted mean.
+- **`kl_target_student`** = CE(target, student) − H(target). Reported alongside `policy_loss`/`value_loss` as an *unweighted* mean over played-root samples only (`value_weight == 1.0`), so the metrics stay comparable across runs with and without harvesting.
+
+Stage 1 (`stage1_trainer.py`) does not call `train_on_mcts_batch`; it uses a plain unweighted CE + MSE (all weights 1, no harvested samples) and logs the same `kl_target_student`.
 
 Logits are masked with `LOGIT_MASK_VALUE` on illegal squares before softmax.
 

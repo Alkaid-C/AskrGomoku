@@ -51,7 +51,7 @@ pyright
 See `mcts/CLAUDE.md` for the full description. Brief outline:
 
 - **Warm start (stages 0+1)**: A frozen RL teacher runs MCTS self-play, writing `(obs, visit_dist, root_Q)` shards to disk (`data_generator.py`). A fresh student is then trained offline on those shards via CE + MSE distillation (`stage1_trainer.py`). The output `stage1_final.pt` is a network whose policy head is already aligned with MCTS-shaped targets, skipping the noisy random-init phase that early MCTS self-play would otherwise burn simulations on.
-- **MCTS training (stage 2)**: The warm-started student plays itself with vanilla AlphaZero MCTS — Dirichlet noise at the root, raw masked-softmax priors. Every ply is a training sample. Loss is CE + MSE against the raw visit distribution and root Q. No entropy bonus, no GAE, no tactical boost, no imitation, no OPR — the search itself supplies exploration. (`stage2_trainer.py`, `mcts.py`, `self_play.py`, `training.py`)
+- **MCTS training (stage 2)**: The warm-started student plays itself with vanilla AlphaZero MCTS — Dirichlet noise at the root, raw masked-softmax priors. Every played ply is a training sample, plus weighted internal-node samples harvested from each ply's search tree (see `mcts/CLAUDE.md` — "Subtree harvesting"). Loss is a per-sample weighted CE + MSE against the raw visit distribution and root Q. No entropy bonus, no GAE, no tactical boost, no imitation, no OPR — the search itself supplies exploration. (`stage2_trainer.py`, `mcts.py`, `self_play.py`, `training.py`)
 - **Checkpointing**: Each stage saves every `STAGE{1,2}_CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, paired with `training_state.json` for resume.
 
 ### Model
