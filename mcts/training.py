@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from gomoku import LOGIT_MASK_VALUE
-from self_play import MCTSGameRecord
 
 # ============================================================================
 # Training Constants
@@ -138,7 +137,7 @@ def augment_mcts_batch_8fold(
 
 def train_on_mcts_batch(
     model: nn.Module,
-    game_records: list[MCTSGameRecord],
+    samples: list[tuple],
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     value_loss_coeff: float,
@@ -148,7 +147,11 @@ def train_on_mcts_batch(
 
     Args:
         model: Policy/value network
-        game_records: MCTS game records with visit distributions
+        samples: Per-ply training tuples
+            (obs uint8[3,15,15], dist f32[225], value f32,
+             policy_weight f32, value_weight f32).
+            Played roots use (1.0, 1.0); harvested internal nodes carry
+            their own weights (0 policy weight = value-only).
         optimizer: Optimizer
         device: Torch device
         value_loss_coeff: Weight on the MSE value loss in the combined loss.
@@ -157,9 +160,6 @@ def train_on_mcts_batch(
         Dict with training metrics, including `kl_target_student` =
         CE(target, student) - H(target).
     """
-    # Collect all training samples from game records. Played roots are weight-1
-    # on both losses (the existing supervision). Harvested internal nodes carry
-    # their own per-sample policy/value weights (0 policy weight = value-only).
     all_obs = []
     all_dists = []
     all_values = []
@@ -167,7 +167,7 @@ def train_on_mcts_batch(
     all_policy_weights = []
     all_value_weights = []
 
-    def _add_sample(obs, dist, val, policy_w, value_w):
+    for obs, dist, val, policy_w, value_w in samples:
         all_obs.append(obs)
         all_dists.append(dist)
         all_values.append(val)
@@ -176,14 +176,6 @@ def train_on_mcts_batch(
         all_masks.append((1 - occupied).astype(np.uint8))
         all_policy_weights.append(policy_w)
         all_value_weights.append(value_w)
-
-    n_played = 0
-    for record in game_records:
-        for obs, dist, val in zip(record.observations, record.visit_distributions, record.root_values):
-            _add_sample(obs, dist, val, 1.0, 1.0)
-            n_played += 1
-        for h_obs, h_policy, h_value, h_policy_w, h_value_w in record.harvested:
-            _add_sample(h_obs, h_policy, float(h_value), float(h_policy_w), float(h_value_w))
 
     # Convert to tensors
     obs_tensor = torch.from_numpy(np.stack(all_obs)).float().to(device)

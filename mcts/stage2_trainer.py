@@ -245,14 +245,28 @@ def run_stage2(
         # allocator can reuse those blocks for training activations.
         clear_nn_eval_cache()
 
-        replay_buffer.append(records)
+        # Flatten records to per-ply samples for the replay buffer. Each sample
+        # is (obs, dist, value, policy_weight, value_weight); played roots use
+        # (1.0, 1.0), harvested nodes carry their own weights. Ply-level
+        # sampling decorrelates the batch (consecutive plies of the same game
+        # are highly correlated) compared to sampling whole records.
+        plies: list[tuple] = []
+        for record in records:
+            for obs, dist, val in zip(
+                record.observations, record.visit_distributions, record.root_values
+            ):
+                plies.append((obs, dist, float(val), 1.0, 1.0))
+            for h_obs, h_policy, h_value, h_policy_w, h_value_w in record.harvested:
+                plies.append((h_obs, h_policy, float(h_value), float(h_policy_w), float(h_value_w)))
+
+        replay_buffer.append(plies)
         # Warmup (buffer not yet full): train on the most recent round in full.
         # Post-warmup: per-round decaying budget walking newest -> oldest:
-        #   k_0 = round(sample_ratio * len(round_0))
+        #   k_0 = round(sample_ratio * len(round_0))   # plies, not games
         #   k_i = round(k_0 * decay_ratio ** i), clamped to [0, len(round_i)]; skip if 0.
         if len(replay_buffer) < replay_buffer_rounds:
-            ordered_rounds: list[list] = [records]
-            per_round_k = [len(records)]
+            ordered_rounds: list[list] = [plies]
+            per_round_k = [len(plies)]
         else:
             ordered_rounds = list(reversed(replay_buffer))
             k_0 = round(sample_ratio * len(ordered_rounds[0]))
@@ -266,12 +280,12 @@ def run_stage2(
         sum_value_loss = 0.0
         sum_kl = 0.0
         for _ in range(optimize_steps_per_update):
-            step_records: list = []
+            step_samples: list = []
             for rd, k_i in zip(ordered_rounds, per_round_k):
                 if k_i > 0:
-                    step_records.extend(random.sample(rd, k_i))
+                    step_samples.extend(random.sample(rd, k_i))
             step_results = train_on_mcts_batch(
-                model, step_records, optimizer, device, value_loss_coeff=value_loss_coeff,
+                model, step_samples, optimizer, device, value_loss_coeff=value_loss_coeff,
             )
             sum_policy_loss += step_results['policy_loss']
             sum_value_loss += step_results['value_loss']
