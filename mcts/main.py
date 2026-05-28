@@ -74,6 +74,11 @@ GRAD_CLIP_NORM = 16.0
 WEIGHT_DECAY = 1.0 / 2 ** 24
 C_PUCT = 1.25
 DISCOUNT_GAMMA = 63.0/64
+# First Play Urgency: untried moves get Q = (node value) * this. Anchoring to the
+# node's own value (vs the legacy neutral 0) stops losing-side searches from
+# sweeping every legal move and keeps breadth prior-weighted. Shared across stage 0
+# (teacher rollouts) and stage 2 so the warm-start data matches deployment search.
+FPU_MULTIPLIER = 0.95
 SEED = 42
 
 # ============================================================================
@@ -123,6 +128,7 @@ def main() -> None:
             action_temperature=ACTION_TEMPERATURE,
             seed_probability=SEED_PROBABILITY,
             gamma=DISCOUNT_GAMMA,
+            fpu_multiplier=FPU_MULTIPLIER,
             seed=SEED,
             device=DEVICE,
         )
@@ -163,6 +169,7 @@ def main() -> None:
             action_temperature=STAGE2_ACTION_TEMPERATURE,
             seed_probability=SEED_PROBABILITY,
             gamma=DISCOUNT_GAMMA,
+            fpu_multiplier=FPU_MULTIPLIER,
             learning_rate=STAGE2_LR,
             min_lr=STAGE2_MIN_LR,
             weight_decay=WEIGHT_DECAY,

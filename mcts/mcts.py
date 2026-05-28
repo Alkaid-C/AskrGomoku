@@ -279,6 +279,7 @@ def mcts_search_batched(
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
     gamma: float,
+    fpu_multiplier: float,
     harvest_min_visits: Optional[int] = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[list[tuple]]]:
     """
@@ -300,6 +301,12 @@ def mcts_search_batched(
             on an empty board it falls back to all legal moves.
         gamma: Per-ply discount in backup; backed-up Q carries a gamma^depth
             factor, so deeper terminals contribute less than shallow ones.
+        fpu_multiplier: First Play Urgency scale. A not-yet-visited child is
+            given Q = (node's NN value) * fpu_multiplier until its first backup.
+            0 reproduces the legacy neutral-0 FPU (over-optimistic in losing
+            positions, causes a uniform sweep of all legal moves); values near 1
+            anchor untried moves to the node's own value so breadth stays
+            prior-weighted.
         harvest_min_visits: When set, walk each search tree and emit every
             internal node (depth >= 1) whose visit statistic N = sum(child_n)
             clears this threshold as an additional training sample. When None,
@@ -329,7 +336,7 @@ def mcts_search_batched(
             _stone_neighborhood_mask(c0, c1, _DIRICHLET_NEIGHBORHOOD_RADIUS)
         )
 
-    priors, _root_values = _evaluate_with_cache(
+    priors, root_node_values = _evaluate_with_cache(
         model, obs_list, entropy_multiplier, device
     )
 
@@ -363,7 +370,11 @@ def mcts_search_batched(
             ).astype(np.float32)
         else:
             final_priors = prior_i[legal_indices].astype(np.float32)
-        root.expand(legal_indices.tolist(), final_priors.tolist())
+        root.expand(
+            legal_indices.tolist(),
+            final_priors.tolist(),
+            float(root_node_values[i]) * fpu_multiplier,
+        )
 
         roots.append(root)
 
@@ -447,6 +458,7 @@ def mcts_search_batched(
                 leaf.expand(
                     legal_actions.tolist(),
                     prior_j[legal_actions].astype(np.float32).tolist(),
+                    float(leaf_values[j]) * fpu_multiplier,
                 )
 
                 # Backup: leaf_values[j] is from side-to-move at leaf

@@ -57,6 +57,7 @@ def play_mcts_games(
     dirichlet_alpha: float,
     dirichlet_epsilon: float,
     gamma: float,
+    fpu_multiplier: float,
     action_temperature: float = 1.0,
     harvest_min_visits: Optional[int] = None,
     harvest_policy_min_visits: Optional[int] = None,
@@ -81,6 +82,8 @@ def play_mcts_games(
         dirichlet_alpha: Dirichlet noise alpha (root only)
         dirichlet_epsilon: Dirichlet noise weight (root only)
         gamma: Per-ply MCTS backup discount (see mcts.py::backup).
+        fpu_multiplier: First Play Urgency scale for untried moves (see
+            mcts.py::mcts_search_batched). 0 = legacy neutral-0 FPU.
         action_temperature: Temperature applied to the visit distribution
             *only* at action sampling time. The supervision target recorded
             into the MCTSGameRecord is the original visit distribution; this
@@ -118,6 +121,7 @@ def play_mcts_games(
             dirichlet_alpha=dirichlet_alpha,
             dirichlet_epsilon=dirichlet_epsilon,
             gamma=gamma,
+            fpu_multiplier=fpu_multiplier,
             harvest_min_visits=harvest_min_visits,
         )
 

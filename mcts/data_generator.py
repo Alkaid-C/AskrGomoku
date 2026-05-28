@@ -65,6 +65,7 @@ def generate_stage1_data(
     action_temperature: float,
     seed_probability: float,
     gamma: float,
+    fpu_multiplier: float,
     seed: int,
     device: torch.device,
 ) -> None:
@@ -83,7 +84,7 @@ def generate_stage1_data(
     print(f"Generating {num_games} games in {n_shards} shards "
           f"({games_per_shard}/shard) -> {data_dir}")
     print(f"  prior_T={prior_temperature}, action_T={action_temperature}, "
-          f"sims={num_simulations}, c_puct={c_puct}, gamma={gamma}")
+          f"sims={num_simulations}, c_puct={c_puct}, gamma={gamma}, fpu={fpu_multiplier}")
 
     total_start = time.time()
     for shard_idx in range(n_shards):
@@ -118,6 +119,7 @@ def generate_stage1_data(
             dirichlet_alpha=0.0,
             dirichlet_epsilon=0.0,
             gamma=gamma,
+            fpu_multiplier=fpu_multiplier,
             action_temperature=action_temperature,
         )
         torch.cuda.empty_cache()

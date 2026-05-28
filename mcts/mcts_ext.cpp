@@ -60,11 +60,20 @@ public:
     {}
 
     // Populate child arrays and mark node as expanded.
-    void expand(const std::vector<int>& actions, const std::vector<float>& priors) {
+    //
+    // fpu_value is the First Play Urgency: the Q assigned to not-yet-visited
+    // children, used by select_child until a child gets its first backup (which
+    // overwrites child_q[k] with the true child_total/child_n). Callers pass the
+    // node's own NN value scaled by an FPU multiplier (V * m): with m=0 untried
+    // moves look neutral (0), which is over-optimistic in losing positions and
+    // drives a uniform sweep of all legal moves; m near 1 anchors them to the
+    // node's value so exploration stays prior-weighted.
+    void expand(const std::vector<int>& actions, const std::vector<float>& priors,
+                float fpu_value) {
         int n = static_cast<int>(actions.size());
         child_actions = actions;
         child_priors  = priors;
-        child_q.assign(n, 0.0f);
+        child_q.assign(n, fpu_value);
         child_n.assign(n, 0);
         child_total.assign(n, 0.0f);
         child_node.assign(n, nullptr);
@@ -196,7 +205,7 @@ PYBIND11_MODULE(mcts_ext, m) {
 
     py::class_<MCTSNode, std::shared_ptr<MCTSNode>>(m, "MCTSNode")
         .def(py::init<>())
-        .def("expand",       &MCTSNode::expand,       py::arg("actions"), py::arg("priors"))
+        .def("expand",       &MCTSNode::expand,       py::arg("actions"), py::arg("priors"), py::arg("fpu_value"))
         .def("select_child", &MCTSNode::select_child, py::arg("c_puct"))
         .def("backup",       &MCTSNode::backup,       py::arg("value"), py::arg("gamma"))
         .def("harvest",      &MCTSNode::harvest,      py::arg("min_visits"))
