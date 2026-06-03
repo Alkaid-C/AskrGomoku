@@ -21,3 +21,7 @@
 !README.md
 
 # commonly ignored file type: binary data (*.pt, *.npz), training log (*.log, *.csv), internal/temporary documents (*.md).
+
+# external Rapfi engine — not part of our repo (excluding the dir stops git
+# from descending into it, so the whitelist re-includes above don't apply)
+external-baseline/rapfi/
