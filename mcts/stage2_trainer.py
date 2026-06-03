@@ -17,10 +17,11 @@ import numpy as np
 import torch
 from csv_logger import Stage2CSVLogger
 from gomoku import RENJU_OPENING_SEQUENCES, GameState
-from mcts import clear_nn_eval_cache, get_nn_eval_cache_stats
 from model import GomokuPolicyNet
 from self_play import compute_block_rates, play_mcts_games
 from training import train_on_mcts_batch
+
+from mcts import clear_nn_eval_cache, get_nn_eval_cache_stats
 
 TRAINING_STATE_FILE = "training_state.json"
 FINAL_NAME = "final_policy.pt"
@@ -47,6 +48,25 @@ def _save_state(output_dir: str, update: int) -> None:
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(state, f, indent=2)
+    os.replace(tmp, path)
+
+
+def _dump_samples(samples_dir: str, update: int, plies: list[tuple]) -> None:
+    """Persist one update's flattened per-ply samples to a .npz shard for
+    offline analysis. Side-channel only — does not affect training. Each ply is
+    (obs uint8[3,15,15], dist f32[225], value f32, policy_weight, value_weight);
+    columns are stacked into parallel arrays. Crash-safe via tmp + rename."""
+    obs = np.stack([p[0] for p in plies]).astype(np.uint8)
+    dist = np.stack([p[1] for p in plies]).astype(np.float32)
+    value = np.array([p[2] for p in plies], dtype=np.float32)
+    policy_weight = np.array([p[3] for p in plies], dtype=np.float32)
+    value_weight = np.array([p[4] for p in plies], dtype=np.float32)
+    path = os.path.join(samples_dir, f"samples_update_{update}.npz")
+    tmp = path + ".tmp.npz"  # keep .npz suffix so np.savez writes this exact name
+    np.savez_compressed(
+        tmp, obs=obs, dist=dist, value=value,
+        policy_weight=policy_weight, value_weight=value_weight,
+    )
     os.replace(tmp, path)
 
 
@@ -124,12 +144,16 @@ def run_stage2(
     replay_buffer_rounds: int,
     sample_ratio: float,
     decay_ratio: float,
+    sample_dump_updates: int,
     checkpoint_interval: int,
     harvest_value_min_visits: int,
     harvest_policy_min_visits: int,
     device: torch.device,
 ) -> None:
     os.makedirs(output_dir, exist_ok=True)
+    samples_dir = os.path.join(output_dir, "samples")
+    if sample_dump_updates > 0:
+        os.makedirs(samples_dir, exist_ok=True)
     csv_logger = Stage2CSVLogger(output_dir)
 
     print(f"Output: {output_dir}")
@@ -167,6 +191,7 @@ def run_stage2(
     training_start = time.time()
     num_openings = len(RENJU_OPENING_SEQUENCES)
     replay_buffer: deque[list] = deque(maxlen=replay_buffer_rounds)
+    geom_sum = sum(decay_ratio ** i for i in range(replay_buffer_rounds))
 
     for update in range(start_update, total_updates):
         t_start = time.time()
@@ -259,14 +284,21 @@ def run_stage2(
             for h_obs, h_policy, h_value, h_policy_w, h_value_w in record.harvested:
                 plies.append((h_obs, h_policy, float(h_value), float(h_policy_w), float(h_value_w)))
 
+        # Side-channel: dump the first N updates' samples for offline analysis.
+        # Pure side effect on `plies` (already built) — training is untouched.
+        if update < sample_dump_updates:
+            _dump_samples(samples_dir, update, plies)
+
         replay_buffer.append(plies)
-        # Warmup (buffer not yet full): train on the most recent round in full.
+        # Warmup (buffer not yet full): draw from the most recent round only, at
+        # a ratio scaled by the geometric sum so the per-step sample total matches
+        # the post-warmup budget (Σ_i sample_ratio * decay_ratio**i).
         # Post-warmup: per-round decaying budget walking newest -> oldest:
         #   k_0 = round(sample_ratio * len(round_0))   # plies, not games
         #   k_i = round(k_0 * decay_ratio ** i), clamped to [0, len(round_i)]; skip if 0.
         if len(replay_buffer) < replay_buffer_rounds:
             ordered_rounds: list[list] = [plies]
-            per_round_k = [len(plies)]
+            per_round_k = [min(len(plies), round(sample_ratio * geom_sum * len(plies)))]
         else:
             ordered_rounds = list(reversed(replay_buffer))
             k_0 = round(sample_ratio * len(ordered_rounds[0]))

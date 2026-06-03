@@ -50,16 +50,17 @@ STAGE1_CHECKPOINT_INTERVAL = 128
 STAGE2_TOTAL_UPDATES = 4096
 STAGE2_EPISODES_PER_UPDATE = 256
 NUM_SIMULATIONS_S2 = 2048
-STAGE2_OPTIMIZE_STEPS_PER_UPDATE = 4  # train K times on each self-play batch; LR is divided by K
+STAGE2_OPTIMIZE_STEPS_PER_UPDATE = 8  # train K times on each self-play batch; LR is divided by K
 STAGE2_LR = 2.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE
 STAGE2_MIN_LR = STAGE2_LR / 8
 STAGE2_DIRICHLET_ALPHA = 0.125
 STAGE2_DIRICHLET_EPSILON = 0.25
 STAGE2_ACTION_TEMPERATURE = 0.5     # MCTS visits → move sampling during self-play
-STAGE2_CHECKPOINT_INTERVAL = 32
+STAGE2_CHECKPOINT_INTERVAL = 1
 STAGE2_REPLAY_BUFFER_ROUNDS = 12    # number of past self-play rounds to retain for training
-STAGE2_SAMPLE_RATIO = 0.5           # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
+STAGE2_SAMPLE_RATIO = 0.25          # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
 STAGE2_DECAY_RATIO = 0.5 ** 0.5     # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
+STAGE2_SAMPLE_DUMP_UPDATES = 32     # dump per-update self-play samples to stage2/samples/*.npz for updates 0..N-1 (offline analysis only; does not affect training)
 # Subtree harvesting: emit internal search-tree nodes (N = sum of child visits)
 # as additional weighted training samples. Value target is reliable at lower N
 # than the visit distribution, so the value threshold is lower than the policy
@@ -178,6 +179,7 @@ def main() -> None:
             replay_buffer_rounds=STAGE2_REPLAY_BUFFER_ROUNDS,
             sample_ratio=STAGE2_SAMPLE_RATIO,
             decay_ratio=STAGE2_DECAY_RATIO,
+            sample_dump_updates=STAGE2_SAMPLE_DUMP_UPDATES,
             checkpoint_interval=STAGE2_CHECKPOINT_INTERVAL,
             harvest_value_min_visits=STAGE2_HARVEST_VALUE_MIN_VISITS,
             harvest_policy_min_visits=STAGE2_HARVEST_POLICY_MIN_VISITS,
