@@ -9,6 +9,7 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 - **`mini/`** — Identical to `vanilla/` in every way — same model structure, same training recipe — just a smaller parameter count.
 - **`mcts/`** — MCTS self-play training, started from an RL checkpoint as warm start to skip the noisy random-init phase. Three CLI subcommands: `generate_data` and `stage1` build the warm-start checkpoint via offline distillation from RL-teacher MCTS rollouts; `stage2` is the actual MCTS training. Symlinks `model.py`, `gomoku.py`, `enhancement.py` from `main/`.
 - **`deploy/`** — ONNX export (`export_onnx.py`) and browser web app (`web_app/`).
+- **`external-baseline/`** — Lets our engine play external engines (notably **Rapfi**) via the Gomocup **Piskvork** protocol. `pbrain.py` wraps a checkpoint as a Piskvork engine; `arena_web.py` is a web arena (port 5001) that runs two such engines against each other; `rapfi-engine/` holds a compiled Rapfi binary + weights. See `external-baseline/CLAUDE.md`.
 
 ## Running
 
