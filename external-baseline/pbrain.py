@@ -26,7 +26,7 @@ import sys
 
 # Paths are resolved relative to THIS file (pbrain.py runs as a subprocess with
 # an arbitrary cwd), so they must not depend on the launch directory.
-CHECKPOINT_PATH = "../mcts/test2/stage1/stage1_final.pt"
+CHECKPOINT_PATH = "../mcts/test2/stage2/checkpoint_update_26.pt"
 MODEL_DIR = "../main"   # directory containing model.py / gomoku.py
 MCTS_BUDGET = 2048       # 0 = raw policy argmax; >0 = MCTS simulations per move
 
