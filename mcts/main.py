@@ -38,7 +38,7 @@ ACTION_TEMPERATURE = 1.0        # MCTS visits → move sampling; broadens trajec
 SEED_PROBABILITY = 0.5          # fraction of games started from a Renju opening (overrides gomoku.SEED_PROBABILITY for MCTS)
 
 # === Stage 1 ===
-STAGE1_EPOCHS = 16
+STAGE1_EPOCHS = 18
 RAW_BATCH_PER_UPDATE = 4096
 STAGE1_LR = 1.0/512
 STAGE1_MIN_LR = 1.0/1024
@@ -47,20 +47,27 @@ STAGE1_KL_EMA_THRESHOLD: Optional[float] = None  # None → run all epochs
 STAGE1_CHECKPOINT_INTERVAL = 128
 
 # === Stage 2 ===
-STAGE2_TOTAL_UPDATES = 4096
 STAGE2_EPISODES_PER_UPDATE = 256
 NUM_SIMULATIONS_S2 = 2048
 STAGE2_OPTIMIZE_STEPS_PER_UPDATE = 8  # train K times on each self-play batch; LR is divided by K
-STAGE2_LR = 2.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE
-STAGE2_MIN_LR = STAGE2_LR / 8
+STAGE2_LR = 4.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE  # constant base LR (staircase start)
+# Plateau-driven staircase LR: hold STAGE2_LR until avg_raw_mcts_kl plateaus, then multiply
+# the LR by LR_STAIR_FACTOR; repeat for TOTAL_STAIRS descents, then end the stage on the next
+# plateau. A plateau is a trailing-window linear regression of avg_raw_mcts_kl whose decline
+# rate (-slope) drops below MINIMUM_KL_IMPROVE_SPEED * LR_STAIR_FACTOR**stairs_descended.
+LR_STAIR_FACTOR = 0.5            # LR multiplier applied at each plateau
+TOTAL_STAIRS = 3                 # number of LR descents before the stage ends
+REGRESSION_RANGE = 64            # updates per plateau regression window
+REGRESSION_INTERVAL = 8          # run the plateau check every N updates
+MINIMUM_KL_IMPROVE_SPEED = 0.005 # base threshold; scaled by LR_STAIR_FACTOR**stairs_descended
 STAGE2_DIRICHLET_ALPHA = 0.125
 STAGE2_DIRICHLET_EPSILON = 0.25
 STAGE2_ACTION_TEMPERATURE = 0.5     # MCTS visits → move sampling during self-play
-STAGE2_CHECKPOINT_INTERVAL = 1
-STAGE2_REPLAY_BUFFER_ROUNDS = 12    # number of past self-play rounds to retain for training
-STAGE2_SAMPLE_RATIO = 0.25          # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
-STAGE2_DECAY_RATIO = 0.5 ** 0.5     # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
-STAGE2_SAMPLE_DUMP_UPDATES = 32     # dump per-update self-play samples to stage2/samples/*.npz for updates 0..N-1 (offline analysis only; does not affect training)
+STAGE2_CHECKPOINT_INTERVAL = 8
+STAGE2_REPLAY_BUFFER_ROUNDS = 8     # number of past self-play rounds to retain for training
+STAGE2_SAMPLE_RATIO = 0.375         # k_0 = SAMPLE_RATIO * len(most_recent_round); per-round draw budget
+STAGE2_DECAY_RATIO = 0.5            # k_i = k_0 * DECAY_RATIO**i (i=0 most recent); recency-weighted replay
+STAGE2_SAMPLE_DUMP_UPDATES = 1      # dump per-update self-play samples to stage2/samples/*.npz for updates 0..N-1 (offline analysis only; does not affect training)
 # Subtree harvesting: emit internal search-tree nodes (N = sum of child visits)
 # as additional weighted training samples. Value target is reliable at lower N
 # than the visit distribution, so the value threshold is lower than the policy
@@ -161,7 +168,6 @@ def main() -> None:
         run_stage2(
             stage1_checkpoint=stage1_final,
             output_dir=os.path.join(working_dir, "stage2"),
-            total_updates=STAGE2_TOTAL_UPDATES,
             episodes_per_update=STAGE2_EPISODES_PER_UPDATE,
             num_simulations=NUM_SIMULATIONS_S2,
             c_puct=C_PUCT,
@@ -172,7 +178,11 @@ def main() -> None:
             gamma=DISCOUNT_GAMMA,
             fpu_multiplier=FPU_MULTIPLIER,
             learning_rate=STAGE2_LR,
-            min_lr=STAGE2_MIN_LR,
+            stair_factor=LR_STAIR_FACTOR,
+            total_stairs=TOTAL_STAIRS,
+            regression_range=REGRESSION_RANGE,
+            regression_interval=REGRESSION_INTERVAL,
+            min_improve_speed=MINIMUM_KL_IMPROVE_SPEED,
             weight_decay=WEIGHT_DECAY,
             value_loss_coeff=VALUE_LOSS_COEFF,
             optimize_steps_per_update=STAGE2_OPTIMIZE_STEPS_PER_UPDATE,

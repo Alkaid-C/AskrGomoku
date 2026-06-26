@@ -33,6 +33,7 @@ class MCTSGameRecord:
     visit_distributions: list[np.ndarray] = field(default_factory=list) # [225] normalized
     root_values: list[float] = field(default_factory=list)              # MCTS root Q, side-to-move perspective
     raw_entropy: list[float] = field(default_factory=list)              # entropy of model's masked-softmax prior at root, pre-Dirichlet (diagnostic)
+    raw_mcts_kl: list[float] = field(default_factory=list)              # KL(visit_dist || raw prior) at root, pre-Dirichlet (policy-improvement gap diagnostic)
     outcome: Optional[GameState] = None
     # Internal search-tree nodes harvested as additional weighted samples.
     # Each entry: (obs uint8[3,15,15], policy f32[225], value f32,
@@ -115,7 +116,7 @@ def play_mcts_games(
     while active_indices:
         active_boards = [boards[i] for i in active_indices]
 
-        visit_dists, root_values, raw_entropies, harvested = mcts_search_batched(
+        visit_dists, root_values, raw_entropies, raw_mcts_kls, harvested = mcts_search_batched(
             model, active_boards, num_simulations, c_puct,
             entropy_multiplier, device,
             dirichlet_alpha=dirichlet_alpha,
@@ -133,6 +134,7 @@ def play_mcts_games(
             records[i].visit_distributions.append(visit_dists[j])
             records[i].root_values.append(float(root_values[j]))
             records[i].raw_entropy.append(float(raw_entropies[j]))
+            records[i].raw_mcts_kl.append(float(raw_mcts_kls[j]))
 
             # Merge this tree's harvested nodes into the game's accumulator,
             # keeping the highest-N instance per position.

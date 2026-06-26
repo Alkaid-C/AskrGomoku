@@ -32,8 +32,9 @@ class Stage2CSVLogger:
     """CSV logger for stage 2 (vanilla MCTS self-play training)."""
 
     COLUMNS: ClassVar[list[str]] = [
-        'update', 'policy_loss', 'value_loss', 'kl_target_student',
+        'update', 'policy_loss', 'value_loss',
         'lr', 'avg_game_length', 'avg_raw_entropy', 'avg_mcts_entropy',
+        'avg_raw_mcts_kl',
         'black_win_rate', 'draw_rate',
         'black_block_opps', 'black_block_mcts_rate', 'black_block_raw_rate',
         'white_block_opps', 'white_block_mcts_rate', 'white_block_raw_rate',

@@ -157,8 +157,8 @@ def train_on_mcts_batch(
         value_loss_coeff: Weight on the MSE value loss in the combined loss.
 
     Returns:
-        Dict with training metrics, including `kl_target_student` =
-        CE(target, student) - H(target).
+        Dict with training metrics (`policy_loss`, `value_loss`), reported as
+        unweighted means over played-root (weight-1) samples only.
     """
     all_obs = []
     all_dists = []
@@ -207,7 +207,7 @@ def train_on_mcts_batch(
     # The denominators are global over the augmented batch, so they are constant
     # across micro-batches and the accumulated gradient is exact.
     #
-    # Reported policy_loss / value_loss / kl are unweighted means over the
+    # Reported policy_loss / value_loss are unweighted means over the
     # played-root (weight-1) samples only — identified by value_weight == 1.0 —
     # so they stay comparable to runs without harvesting.
     policy_w_total = policy_w_tensor.sum().clamp_min(1.0)
@@ -216,7 +216,6 @@ def train_on_mcts_batch(
     n_played_aug = 0
     total_policy_loss = 0.0
     total_value_loss = 0.0
-    total_kl = 0.0
 
     for start in range(0, n_augmented, TRAIN_BATCH_SIZE):
         end = min(start + TRAIN_BATCH_SIZE, n_augmented)
@@ -254,10 +253,8 @@ def train_on_mcts_batch(
             played = mb_value_w == 1.0
             n_played_mb = int(played.sum().item())
             if n_played_mb > 0:
-                ent = -(target * (target + 1e-10).log()).sum(dim=-1)  # H(target)
                 total_policy_loss += ce[played].sum().item()
                 total_value_loss += se[played].sum().item()
-                total_kl += (ce[played] - ent[played]).sum().item()
                 n_played_aug += n_played_mb
 
     # Clip gradients and step
@@ -268,5 +265,4 @@ def train_on_mcts_batch(
     return {
         'policy_loss': total_policy_loss / denom,
         'value_loss': total_value_loss / denom,
-        'kl_target_student': total_kl / denom,
     }

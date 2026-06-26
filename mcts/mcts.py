@@ -281,7 +281,7 @@ def mcts_search_batched(
     gamma: float,
     fpu_multiplier: float,
     harvest_min_visits: Optional[int] = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[list[tuple]]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[list[tuple]]]:
     """
     Run batched MCTS search on multiple board positions.
 
@@ -317,6 +317,9 @@ def mcts_search_batched(
         root_values: [N] weighted mean Q from root's perspective
         raw_entropies: [N] entropy of the masked-softmax prior at the root,
             pre-Dirichlet. For logging/diagnostics.
+        raw_mcts_kls: [N] KL(visit_dist || raw prior) at the root, i.e. how far
+            the search moved the policy away from the network's raw prior
+            (pre-Dirichlet) — the policy-improvement gap. For logging/diagnostics.
         harvested: per-game list of (obs uint8[3,15,15], policy f32[225],
             value f32, N int) tuples for the internal nodes harvested from that
             game's search tree. Empty lists when harvest_min_visits is None.
@@ -481,6 +484,15 @@ def mcts_search_batched(
 
     raw_entropies = -(priors * np.log(priors + 1e-30)).sum(axis=-1)
 
+    # KL(visit_dist || raw prior) per root: how far the search moved the policy
+    # from the network's raw prior (pre-Dirichlet). Terms with visit mass 0
+    # vanish; legal moves always carry positive prior, so log(P) is finite where
+    # the visit distribution has support.
+    raw_mcts_kls = (
+        visit_distributions
+        * (np.log(visit_distributions + 1e-30) - np.log(priors + 1e-30))
+    ).sum(axis=-1)
+
     # --- Harvest internal nodes (optional) ---
     # Walk each tree for above-threshold internal nodes and reconstruct each
     # node's obs by replaying its action path on a copy of the root board (same
@@ -499,4 +511,4 @@ def mcts_search_batched(
                     (obs, np.asarray(policy, dtype=np.float32), float(value_target), int(n))
                 )
 
-    return visit_distributions, root_q_values, raw_entropies, harvested
+    return visit_distributions, root_q_values, raw_entropies, raw_mcts_kls, harvested

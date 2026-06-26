@@ -649,6 +649,10 @@ h1 {
                         <strong>Visit-distribution entropy:</strong> <span id="entropy-text">--</span> <span id="entropy-nats" style="color: #888; font-size: 12px;">nats</span>
                     </div>
 
+                    <div class="entropy-display" style="margin-bottom: 10px;">
+                        <strong>Raw→MCTS KL:</strong> <span id="raw-mcts-kl-text">--</span> <span style="color: #888; font-size: 12px;">nats (policy-improvement gap)</span>
+                    </div>
+
                     <div class="best-move">
                         <strong>Suggested Move:</strong>
                         <span id="suggested-move">--</span>
@@ -835,6 +839,7 @@ function clearBoard() {
     document.getElementById('suggested-move').textContent = '--';
     document.getElementById('value-text').textContent = '--';
     document.getElementById('entropy-text').textContent = '--';
+    document.getElementById('raw-mcts-kl-text').textContent = '--';
     document.getElementById('top-moves-list').innerHTML = '<em>Click "Get AI Suggestion" to analyze</em>';
 
     renderBoard();
@@ -1071,6 +1076,9 @@ function displayAIAnalysis(data) {
 
     // Display entropy
     document.getElementById('entropy-text').textContent = data.entropy.toFixed(3);
+
+    // Display raw->MCTS KL (policy-improvement gap)
+    document.getElementById('raw-mcts-kl-text').textContent = data.raw_mcts_kl.toFixed(3);
 
     // Display top moves
     const topMovesList = document.getElementById('top-moves-list');
@@ -1311,7 +1319,9 @@ def run_inference(
 
     Returns:
         dict with best_move, value (BLACK's perspective), probabilities,
-        all_probs_grid, entropy (of the visit distribution).
+        all_probs_grid, entropy (of the visit distribution), raw_mcts_kl
+        (KL(visit_dist || raw prior) = the policy-improvement gap MCTS opens
+        over the network's raw prior).
 
     Note: Caller must ensure current_model is not None before calling.
     """
@@ -1321,7 +1331,7 @@ def run_inference(
     next_player = Player.BLACK if current_player == 'black' else Player.WHITE
     board = board_from_observation(obs, next_player)
 
-    visit_dists, root_values, _raw_entropies, _harvested = mcts_search_batched(
+    visit_dists, root_values, _raw_entropies, raw_mcts_kls, _harvested = mcts_search_batched(
         current_model,
         [board],
         num_simulations=num_simulations,
@@ -1377,7 +1387,8 @@ def run_inference(
         'value': float(value_black),
         'probabilities': move_probs,
         'all_probs_grid': probs_grid,
-        'entropy': float(entropy)
+        'entropy': float(entropy),
+        'raw_mcts_kl': float(raw_mcts_kls[0]),
     }
 
 
