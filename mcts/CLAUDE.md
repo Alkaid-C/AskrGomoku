@@ -49,7 +49,9 @@ The actual MCTS training. The warm-started student plays itself with vanilla Alp
 4. Flatten the round's plies (played roots + harvested nodes) and append to a recency-decayed **replay buffer** (`STAGE2_REPLAY_BUFFER_ROUNDS` rounds; per-round draw budget `k_i = STAGE2_SAMPLE_RATIO·len(newest)·STAGE2_DECAY_RATIO**i` walking newest→oldest). Run `STAGE2_OPTIMIZE_STEPS_PER_UPDATE` `train_on_mcts_batch` steps on freshly sampled batches — targets are the raw visit distributions; harvested samples carry per-sample policy/value weights. **Warmup:** until the buffer fills (`STAGE2_REPLAY_BUFFER_ROUNDS` updates) it trains on the freshest round only — see "Start-of-stage-2 transient".
 5. Clear the NN eval cache and `torch.cuda.empty_cache()`.
 
-Stage 2 uses `entropy_multiplier=None` (raw masked softmax priors), Dirichlet noise (`STAGE2_DIRICHLET_ALPHA`/`EPSILON`) at the root for exploration, and `action_temperature=1.0`. Loss is CE + MSE — no entropy bonus, no GAE, no tactical boost, no imitation, no OPR. The search itself supplies exploration.
+Stage 2 uses `entropy_multiplier=None` (raw masked softmax priors), Dirichlet noise (`STAGE2_DIRICHLET_ALPHA`/`EPSILON`) at the root for exploration, and `STAGE2_ACTION_TEMPERATURE` (= 0.5) for move sampling. Loss is CE + MSE — no entropy bonus, no GAE, no tactical boost, no imitation, no OPR. The search itself supplies exploration.
+
+**Why action temperature is below 1.** Lower sampling temperature plays stronger moves, so games stay on higher-quality lines and reach the deeper, more complex positions that carry the most training signal. The cost is trajectory diversity: a sharp policy keeps replaying the same lines. Subtree harvesting is what buys that diversity back — each ply contributes not just its played root but a fan of off-line internal nodes — so it is precisely harvesting that makes a sub-1 temperature affordable here.
 
 Final: `stage2/final_policy.pt`.
 
@@ -63,12 +65,20 @@ Two thresholds track target reliability: the value target (a low-order mean) is 
 
 At the first few stage-2 updates the policy loss and `avg_raw_mcts_kl` (the `KL(MCTS ‖ raw)` improvement gap) spike, then decay. Frame MCTS as a policy-improvement operator on the network's raw policy: `MCTS(raw)` differs from `raw` exactly while `raw` is short of a fixed point `π*` where `MCTS(raw) = raw`, and each round distills `raw` onto its own `MCTS(raw)` to iterate toward it. Stage 1 only drives `stage1_final.raw ≈ MCTS(teacher.raw)` — one step ahead of the *teacher*, never a fixed point of its *own* search — so the first stage-2 target `MCTS(stage1_final.raw)` opens a fresh, never-distilled gap (the spike), which the iteration then collapses toward the slow steady-state drift. Early targets are therefore strongly non-stationary: an old round's stored targets go stale within a handful of updates. The replay-buffer **warmup** handles this — while the buffer is filling it trains on the freshest round only, switching to recency-decayed replay once the per-update drift has settled.
 
+#### Plateau-driven staircase LR
+
+Stage 2 has **no fixed update horizon**; it runs `while not controller.finished`. The LR is governed by `StaircaseLRController` (`stage2_trainer.py`), driven by the same `avg_raw_mcts_kl` improvement-gap signal.
+
+The reasoning follows the policy-improvement-operator framing above. `MCTS(raw)` differs from `raw` only while `raw` is short of its fixed point `π*`, so as the network improves the gap `KL(MCTS ‖ raw)` shrinks. It cannot reach 0, though — two floors hold it up: (1) **finite policy capacity** (the network may be unable to represent `MCTS(raw)` exactly), and (2) **optimization noise** injected by a too-large LR. So when `avg_raw_mcts_kl` plateaus, the remaining gap is plausibly noise-dominated rather than signal the network could still close. Shrinking the LR tests that hypothesis: with less noise the curve may resume falling toward the capacity floor. If it does, we have gained; if not, we are already near the floor and lose little.
+
+Mechanism: hold `STAGE2_LR` (note: pre-divided by `STAGE2_OPTIMIZE_STEPS_PER_UPDATE`) flat until a plateau, then multiply LR by `LR_STAIR_FACTOR` (= 0.5); after `TOTAL_STAIRS` (= 3) descents the next plateau ends the stage. A **plateau** is a trailing `REGRESSION_RANGE`-update linear regression of `avg_raw_mcts_kl` whose decline rate `-slope` falls below `MINIMUM_KL_IMPROVE_SPEED * LR_STAIR_FACTOR**stairs_descended` — the threshold shrinks in lockstep with the LR, so a flatter curve is still judged against a proportionally flatter bar. Checks fire every `REGRESSION_INTERVAL` updates (first at `REGRESSION_RANGE`); a stair-down resets the next check `REGRESSION_RANGE` updates out so each regression window holds only post-drop data. The controller's state (`stairs_descended`, `kl_history`, `next_check_step`, `finished`) is persisted in the checkpoint as `lr_controller_state_dict`, and the LR is re-derived from `stairs_descended` on resume rather than trusting the optimizer's reloaded LR.
+
 ## File Responsibilities
 
 - `main.py` — Hyperparameter constants (single source of truth) + CLI dispatcher to the three stage entry points.
 - `data_generator.py` — Stage-0 rollouts + sharded `.npz` writer with crash-safe rename.
 - `stage1_trainer.py` — Offline distillation loop, KL-EMA early-exit, cosine LR, resumable from `stage1/training_state.json`.
-- `stage2_trainer.py` — MCTS self-play training loop, cosine LR, resumable from `stage2/training_state.json`.
+- `stage2_trainer.py` — MCTS self-play training loop, plateau-driven staircase LR (`StaircaseLRController`), resumable from `stage2/training_state.json`.
 - `mcts.py` — PUCT tree search, batched cache-aware leaf evaluation, D4 NN-eval cache. `mcts_search_batched` also reconstructs harvested-node obs when `harvest_min_visits` is set.
 - `mcts_ext.cpp` — C++ `MCTSNode` (PUCT `select_child`, `backup`, and `harvest(min_visits)` subtree walk). Rebuild in-place with `python3 setup_ext.py build_ext --inplace` after editing.
 - `self_play.py` — `play_mcts_games` (used by both stage 0 and stage 2) + `compute_block_rates` diagnostic. Holds the within-game harvest dedup + per-sample weighting (`MCTSGameRecord.harvested`).
@@ -110,7 +120,7 @@ Across one update, many MCTS positions repeat under D4 symmetry. `_evaluate_with
 2. Misses are forwarded through the model in canonical orientation in fixed-size chunks of `_FIXED_FWD_BATCH`, with short trailing chunks zero-padded to the same shape. Two reasons: (a) uniform chunk shapes prevent allocator fragmentation (variable batch sizes caused a ~14 GB high-water mark in stage 0); (b) per-position throughput peaks at this size for this model's attention-dominated arithmetic and degrades with larger batches. The result (post-mask, post-softmax prior + value) is cached.
 3. Hits collapse to a permutation lookup: `priors[i] = canonical_priors[_FORWARD_PERM[s]]`.
 
-Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within any window where the cache lives. The cache is an `OrderedDict` with LRU eviction capped at `_NN_EVAL_CACHE_MAX_ENTRIES`. Stage 2 calls `clear_nn_eval_cache` at every optimizer.step() (model weights change). Stage 0 (data generation) runs against a frozen teacher and does **not** clear between shards — entries stay valid and the LRU cap bounds memory.
+Caching the *fully scaled* prior (not raw logits) is sound because `entropy_multiplier` is constant within any window where the cache lives. The cache is an `OrderedDict` with LRU eviction capped at `_NN_EVAL_CACHE_MAX_ENTRIES`. Stage 2 calls `clear_nn_eval_cache` once per update, after self-play and before the optimization loop (the model weights about to change invalidate every cached prior/value; the cache is only consulted during self-play, never during training). Stage 0 (data generation) runs against a frozen teacher and does **not** clear between shards — entries stay valid and the LRU cap bounds memory.
 
 ### Dirichlet noise
 
@@ -135,7 +145,7 @@ loss = policy_loss + VALUE_LOSS_COEFF * value_loss
 - Played roots have weight 1 on both terms; harvested nodes carry `min(N / NUM_SIMULATIONS_S2, 1)` (0 policy weight = value-only — see "Subtree harvesting"). Both weight totals are global over the full augmented batch, so they are constant across micro-batches and gradient accumulation is exact. When every weight is 1 (no harvest) each term reduces to the previous unweighted mean.
 - Reported `policy_loss`/`value_loss` are *unweighted* means over played-root samples only (`value_weight == 1.0`), so the metrics stay comparable across runs with and without harvesting.
 
-Stage 2 also logs **`avg_raw_mcts_kl`** = `KL(visit_dist ‖ raw prior)` averaged over played roots — the policy-improvement gap MCTS opens over the network's raw prior (pre-Dirichlet), computed at self-play time in `mcts.py::mcts_search_batched` (not in `train_on_mcts_batch`). Direction matches the policy CE: the loss minimizes `CE(π, P) = KL(π‖P) + H(π)`, so this is the part of the policy loss training can drive down, in nats. It measures the search/network gap independent of the optimizer; an earlier `kl_target_student` (KL of the target vs the *being-optimized* student on the replay batch) was dropped as it conflated optimization fit with the improvement signal.
+Stage 2 also logs **`avg_raw_mcts_kl`** = `KL(visit_dist ‖ raw prior)` averaged over played roots — the policy-improvement gap MCTS opens over the network's raw prior (pre-Dirichlet), computed at self-play time in `mcts.py::mcts_search_batched` (not in `train_on_mcts_batch`). Direction matches the policy CE: the loss minimizes `CE(π, P) = KL(π‖P) + H(π)`, so this is the part of the policy loss training can drive down, in nats. It measures the search/network gap independent of the optimizer; an earlier `kl_target_student` (KL of the target vs the *being-optimized* student on the replay batch) was dropped as it conflated optimization fit with the improvement signal. Beyond logging, this is also the **control signal for the staircase LR schedule** and for ending the stage — see "Plateau-driven staircase LR".
 
 Stage 1 (`stage1_trainer.py`) does not call `train_on_mcts_batch`; it uses a plain unweighted CE + MSE (all weights 1, no harvested samples) and logs its own `kl_target_student` = CE(target, student) − H(target), which drives the KL-EMA early-exit.
 
@@ -152,9 +162,10 @@ Gradient accumulation across micro-batches of `TRAIN_BATCH_SIZE`, then `clip_gra
 All hyperparameters are module-level constants at the top of `main.py` (no CLI tuning surface).
 
 - **Optimizer**: `AdamW(fused=True)` with `WEIGHT_DECAY` (`1 / 2**24`).
-- **LR**: `CosineAnnealingLR` per stage. Stage 1 from `STAGE1_LR` → `STAGE1_MIN_LR` over `epochs * updates_per_epoch`. Stage 2 from `STAGE2_LR` → `STAGE2_MIN_LR` over `STAGE2_TOTAL_UPDATES`.
+- **LR**: Stage 1 uses `CosineAnnealingLR` from `STAGE1_LR` → `STAGE1_MIN_LR` over `epochs * updates_per_epoch`. Stage 2 uses the plateau-driven staircase (`LR_STAIR_FACTOR`, `TOTAL_STAIRS`, `REGRESSION_RANGE`, `REGRESSION_INTERVAL`, `MINIMUM_KL_IMPROVE_SPEED`) starting from `STAGE2_LR` — see "Plateau-driven staircase LR".
 - **MCTS backup discount**: `DISCOUNT_GAMMA` (shared by all stages).
 - **PUCT**: `C_PUCT` (shared).
+- **First Play Urgency**: `FPU_MULTIPLIER` (shared by stage 0 and stage 2) — untried children seed Q to `node_value * FPU_MULTIPLIER`.
 - **Checkpointing**: every `STAGE{1,2}_CHECKPOINT_INTERVAL` updates as `checkpoint_update_{N}.pt`, paired with `training_state.json` for resume.
 
 ## Resume Semantics
