@@ -8,6 +8,7 @@ exploration source. Targets are the raw MCTS visit distributions.
 
 import json
 import os
+import pickle
 import random
 import time
 from collections import deque
@@ -25,6 +26,7 @@ from mcts import clear_nn_eval_cache, get_nn_eval_cache_stats
 
 TRAINING_STATE_FILE = "training_state.json"
 FINAL_NAME = "final_policy.pt"
+REPLAY_BUFFER_FILE_TEMPLATE = "replay_buffer_update_{update}.pkl"
 
 
 class StaircaseLRController:
@@ -39,6 +41,10 @@ class StaircaseLRController:
     fire only on the cadence grid: first at ``regression_range``, then every
     ``regression_interval`` updates; a stair-down resets the next check to
     ``step + regression_range`` so each regression window holds only post-drop data.
+
+    The final stair (once ``stairs_descended == total_stairs``, whose plateau ends the
+    stage irreversibly) uses a longer window ``regression_range * stop_regression_range_multiplier``
+    for extra margin on that one-way decision; earlier stairs use ``regression_range``.
     """
 
     def __init__(
@@ -48,6 +54,7 @@ class StaircaseLRController:
         stair_factor: float,
         total_stairs: int,
         regression_range: int,
+        stop_regression_range_multiplier: int,
         regression_interval: int,
         min_improve_speed: float,
     ) -> None:
@@ -56,17 +63,23 @@ class StaircaseLRController:
         self.stair_factor = stair_factor
         self.total_stairs = total_stairs
         self.regression_range = regression_range
+        self.stop_regression_range_multiplier = stop_regression_range_multiplier
         self.regression_interval = regression_interval
         self.min_improve_speed = min_improve_speed
         self.kl_history: list[float] = []
         self.stairs_descended = 0
-        self.next_check_step = regression_range
+        self.next_check_step = self._current_range()
         self.finished = False
         # Diagnostics from the most recent plateau check (for logging; not persisted).
         self.last_check_step = -1
         self.last_slope = 0.0
         self.last_threshold = 0.0
         self._set_lr(base_lr)
+
+    def _current_range(self) -> int:
+        if self.stairs_descended >= self.total_stairs:
+            return self.regression_range * self.stop_regression_range_multiplier
+        return self.regression_range
 
     def _set_lr(self, lr: float) -> None:
         for group in self.optimizer.param_groups:
@@ -76,8 +89,9 @@ class StaircaseLRController:
         self.kl_history.append(kl)
         if step != self.next_check_step:
             return
-        window = self.kl_history[-self.regression_range:]
-        slope = float(np.polyfit(np.arange(self.regression_range), window, 1)[0])
+        rng = self._current_range()
+        window = self.kl_history[-rng:]
+        slope = float(np.polyfit(np.arange(rng), window, 1)[0])
         improve_speed = -slope
         threshold = self.min_improve_speed * self.stair_factor ** self.stairs_descended
         self.last_check_step = step
@@ -89,7 +103,7 @@ class StaircaseLRController:
                 return
             self.stairs_descended += 1
             self._set_lr(self.base_lr * self.stair_factor ** self.stairs_descended)
-            self.next_check_step = step + self.regression_range
+            self.next_check_step = step + self._current_range()
         else:
             self.next_check_step = step + self.regression_interval
 
@@ -123,6 +137,19 @@ def _save_checkpoint(
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'lr_controller_state_dict': controller.state_dict(),
+        # Global RNG states so resume continues the same stream rather than
+        # restarting from seed_everything(SEED) (which main() re-applies on every
+        # process start). All stage-2 randomness flows through these globals:
+        # python `random` (openings, replay sampling) and `np.random` (Dirichlet
+        # noise, action sampling); torch/cuda are near-static here but cheap to
+        # carry. Not bit-exact overall (GPU FP nondeterminism diverges the
+        # trajectory), but avoids repeating the seed-42 stream across resumes.
+        'rng_state': {
+            'python': random.getstate(),
+            'numpy': np.random.get_state(),
+            'torch': torch.get_rng_state(),
+            'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else [],
+        },
     }, path)
 
 
@@ -133,6 +160,43 @@ def _save_state(output_dir: str, update: int) -> None:
     with open(tmp, 'w') as f:
         json.dump(state, f, indent=2)
     os.replace(tmp, path)
+
+
+def _buffer_path(output_dir: str, update: int) -> str:
+    return os.path.join(output_dir, REPLAY_BUFFER_FILE_TEMPLATE.format(update=update))
+
+
+def _save_buffer(output_dir: str, update: int, replay_buffer: "deque[list]") -> None:
+    """Persist the replay buffer next to the matching checkpoint.
+
+    The file is keyed by update so a crash between buffer write and
+    training_state.json update cannot make an older checkpoint resume with a
+    newer replay buffer.
+    """
+    path = _buffer_path(output_dir, update)
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump({
+            "update": update,
+            "rounds": list(replay_buffer),
+        }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(tmp, path)
+
+
+def _load_buffer(output_dir: str, update: int) -> Optional[list]:
+    """Reload the replay buffer sidecar for `update`.
+
+    Returns None if the matching file is absent, e.g. for checkpoints predating
+    this feature. The caller then falls back to an empty buffer.
+    """
+    path = _buffer_path(output_dir, update)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+    if not isinstance(payload, dict) or payload.get("update") != update:
+        raise RuntimeError(f"Replay buffer sidecar does not match update {update}: {path}")
+    return payload["rounds"]
 
 
 def _dump_samples(samples_dir: str, update: int, plies: list[tuple]) -> None:
@@ -168,6 +232,7 @@ def _try_resume(
     stair_factor: float,
     total_stairs: int,
     regression_range: int,
+    stop_regression_range_multiplier: int,
     regression_interval: int,
     min_improve_speed: float,
     weight_decay: float,
@@ -177,6 +242,7 @@ def _try_resume(
     torch.optim.Optimizer,
     StaircaseLRController,
     int,
+    Optional[list],
 ]]:
     path = os.path.join(output_dir, TRAINING_STATE_FILE)
     if not os.path.exists(path):
@@ -199,11 +265,37 @@ def _try_resume(
     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     controller = StaircaseLRController(
         optimizer, learning_rate, stair_factor, total_stairs,
-        regression_range, regression_interval, min_improve_speed,
+        regression_range, stop_regression_range_multiplier,
+        regression_interval, min_improve_speed,
     )
     controller.load_state_dict(ckpt['lr_controller_state_dict'])
     model.train()
-    return model, optimizer, controller, current_update
+
+    # Restore global RNG states. Must run *after* GomokuPolicyNet() construction
+    # above (weight init consumes the torch RNG stream); it also overrides the
+    # seed_everything(SEED) that main() applied before dispatching here. Absent
+    # on checkpoints predating this feature -> keep the seeded stream.
+    rng = ckpt.get('rng_state')
+    if rng is not None:
+        random.setstate(rng['python'])
+        np.random.set_state(rng['numpy'])
+        torch.set_rng_state(rng['torch'])
+        cuda_states = rng.get('torch_cuda', [])
+        if cuda_states and torch.cuda.is_available() \
+                and len(cuda_states) == torch.cuda.device_count():
+            torch.cuda.set_rng_state_all(cuda_states)
+        print("  Restored RNG state (resume continues the same random stream)")
+    else:
+        print("  No RNG state in checkpoint; continuing from the seeded stream")
+
+    buffer_rounds = _load_buffer(output_dir, current_update)
+    if buffer_rounds is None:
+        print("  No replay buffer sidecar found; resuming with an empty buffer "
+              "(warmup will re-engage for the next few updates)")
+    else:
+        n_plies = sum(len(rd) for rd in buffer_rounds)
+        print(f"  Restored replay buffer: {len(buffer_rounds)} rounds, {n_plies} plies")
+    return model, optimizer, controller, current_update, buffer_rounds
 
 
 def run_stage2(
@@ -223,6 +315,7 @@ def run_stage2(
     stair_factor: float,
     total_stairs: int,
     regression_range: int,
+    stop_regression_range_multiplier: int,
     regression_interval: int,
     min_improve_speed: float,
     weight_decay: float,
@@ -253,11 +346,13 @@ def run_stage2(
 
     resumed = _try_resume(
         output_dir, learning_rate, stair_factor, total_stairs,
-        regression_range, regression_interval, min_improve_speed, weight_decay, device,
+        regression_range, stop_regression_range_multiplier,
+        regression_interval, min_improve_speed, weight_decay, device,
     )
     if resumed is not None:
-        model, optimizer, controller, start_update = resumed
+        model, optimizer, controller, start_update, resumed_buffer = resumed
     else:
+        resumed_buffer = None
         if not os.path.exists(stage1_checkpoint):
             raise RuntimeError(
                 f"Missing stage 1 final: {stage1_checkpoint} "
@@ -273,13 +368,18 @@ def run_stage2(
         )
         controller = StaircaseLRController(
             optimizer, learning_rate, stair_factor, total_stairs,
-            regression_range, regression_interval, min_improve_speed,
+            regression_range, stop_regression_range_multiplier,
+            regression_interval, min_improve_speed,
         )
         start_update = 0
 
     training_start = time.time()
     num_openings = len(RENJU_OPENING_SEQUENCES)
     replay_buffer: deque[list] = deque(maxlen=replay_buffer_rounds)
+    if resumed_buffer is not None:
+        # deque(maxlen) keeps only the last `replay_buffer_rounds` if the saved
+        # buffer is longer (e.g. after a config change); normally it matches.
+        replay_buffer.extend(resumed_buffer)
     geom_sum = sum(decay_ratio ** i for i in range(replay_buffer_rounds))
 
     # No fixed horizon: the staircase controller ends the stage when it flags `finished`
@@ -475,6 +575,9 @@ def run_stage2(
             ckpt_id = update + 1
             ckpt_path = os.path.join(output_dir, f"checkpoint_update_{ckpt_id}.pt")
             _save_checkpoint(ckpt_path, ckpt_id, model, optimizer, controller)
+            # Order matters: .pt, then buffer, then state last (its atomic write
+            # is the commit point that guarantees both prior files are complete).
+            _save_buffer(output_dir, ckpt_id, replay_buffer)
             _save_state(output_dir, ckpt_id)
             print(f"  Saved: {os.path.basename(ckpt_path)}")
 
@@ -486,5 +589,6 @@ def run_stage2(
     _save_checkpoint(final_ckpt, last_update, model, optimizer, controller)
     final_path = os.path.join(output_dir, FINAL_NAME)
     torch.save({'model_state_dict': model.state_dict(), 'update': last_update}, final_path)
+    _save_buffer(output_dir, last_update, replay_buffer)
     _save_state(output_dir, last_update)
     print(f"\nStage 2 complete! Final model: {final_path}")

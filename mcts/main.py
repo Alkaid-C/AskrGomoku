@@ -56,8 +56,9 @@ STAGE2_LR = 4.0 / 1024 / STAGE2_OPTIMIZE_STEPS_PER_UPDATE  # constant base LR (s
 # plateau. A plateau is a trailing-window linear regression of avg_raw_mcts_kl whose decline
 # rate (-slope) drops below MINIMUM_KL_IMPROVE_SPEED * LR_STAIR_FACTOR**stairs_descended.
 LR_STAIR_FACTOR = 0.5            # LR multiplier applied at each plateau
-TOTAL_STAIRS = 3                 # number of LR descents before the stage ends
-REGRESSION_RANGE = 64            # updates per plateau regression window
+TOTAL_STAIRS = 4                 # number of LR descents before the stage ends
+REGRESSION_RANGE = 32            # updates per plateau regression window
+STOP_REGRESSION_RANGE_MULTIPLIER = 2  # final-stair window = REGRESSION_RANGE * this
 REGRESSION_INTERVAL = 8          # run the plateau check every N updates
 MINIMUM_KL_IMPROVE_SPEED = 0.005 # base threshold; scaled by LR_STAIR_FACTOR**stairs_descended
 STAGE2_DIRICHLET_ALPHA = 0.125
@@ -181,6 +182,7 @@ def main() -> None:
             stair_factor=LR_STAIR_FACTOR,
             total_stairs=TOTAL_STAIRS,
             regression_range=REGRESSION_RANGE,
+            stop_regression_range_multiplier=STOP_REGRESSION_RANGE_MULTIPLIER,
             regression_interval=REGRESSION_INTERVAL,
             min_improve_speed=MINIMUM_KL_IMPROVE_SPEED,
             weight_decay=WEIGHT_DECAY,
