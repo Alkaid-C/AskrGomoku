@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gomoku MCTS Test Page</title>
+<style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    .env { background: #f8f8f8; border: 1px solid #ddd; padding: 0.6rem 1rem; font-size: 0.9rem; }
+    button { margin: 0.8rem 0.4rem 0.8rem 0; padding: 0.4rem 0.9rem; border: 1px solid #888;
+        border-radius: 4px; background: #fff; cursor: pointer; }
+    button:disabled { opacity: 0.4; }
+    pre { background: #f4f4f4; border: 1px solid #ddd; padding: 0.8rem; font-size: 0.85rem;
+        white-space: pre-wrap; }
+    .pass { color: #080; }
+    .fail { color: #c00; font-weight: bold; }
+</style>
+</head>
+<body>
+<h1>Gomoku MCTS Test Page (dev only)</h1>
+<p>Runs the tactical/invariant test suite against the real advanced model with
+the real search code, in this browser. Compare the CROSSCHECK lines across
+devices/EPs — they should be identical up to float noise.</p>
+
+<div class="env" id="env-info"></div>
+<div>
+    <button id="run-wasm">Run tests (WASM)</button>
+    <button id="run-webgpu">Run tests (WebGPU)</button>
+</div>
+<pre id="log"></pre>
+
+<script src="vendor/ort.webgpu.min.js"></script>
+<script src="js/i18n.js"></script>
+<script src="js/gomoku-board.js"></script>
+<script src="js/mcts.js"></script>
+<script src="js/ep-probe.js"></script>
+<script src="js/onnx-ai-player.js"></script>
+<script>
+const MODEL = 'models/mcts_test.onnx';
+const logEl = document.getElementById('log');
+let failures = 0;
+
+function log(msg, cls) {
+    const span = document.createElement('span');
+    span.textContent = msg + '\n';
+    if (cls) span.className = cls;
+    logEl.appendChild(span);
+}
+
+function check(cond, msg) {
+    log((cond ? 'PASS' : 'FAIL') + ': ' + msg, cond ? 'pass' : 'fail');
+    if (!cond) failures++;
+}
+
+function makeBoard(moves) {
+    const b = new GomokuBoard();
+    for (const [r, c] of moves) {
+        if (b.Move(r, c) !== GameState.CONTINUE) throw new Error('unexpected terminal');
+    }
+    return b;
+}
+
+async function dumpCrosscheck(player, label, moves) {
+    const res = await new MCTSSearch(player).search(makeBoard(moves), 128);
+    const root = res.root;
+    const entries = [];
+    for (let k = 0; k < root.childActions.length; k++) {
+        if (root.childN[k] > 0) entries.push([root.childActions[k], root.childN[k]]);
+    }
+    entries.sort((a, b) => b[1] - a[1]);
+    log(`CROSSCHECK ${label} rootQ=${res.rootQ.toFixed(4)} `
+        + `top=${entries.slice(0, 10).map(e => `${e[0]}:${e[1]}`).join(' ')}`);
+}
+
+async function runTests(ep) {
+    failures = 0;
+    logEl.textContent = '';
+    log(`Creating ${ep} session...`);
+    const player = new OnnxAIPlayer(MODEL);
+    player.session = await ort.InferenceSession.create(MODEL, {
+        executionProviders: [ep],
+        graphOptimizationLevel: 'all',
+    });
+
+    // 1. Win-in-1: Black to move with an open four at row 7, cols 3-6.
+    {
+        const b = makeBoard([[7,3],[0,0],[7,4],[0,1],[7,5],[0,2],[7,6],[14,14]]);
+        const t0 = performance.now();
+        const res = await new MCTSSearch(player).search(b, 128);
+        log(`128 sims took ${((performance.now() - t0) / 1000).toFixed(2)}s`);
+        check(res.row === 7 && (res.col === 2 || res.col === 7),
+            `win-in-1 move is a winning square: got (${res.row},${res.col})`);
+        const root = res.root;
+        let winN = 0, tot = 0;
+        for (let k = 0; k < root.childActions.length; k++) {
+            tot += root.childN[k];
+            const a = root.childActions[k];
+            if (a === 7 * 15 + 2 || a === 7 * 15 + 7) winN += root.childN[k];
+        }
+        check(winN / tot > 0.7, `win-in-1 visit share on winning squares: ${(winN / tot).toFixed(3)}`);
+        check(tot === 128, `sum(childN) == numSims: ${tot}`);
+        check(root.visitCount === 129, `root visitCount == numSims + 1: ${root.visitCount}`);
+        check(res.rootQ >= -1 && res.rootQ <= 1, `rootQ in [-1,1]: ${res.rootQ.toFixed(4)}`);
+    }
+
+    // 2. Block-win-in-1: White to move; (7,7) is Black's only winning square.
+    {
+        const b = makeBoard([[7,3],[7,2],[7,4],[0,0],[7,5],[0,1],[7,6]]);
+        const res = await new MCTSSearch(player).search(b, 128);
+        check(res.row === 7 && res.col === 7,
+            `block-win-in-1 move is the blocking square: got (${res.row},${res.col})`);
+    }
+
+    // 3. Determinism.
+    {
+        const moves = [[7,7],[7,8],[8,8],[6,6]];
+        const r1 = await new MCTSSearch(player).search(makeBoard(moves), 64);
+        const r2 = await new MCTSSearch(player).search(makeBoard(moves), 64);
+        check(r1.row === r2.row && r1.col === r2.col && r1.rootQ === r2.rootQ,
+            `deterministic: (${r1.row},${r1.col}) == (${r2.row},${r2.col})`);
+    }
+
+    // 4. Cross-check dumps (compare with Node/Python harness output).
+    await dumpCrosscheck(player, 'pos1', [[7,7],[7,8],[8,8],[6,6],[8,6],[6,8]]);
+    await dumpCrosscheck(player, 'pos2', [[7,7],[8,8],[6,8],[8,6],[9,7]]);
+
+    await player.session.release();
+    log(failures === 0 ? 'ALL TESTS PASSED' : `${failures} FAILURES`,
+        failures === 0 ? 'pass' : 'fail');
+}
+
+epProbeConfigureOrtEnv();
+const env = epProbeEnvironment();
+document.getElementById('env-info').textContent =
+    `crossOriginIsolated: ${env.isolated} · WebGPU: ${env.hasGpu} · cores: ${env.cores}`
+    + ` · wasm threads: ${ort.env.wasm.numThreads}`;
+document.getElementById('run-webgpu').disabled = !env.hasGpu;
+
+for (const [id, ep] of [['run-wasm', 'wasm'], ['run-webgpu', 'webgpu']]) {
+    document.getElementById(id).addEventListener('click', async (e) => {
+        e.target.disabled = true;
+        try { await runTests(ep); }
+        catch (err) { log('ERROR: ' + (err.message || err), 'fail'); }
+        finally { e.target.disabled = false; }
+    });
+}
+</script>
+</body>
+</html>

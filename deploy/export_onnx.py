@@ -19,7 +19,45 @@ import onnx
 import onnxruntime as ort
 import torch
 import torch.nn as nn
-from model import N_BLOCKS, GomokuPolicyNet
+from model import GomokuPolicyNet
+
+
+class DecomposedGroupNorm(nn.Module):
+    """GroupNorm re-expressed with primitive tensor ops.
+
+    onnxruntime-web's WebGPU EP has no GroupNormalization kernel; every such
+    node forces a GPU->CPU->GPU round trip at runtime, which dominated
+    inference latency. Emitting the same computation as
+    Reshape/ReduceMean/Sub/Mul/Sqrt/Add keeps the whole graph on the GPU.
+    """
+    def __init__(self, gn: nn.GroupNorm):
+        super().__init__()
+        assert gn.affine, "affine-less GroupNorm not handled"
+        self.num_groups = gn.num_groups
+        self.eps = gn.eps
+        self.weight = gn.weight
+        self.bias = gn.bias
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n, c, h, w = x.shape
+        xg = x.reshape(n, self.num_groups, -1)
+        mean = xg.mean(dim=2, keepdim=True)
+        var = ((xg - mean) ** 2).mean(dim=2, keepdim=True)
+        xg = (xg - mean) / torch.sqrt(var + self.eps)
+        x = xg.reshape(n, c, h, w)
+        return x * self.weight.view(1, c, 1, 1) + self.bias.view(1, c, 1, 1)
+
+
+def decompose_groupnorms(module: nn.Module) -> int:
+    """Recursively replace every nn.GroupNorm with DecomposedGroupNorm."""
+    count = 0
+    for name, child in module.named_children():
+        if isinstance(child, nn.GroupNorm):
+            setattr(module, name, DecomposedGroupNorm(child))
+            count += 1
+        else:
+            count += decompose_groupnorms(child)
+    return count
 
 
 class GomokuModelForExport(nn.Module):
@@ -72,7 +110,7 @@ def load_checkpoint(checkpoint_path: str) -> GomokuPolicyNet:
     """Load model from PyTorch checkpoint."""
     print(f"Loading checkpoint: {checkpoint_path}")
 
-    model = GomokuPolicyNet(n_blocks=N_BLOCKS)
+    model = GomokuPolicyNet()
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -87,6 +125,9 @@ def load_checkpoint(checkpoint_path: str) -> GomokuPolicyNet:
 def export_to_onnx(model: nn.Module, output_path: str):
     """Export model to ONNX with raw logits (no softmax, no temperature)."""
     print("\nExporting to ONNX (opset=21, raw logits)...")
+
+    n_gn = decompose_groupnorms(model)
+    print(f"Decomposed {n_gn} GroupNorm layers into primitive ops (WebGPU compatibility)")
 
     # Wrap model for export (adds batch dim + mask channel)
     wrapped_model = GomokuModelForExport(model)

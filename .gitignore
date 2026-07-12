@@ -10,6 +10,7 @@
 # code
 !*.py
 !*.cpp
+!*.sh
 
 # deploy code
 !*.html
@@ -25,3 +26,7 @@
 # external Rapfi engine — not part of our repo (excluding the dir stops git
 # from descending into it, so the whitelist re-includes above don't apply)
 external-baseline/rapfi/
+
+# onnxruntime-web binaries served same-origin — rebuild with
+# deploy/web_app/fetch_vendor.sh (dir exclusion overrides the !*.js above)
+deploy/web_app/vendor/

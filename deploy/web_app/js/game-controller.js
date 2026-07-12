@@ -51,6 +51,10 @@ const ctx = canvas.getContext('2d');
 function init() {
     console.log('Initializing Gomoku game...');
 
+    // Must run before the first session creation anywhere on the page
+    // (wasm thread count is fixed at first runtime init).
+    epProbeConfigureOrtEnv();
+
     // Show setup panel
     setupPanel.style.display = 'block';
 
@@ -138,6 +142,7 @@ async function startGame() {
     // Show loading screen
     setupPanel.style.display = 'none';
     loadingScreen.style.display = 'block';
+    document.getElementById('loading-message').textContent = t('loading_model');
 
     // Start animations
     startOrbitAnimation();
@@ -147,17 +152,30 @@ async function startGame() {
     const isFirstLoad = !gameState.hasLoadedModel;
 
     try {
-        // Load model
-        gameState.aiPlayer = await gameState.modelManager.loadSelectedModel();
-
-        // Enforce minimum 3s loading screen on first load
-        if (isFirstLoad) {
-            const elapsed = performance.now() - loadStartTime;
-            if (elapsed < 3000) {
-                await new Promise(resolve => setTimeout(resolve, 3000 - elapsed));
+        if (difficulty === 'advanced') {
+            // Download + EP probe + one-time per-move-time confirmation
+            const ready = await prepareAdvancedPlayer();
+            if (!ready) {
+                // User chose to re-pick the difficulty
+                stopOrbitAnimation();
+                stopPoemRotation();
+                loadingScreen.style.display = 'none';
+                setupPanel.style.display = 'block';
+                return;
             }
-            gameState.hasLoadedModel = true;
+        } else {
+            // Load model
+            gameState.aiPlayer = await gameState.modelManager.loadSelectedModel();
+
+            // Enforce minimum 3s loading screen on first load
+            if (isFirstLoad) {
+                const elapsed = performance.now() - loadStartTime;
+                if (elapsed < 3000) {
+                    await new Promise(resolve => setTimeout(resolve, 3000 - elapsed));
+                }
+            }
         }
+        gameState.hasLoadedModel = true;
 
         // Stop animations
         stopOrbitAnimation();
@@ -203,6 +221,101 @@ async function startGame() {
         loadingScreen.style.display = 'none';
         setupPanel.style.display = 'block';
     }
+}
+
+/**
+ * Prepare the advanced-difficulty AI player: download the model, run the
+ * EP probe (or restore its cached result), then show the estimated per-move
+ * time for a one-time acknowledgment. Once acknowledged (persisted in the
+ * EP config cache), later games skip the dialog entirely; declining via
+ * "choose another difficulty" keeps the probe result but not the
+ * acknowledgment, so the estimate is shown again next time.
+ * @returns {Promise<boolean>} false if the user chose to re-pick difficulty
+ */
+async function prepareAdvancedPlayer() {
+    const loadingMessage = document.getElementById('loading-message');
+    const onDownloadProgress = frac => {
+        loadingMessage.textContent =
+            tFormat('downloading_model', { percent: Math.round(frac * 100) });
+    };
+    const onProbeStart = () => {
+        loadingMessage.textContent = t('probe_running');
+    };
+
+    let { probe } = await gameState.modelManager.loadAdvancedModel(
+        onDownloadProgress, onProbeStart);
+
+    for (;;) {
+        const cached = epProbeLoadCache();
+        if (cached && cached.confirmed) break;
+
+        // Mean predicts the 128-inference total (sum = n × mean); old caches
+        // predate meanMs, so fall back to the median rather than re-probing.
+        const choice = await showEstimateDialog(probe.meanMs ?? probe.medianMs);
+        if (choice === 'ok') {
+            if (cached) {
+                epProbeSaveCache(Object.assign({}, cached, { confirmed: true }));
+            }
+            break;
+        }
+        if (choice === 'repick') return false;
+
+        // 'retest': back to the loading state, then force a fresh probe
+        startOrbitAnimation();
+        startPoemRotation();
+        ({ probe } = await gameState.modelManager.loadAdvancedModel(
+            onDownloadProgress, onProbeStart, true));
+    }
+
+    gameState.aiPlayer = gameState.modelManager.advancedPlayer;
+    return true;
+}
+
+/**
+ * Show the per-move time estimate on the loading screen for the user to
+ * acknowledge. Sim counts are never shown — only the estimated seconds per
+ * move (sims × measured mean single-inference latency).
+ * @param {number} latencyMs - Measured mean inference latency
+ * @returns {Promise<string>} 'ok' | 'retest' | 'repick'
+ */
+function showEstimateDialog(latencyMs) {
+    const dialog = document.getElementById('probe-dialog');
+    const orbit = document.querySelector('.loading-orbit');
+    const poem = document.querySelector('.loading-poem-container');
+    const message = document.getElementById('loading-message');
+    const btnOk = document.getElementById('btn-probe-ok');
+    const btnRetest = document.getElementById('btn-probe-retest');
+    const btnRepick = document.getElementById('btn-probe-repick');
+
+    stopOrbitAnimation();
+    stopPoemRotation();
+    orbit.style.display = 'none';
+    poem.style.display = 'none';
+    message.textContent = '';
+
+    const estSec = (MCTS_SIMS * latencyMs / 1000).toFixed(1);
+    document.getElementById('probe-result-text').textContent =
+        tFormat('probe_done', { seconds: estSec });
+    btnOk.textContent = t('probe_choice_ok');
+    btnRetest.textContent = t('probe_choice_retest');
+    btnRepick.textContent = t('probe_choice_repick');
+
+    dialog.style.display = 'block';
+
+    return new Promise(resolve => {
+        const finish = (choice) => {
+            btnOk.onclick = null;
+            btnRetest.onclick = null;
+            btnRepick.onclick = null;
+            dialog.style.display = 'none';
+            orbit.style.display = '';
+            poem.style.display = '';
+            resolve(choice);
+        };
+        btnOk.onclick = () => finish('ok');
+        btnRetest.onclick = () => finish('retest');
+        btnRepick.onclick = () => finish('repick');
+    });
 }
 
 /**
@@ -388,10 +501,10 @@ async function makePlayerMove(row, col) {
 async function makeAIMove() {
     gameState.isAIThinking = true;
 
-    // Check if using advanced difficulty (negamax search)
-    const useNegamax = gameState.modelManager.selectedModel === 'advanced';
+    // Check if using advanced difficulty (MCTS)
+    const useMCTS = gameState.modelManager.selectedModel === 'advanced';
 
-    if (useNegamax) {
+    if (useMCTS) {
         updateStatus(t('deep_thinking'));
     } else {
         updateStatus(t('ai_thinking'));
@@ -405,9 +518,10 @@ async function makeAIMove() {
         const startTime = performance.now();
         let aiRow, aiCol, aiValue;
 
-        if (useNegamax) {
-            // Advanced difficulty: use negamax search (depth=3, topK=3)
-            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMoveWithNegamax(gameState.board, 3, 3);
+        if (useMCTS) {
+            // Advanced difficulty: MCTS
+            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMoveWithMCTS(
+                gameState.board, MCTS_SIMS);
         } else {
             // Junior/Intermediate: sample from policy distribution
             [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMove(gameState.board);
@@ -579,6 +693,10 @@ function handleGameEnd(result) {
  * Update canvas size (responsive).
  */
 function updateCanvasSize() {
+    // Resize can fire before any game has started (no board yet), e.g. the
+    // mobile address bar showing/hiding during the loading/probe screens.
+    if (!gameState.board) return;
+
     const container = document.querySelector('.board-container');
     const containerWidth = container.clientWidth;
 

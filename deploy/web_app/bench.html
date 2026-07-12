@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gomoku ONNX Inference Benchmark</title>
+<style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.4rem; }
+    table { border-collapse: collapse; width: 100%; margin-top: 1rem; font-size: 0.9rem; }
+    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; white-space: nowrap; }
+    th { background: #f0f0f0; }
+    td.left, th.left { text-align: left; }
+    .env { background: #f8f8f8; border: 1px solid #ddd; padding: 0.6rem 1rem; font-size: 0.9rem; }
+    .env b.bad { color: #c00; }
+    .env b.good { color: #080; }
+    button, a.preset { display: inline-block; margin: 0.3rem 0.4rem 0.3rem 0; padding: 0.4rem 0.9rem;
+        border: 1px solid #888; border-radius: 4px; background: #fff; color: #000;
+        text-decoration: none; font-size: 0.95rem; cursor: pointer; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    #status { margin: 0.8rem 0; font-weight: bold; min-height: 1.2em; }
+    .note { color: #666; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>Gomoku ONNX Inference Benchmark</h1>
+
+<div class="env" id="env-info">Loading environment info…</div>
+
+<p class="note">
+    WASM thread count is fixed at first runtime init, so switching config reloads the page.
+    Results persist in localStorage across reloads — run each preset in turn, on each device you care about.
+</p>
+
+<div>
+    <a class="preset" href="?ep=wasm&threads=1">WASM 1 thread</a>
+    <a class="preset" href="?ep=wasm&threads=4">WASM 4 threads</a>
+    <a class="preset" href="?ep=wasm&threads=max">WASM max threads</a>
+    <a class="preset" href="?ep=webgpu">WebGPU</a>
+</div>
+
+<div>
+    <button id="run-btn">Run benchmark (current config: <span id="config-label"></span>)</button>
+    <button id="clear-btn">Clear results</button>
+</div>
+
+<div id="status"></div>
+
+<table id="results">
+    <thead>
+        <tr>
+            <th class="left">Time</th>
+            <th class="left">Device</th>
+            <th class="left">EP</th>
+            <th class="left">ORT</th>
+            <th>Threads</th>
+            <th>Isolated</th>
+            <th>Session (ms)</th>
+            <th>Cold run (ms)</th>
+            <th>Mean</th>
+            <th>Median</th>
+            <th>p90</th>
+            <th>Min</th>
+            <th>N</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<script src="vendor/ort.webgpu.min.js"></script>
+<script>
+const MODEL_PATH = 'models/mcts_test.onnx';
+const STORAGE_KEY = 'gomoku-bench-results';
+const WARMUP_RUNS = 30;
+const TIMED_RUNS = 50;              // fixed run count: every row's stats rest on the same N
+
+// --- Config from URL ---
+const params = new URLSearchParams(location.search);
+const EP = params.get('ep') === 'webgpu' ? 'webgpu' : 'wasm';
+let THREADS = 1;
+if (EP === 'wasm') {
+    const t = params.get('threads') || '1';
+    THREADS = t === 'max' ? (navigator.hardwareConcurrency || 4) : Math.max(1, parseInt(t, 10) || 1);
+}
+
+ort.env.wasm.wasmPaths = new URL('vendor/', location.href).href;
+ort.env.wasm.numThreads = THREADS;
+
+// --- Environment info ---
+function deviceLabel() {
+    const ua = navigator.userAgent;
+    let os = 'unknown';
+    if (/Android/.test(ua)) os = 'Android';
+    else if (/iPhone|iPad/.test(ua)) os = 'iOS';
+    else if (/Windows/.test(ua)) os = 'Windows';
+    else if (/Mac/.test(ua)) os = 'macOS';
+    else if (/Linux/.test(ua)) os = 'Linux';
+    let browser = 'unknown';
+    if (/Edg\//.test(ua)) browser = 'Edge';
+    else if (/Chrome\//.test(ua)) browser = 'Chrome';
+    else if (/Firefox\//.test(ua)) browser = 'Firefox';
+    else if (/Safari\//.test(ua)) browser = 'Safari';
+    return os + '/' + browser;
+}
+
+function showEnv() {
+    const iso = window.crossOriginIsolated;
+    const gpu = !!navigator.gpu;
+    document.getElementById('env-info').innerHTML =
+        `Device: <b>${deviceLabel()}</b> · cores: <b>${navigator.hardwareConcurrency}</b>` +
+        ` · crossOriginIsolated: <b class="${iso ? 'good' : 'bad'}">${iso}</b>` +
+        ` (multithreaded WASM ${iso ? 'available' : 'UNAVAILABLE'})` +
+        ` · WebGPU API: <b class="${gpu ? 'good' : 'bad'}">${gpu ? 'present' : 'absent'}</b>`;
+    document.getElementById('config-label').textContent =
+        EP === 'webgpu' ? 'WebGPU' : `WASM ${THREADS}T`;
+}
+
+// --- Random plausible board inputs ---
+// Latency does not depend on stone content, but vary inputs anyway to rule out caching.
+function randomBoardInput() {
+    const data = new Float32Array(450);
+    const nStones = Math.floor(Math.random() * 61);   // 0..60 stones
+    const used = new Set();
+    for (let s = 0; s < nStones; s++) {
+        let idx;
+        do { idx = Math.floor(Math.random() * 225); } while (used.has(idx));
+        used.add(idx);
+        const channel = s % 2;                        // alternate current/opponent
+        data[channel * 225 + idx] = 1;
+    }
+    return new ort.Tensor('float32', data, [2, 15, 15]);
+}
+
+// --- Benchmark ---
+function percentile(sorted, p) {
+    return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))];
+}
+
+// WASM-EP session.run computes synchronously on the main thread and resolves as a
+// microtask, so a bare await-loop never reaches the render pipeline — nothing paints
+// until the whole sweep ends. Yield a real macrotask between runs, outside the timed
+// window. MessageChannel, not setTimeout(0): the latter is clamped to ≥4 ms when nested.
+const yieldChannel = new MessageChannel();
+function yieldToBrowser() {
+    return new Promise(resolve => {
+        yieldChannel.port1.onmessage = resolve;
+        yieldChannel.port2.postMessage(null);
+    });
+}
+
+// Warmup + timed phase against one session.
+async function timeShape(session, statusPrefix) {
+    const status = document.getElementById('status');
+    const inputs = [];
+    for (let i = 0; i < 16; i++) inputs.push(randomBoardInput());
+
+    // Warmup (first runs include shader compilation on WebGPU)
+    let coldMs = 0;
+    let w = 0;
+    while (w < WARMUP_RUNS) {
+        status.textContent = `${statusPrefix} warmup ${w + 1}…`;
+        const w0 = performance.now();
+        await session.run({ board_state: inputs[w % inputs.length] });
+        if (w === 0) coldMs = performance.now() - w0;
+        w++;
+        await yieldToBrowser();
+    }
+
+    // Timed phase: fixed run count
+    const times = [];
+    while (times.length < TIMED_RUNS) {
+        const r0 = performance.now();
+        await session.run({ board_state: inputs[times.length % inputs.length] });
+        times.push(performance.now() - r0);
+        if (times.length % 10 === 0) status.textContent = `${statusPrefix} timed run ${times.length}/${TIMED_RUNS}…`;
+        await yieldToBrowser();
+    }
+
+    times.sort((a, b) => a - b);
+    return { times, coldMs };
+}
+
+function makeResult(sessionMs, coldMs, times) {
+    return {
+        time: new Date().toLocaleTimeString(),
+        device: deviceLabel(),
+        ep: EP === 'webgpu' ? 'WebGPU' : 'WASM',
+        ort: ort.version || '?',
+        threads: EP === 'webgpu' ? '-' : String(THREADS),
+        isolated: String(window.crossOriginIsolated),
+        sessionMs: sessionMs.toFixed(0),
+        coldMs: coldMs.toFixed(1),
+        mean: (times.reduce((a, b) => a + b, 0) / times.length).toFixed(2),
+        median: percentile(times, 0.5).toFixed(2),
+        p90: percentile(times, 0.9).toFixed(2),
+        min: times[0].toFixed(2),
+        n: times.length,
+    };
+}
+
+async function runBenchmark() {
+    const status = document.getElementById('status');
+    const btn = document.getElementById('run-btn');
+    btn.disabled = true;
+    try {
+        status.textContent = 'Creating session…';
+        const t0 = performance.now();
+        const session = await ort.InferenceSession.create(MODEL_PATH, {
+            executionProviders: [EP],
+            graphOptimizationLevel: 'all',
+        });
+        const sessionMs = performance.now() - t0;
+
+        const r = await timeShape(session, 'Benchmark:');
+        await session.release();
+        saveResult(makeResult(sessionMs, r.coldMs, r.times));
+        renderResults();
+        status.textContent = 'Done.';
+    } catch (e) {
+        status.textContent = `FAILED: ${e.message || e}`;
+        console.error(e);
+    } finally {
+        btn.disabled = false;
+    }
+}
+
+// --- Result persistence & rendering ---
+function loadResults() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+    catch { return []; }
+}
+
+function saveResult(r) {
+    const all = loadResults();
+    all.push(r);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+}
+
+function renderResults() {
+    const tbody = document.querySelector('#results tbody');
+    tbody.innerHTML = '';
+    for (const r of loadResults()) {
+        const tr = document.createElement('tr');
+        const cells = [r.time, r.device, r.ep, r.ort || '1.22.0', r.threads, r.isolated,
+                       r.sessionMs, r.coldMs,
+                       r.mean, r.median, r.p90, r.min, r.n];
+        cells.forEach((v, i) => {
+            const td = document.createElement('td');
+            if (i < 4) td.className = 'left';
+            td.textContent = v;
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+    }
+}
+
+document.getElementById('run-btn').addEventListener('click', runBenchmark);
+document.getElementById('clear-btn').addEventListener('click', () => {
+    localStorage.removeItem(STORAGE_KEY);
+    renderResults();
+});
+
+showEnv();
+renderResults();
+</script>
+</body>
+</html>

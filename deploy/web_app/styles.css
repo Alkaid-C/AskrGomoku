@@ -77,6 +77,17 @@ h1 {
     transition: none;
 }
 
+/* Advanced-difficulty strength choice (shown after the EP probe) */
+.probe-dialog {
+    margin-top: 20px;
+}
+
+.probe-dialog p {
+    font-size: 0.9em;
+    color: #666;
+    margin-bottom: 15px;
+}
+
 /* ============================================================================
    Setup Panel
    ============================================================================ */
