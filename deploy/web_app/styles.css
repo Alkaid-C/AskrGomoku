@@ -50,17 +50,42 @@ h1 {
 
 #loading-message {
     font-size: 0.9em;
-    color: #999;
+    color: #555;
 }
 
+/* EP-probe progress bar: one minimal horizontal track. Fill is driven by
+   JS (rAF), advancing linearly on the worst-case per-EP budget so it is
+   always moving; see game-controller.js. */
+.probe-progress {
+    max-width: 280px;
+    margin: 0 auto 16px;
+}
+
+.probe-progress-track {
+    height: 3px;
+    background: #e5e5e5;
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.probe-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #333;
+    border-radius: 2px;
+}
+
+/* The poem is pure aesthetics; the serif face, lighter color, and larger
+   gap keep it clearly apart from the functional status text above it. */
 .loading-poem-container {
-    margin-top: 20px;
+    margin-top: 56px;
     min-height: 3em;
 }
 
 .loading-poem {
+    font-family: 'Times New Roman', serif;
     font-style: italic;
-    color: #999;
+    color: #aaa;
     font-size: 0.85em;
     line-height: 1.4;
     transition: transform 0.5s ease, opacity 0.5s ease;
@@ -82,10 +107,48 @@ h1 {
     margin-top: 20px;
 }
 
+.probe-result-heading {
+    color: #666;
+    font-size: 0.85em;
+    letter-spacing: 0.04em;
+    margin-bottom: 12px;
+}
+
+.probe-result-time {
+    color: #333;
+    font-size: 2em;
+    font-weight: 500;
+    line-height: 1.2;
+    margin-bottom: 20px;
+}
+
+.probe-model-name {
+    font-family: 'Times New Roman', serif;
+    font-style: italic;
+}
+
 .probe-dialog p {
     font-size: 0.9em;
     color: #666;
     margin-bottom: 15px;
+    text-align: left;
+    line-height: 1.6;
+}
+
+/* "Re-run test" is a recovery tool, not a primary choice: a small link. */
+.probe-retest-link {
+    background: none;
+    border: none;
+    padding: 4px;
+    margin-top: 14px;
+    font-size: 0.8em;
+    color: #999;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.probe-retest-link:hover {
+    color: #666;
 }
 
 /* ============================================================================
@@ -94,7 +157,7 @@ h1 {
 
 #setup-panel {
     text-align: center;
-    max-width: 400px;
+    max-width: 540px;
     width: 100%;
 }
 
@@ -436,12 +499,17 @@ h1 {
     background: #F8F8F8;
     z-index: 2000;
     display: flex;
-    justify-content: center;
-    align-items: center;
+    /* Centering is done by margin: auto on .record-content, NOT by
+       justify-content/align-items center: auto margins degrade to
+       flush-and-scrollable when the content is taller than the viewport,
+       whereas align-items: center would push the overflow above the
+       scroll origin where it can never be scrolled to. */
+    overflow: auto;
 }
 
 .btn-record-close {
-    position: absolute;
+    /* Fixed, not absolute: stays put while the overlay scrolls. */
+    position: fixed;
     top: 15px;
     right: 20px;
     background: none;
@@ -463,6 +531,7 @@ h1 {
     display: flex;
     flex-direction: column;
     align-items: center;
+    margin: auto;
 }
 
 .record-title {
@@ -633,21 +702,21 @@ h1 {
         gap: 10px;
     }
 
-    /* 按钮内部改为横排：左边名字，右边信息 */
+    /* 等宽的左右列让中间难度标签始终位于按钮的几何中心。 */
     .btn-difficulty {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         align-items: center;
         padding: 12px 15px;
         text-align: left;
     }
 
     .difficulty-name {
-        flex-shrink: 0;
-        min-width: 4em;
+        min-width: 0;
         margin-bottom: 0;
         margin-right: 0;
         font-size: 1.5em;
+        justify-self: start;
     }
 
     .difficulty-info {
@@ -657,11 +726,13 @@ h1 {
     }
 
     .difficulty-info:nth-of-type(2) {
-        min-width: 2.5em;
+        min-width: 0;
+        justify-self: center;
     }
 
     .difficulty-info:nth-of-type(3) {
-        min-width: 6em;
+        min-width: 0;
+        justify-self: end;
         text-align: right;
     }
 

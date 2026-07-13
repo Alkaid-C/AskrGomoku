@@ -26,7 +26,10 @@ const gameState = {
     aiTotalTime: 0,      // Total AI thinking time in ms
     aiMoveCount: 0,      // Number of AI moves
     playerTurnStart: 0,  // Timestamp when player's turn started
-    hasLoadedModel: false // Whether a model has been loaded this session
+    hasLoadedModel: false, // Whether a model has been loaded this session
+    gameId: 0,           // Invalidates async work belonging to an older game
+    activeAITask: null,  // Promise for inference/search still using a session
+    gameResult: null     // Final GameState, retained for language re-rendering
 };
 
 // ============================================================================
@@ -64,6 +67,7 @@ function init() {
 
     // Set up event listeners
     setupEventListeners();
+    renderStatus();
 
     console.log('Initialization complete');
 }
@@ -113,6 +117,15 @@ function setupEventListeners() {
 
     // Window resize
     window.addEventListener('resize', updateCanvasSize);
+    window.addEventListener('resize', () => {
+        if (document.getElementById('record-screen').style.display !== 'none') {
+            drawRecordBoard();
+        }
+    });
+
+    // Re-render JS-managed dynamic texts (loading status, probe dialog)
+    // when the language changes
+    document.addEventListener('gomoku-langchange', refreshDynamicLoadingTexts);
 }
 
 // ============================================================================
@@ -125,14 +138,20 @@ function setupEventListeners() {
 async function startGame() {
     console.log('Starting game...');
 
+    // Invalidate any result still being computed for the previous board.
+    // The unabortable inference itself is allowed to finish before its
+    // session is released below.
+    const gameId = ++gameState.gameId;
+
     // Get selected color
     const colorBtn = document.querySelector('.btn-color.active');
     gameState.playerColor = parseInt(colorBtn.dataset.color);
     gameState.aiColor = (gameState.playerColor === Player.BLACK) ? Player.WHITE : Player.BLACK;
 
-    // Get selected difficulty
+    // Get selected difficulty (may be downgraded to curtain by the melody
+    // dialog's "switch to Hard" choice below)
     const difficultyBtn = document.querySelector('.btn-difficulty.active');
-    const difficulty = difficultyBtn.dataset.difficulty;
+    let difficulty = difficultyBtn.dataset.difficulty;
     gameState.modelManager.setSelectedModel(difficulty);
 
     console.log(`  Player color: ${gameState.playerColor === Player.BLACK ? 'Black' : 'White'}`);
@@ -142,30 +161,46 @@ async function startGame() {
     // Show loading screen
     setupPanel.style.display = 'none';
     loadingScreen.style.display = 'block';
-    document.getElementById('loading-message').textContent = t('loading_model');
-
-    // Start animations
-    startOrbitAnimation();
-    startPoemRotation();
+    showLoadingPhase('load');
+    setLoadingMessage('loading_model');
 
     const loadStartTime = performance.now();
     const isFirstLoad = !gameState.hasLoadedModel;
 
     try {
-        if (difficulty === 'advanced') {
-            // Download + EP probe + one-time per-move-time confirmation
-            const ready = await prepareAdvancedPlayer();
-            if (!ready) {
-                // User chose to re-pick the difficulty
-                stopOrbitAnimation();
+        await waitForActiveAITask();
+        if (gameId !== gameState.gameId) return;
+        await gameState.modelManager.releasePolicyPlayer();
+        if (gameId !== gameState.gameId) return;
+
+        if (difficulty === 'melody') {
+            // Download → EP probe → per-move-time acknowledgment
+            const outcome = await prepareMelodyPlayer();
+            if (outcome === 'setup') {
+                stopLoadingOrbit();
                 stopPoemRotation();
                 loadingScreen.style.display = 'none';
                 setupPanel.style.display = 'block';
                 return;
             }
-        } else {
+            if (outcome === 'curtain') {
+                // "Switch to Hard": start a curtain game directly, and sync
+                // the setup panel's selection so a later "new game" agrees.
+                difficulty = 'curtain';
+                gameState.modelManager.setSelectedModel('curtain');
+                document.querySelectorAll('.btn-difficulty').forEach(b =>
+                    b.classList.toggle('active', b.dataset.difficulty === 'curtain'));
+                showLoadingPhase('load');
+                setLoadingMessage('loading_model');
+            }
+        }
+        if (difficulty !== 'melody') {
             // Load model
             gameState.aiPlayer = await gameState.modelManager.loadSelectedModel();
+            if (gameId !== gameState.gameId) {
+                await gameState.modelManager.releasePolicyPlayer();
+                return;
+            }
 
             // Enforce minimum 3s loading screen on first load
             if (isFirstLoad) {
@@ -178,7 +213,7 @@ async function startGame() {
         gameState.hasLoadedModel = true;
 
         // Stop animations
-        stopOrbitAnimation();
+        stopLoadingOrbit();
         stopPoemRotation();
 
         // Initialize board
@@ -188,6 +223,7 @@ async function startGame() {
         gameState.pendingMove = null;
         gameState.undoCount = 0;
         gameState.gameOver = false;
+        gameState.gameResult = null;
         gameState.playerTotalTime = 0;
         gameState.playerMoveCount = 0;
         gameState.aiTotalTime = 0;
@@ -207,15 +243,16 @@ async function startGame() {
 
         // If AI plays first (black), make AI move
         if (gameState.aiColor === Player.BLACK) {
-            await makeAIMove();
+            await startAIMove(gameId);
         } else {
             gameState.playerTurnStart = performance.now();
-            updateStatus(t('your_turn'));
+            setStatus('your_turn');
         }
 
     } catch (error) {
+        if (gameId !== gameState.gameId) return;
         console.error('Failed to start game:', error);
-        stopOrbitAnimation();
+        stopLoadingOrbit();
         stopPoemRotation();
         alert(t('model_load_failed'));
         loadingScreen.style.display = 'none';
@@ -223,98 +260,252 @@ async function startGame() {
     }
 }
 
+// ============================================================================
+// Loading Screen Phases & Dynamic Texts
+// ============================================================================
+
+// The loading screen has two distinct looks: 'load' (model download / plain
+// load — large orbit + poem) and 'probe' (the EP performance test — smaller
+// orbit + progress bar, no poem), so the test reads as its own step rather
+// than part of the download.
+const LOADING_ORBIT_SIZE = 200;
+const PROBE_ORBIT_SIZE = 160;
+
+function showLoadingPhase(phase) {
+    const poemContainer = document.querySelector('.loading-poem-container');
+    const bar = document.getElementById('probe-progress');
+    if (phase === 'probe') {
+        stopPoemRotation();
+        poemContainer.style.display = 'none';
+        bar.style.display = '';
+        showLoadingOrbit(PROBE_ORBIT_SIZE);
+    } else {
+        bar.style.display = 'none';
+        poemContainer.style.display = '';
+        startPoemRotation();
+        showLoadingOrbit(LOADING_ORBIT_SIZE);
+    }
+}
+
+// The loading status line and the probe dialog text are set from JS, so
+// they carry no data-i18n. Their key/params are remembered and re-rendered
+// on language switch (otherwise applyTranslations would either clobber them
+// or leave them in the old language).
+let loadingMessageState = null;
+let probeDialogTextState = null;
+
+function setLoadingMessage(key, params) {
+    loadingMessageState = key ? { key: key, params: params } : null;
+    document.getElementById('loading-message').textContent =
+        key ? (params ? tFormat(key, params) : t(key)) : '';
+}
+
+function refreshDynamicLoadingTexts() {
+    if (loadingMessageState) {
+        setLoadingMessage(loadingMessageState.key, loadingMessageState.params);
+    }
+    if (probeDialogTextState) {
+        renderProbeDialogText();
+    }
+    if (gameState.gameOver && gameState.gameResult !== null) {
+        renderGameEnd(gameState.gameResult);
+    } else {
+        renderStatus();
+    }
+    if (document.getElementById('record-screen').style.display !== 'none') {
+        showRecordScreen();
+    }
+}
+
+function renderProbeDialogText() {
+    const { key, params } = probeDialogTextState;
+    const isResult = key === 'probe_done';
+    const heading = document.getElementById('probe-result-heading');
+    const time = document.getElementById('probe-result-time');
+    const textEl = document.getElementById('probe-result-text');
+    const curtainButton = document.getElementById('btn-probe-curtain');
+
+    heading.style.display = isResult ? '' : 'none';
+    time.style.display = isResult ? '' : 'none';
+    heading.textContent = isResult ? t('probe_result_heading') : '';
+    time.textContent = isResult ? tFormat('probe_result_time', params) : '';
+    if (isResult) {
+        textEl.innerHTML = tFormat(key, params);
+        curtainButton.innerHTML = params.curtainSeconds
+            ? tFormat('probe_choice_curtain_timed', { seconds: params.curtainSeconds })
+            : t('probe_choice_curtain');
+    } else {
+        textEl.textContent = params ? tFormat(key, params) : t(key);
+        curtainButton.textContent = t('probe_choice_curtain');
+    }
+}
+
+// ============================================================================
+// EP-Probe Progress Bar
+// ============================================================================
+
+// One segment per probe phase: wasm setup/warmup, wasm timing, then (when a
+// GPU is present) webgpu setup/warmup and webgpu timing. Within a
+// segment the fill advances linearly on the worst-case budget
+// (EP_PROBE_TOTAL_CAP_MS — the point at which the probe worker would be
+// killed anyway), so the bar is always moving yet can never overshoot a
+// phase that is still running.
+const probeBar = { nSegments: 2, segment: 0, segmentStart: 0, rafId: null };
+
+const PROBE_PHASE_TEXT_KEYS = {
+    wasm: { timing: 'probe_phase_wasm_timing', other: 'probe_phase_wasm_setup' },
+    webgpu: { timing: 'probe_phase_webgpu_timing', other: 'probe_phase_webgpu_setup' },
+};
+
+function probeBarStart() {
+    probeBar.nSegments = epProbeEnvironment().hasGpu ? 4 : 2;
+    probeBar.segment = 0;
+    probeBar.segmentStart = performance.now();
+    cancelAnimationFrame(probeBar.rafId);
+    const fill = document.getElementById('probe-progress-fill');
+    const tick = () => {
+        const frac = Math.min(
+            (performance.now() - probeBar.segmentStart) / EP_PROBE_TOTAL_CAP_MS, 1);
+        fill.style.width =
+            ((probeBar.segment + frac) / probeBar.nSegments * 100) + '%';
+        probeBar.rafId = requestAnimationFrame(tick);
+    };
+    tick();
+}
+
+function probeBarOnPhase(ep, phase) {
+    const keys = PROBE_PHASE_TEXT_KEYS[ep];
+    setLoadingMessage(phase === 'timing' ? keys.timing : keys.other);
+    const segment = (ep === 'webgpu' ? 2 : 0) + (phase === 'timing' ? 1 : 0);
+    if (segment > probeBar.segment) {
+        probeBar.segment = segment;
+        probeBar.segmentStart = performance.now();
+    }
+}
+
+function probeBarStop() {
+    cancelAnimationFrame(probeBar.rafId);
+    probeBar.rafId = null;
+    document.getElementById('probe-progress-fill').style.width = '100%';
+}
+
+// ============================================================================
+// Melody Preparation (download → probe → acknowledgment)
+// ============================================================================
+
 /**
- * Prepare the advanced-difficulty AI player: download the model, run the
- * EP probe (or restore its cached result), then show the estimated per-move
- * time for a one-time acknowledgment. Once acknowledged (persisted in the
- * EP config cache), later games skip the dialog entirely; declining via
- * "choose another difficulty" keeps the probe result but not the
+ * Prepare the melody-difficulty AI player. The model download is kept on
+ * the ModelManager, so a probe re-run never re-downloads. After the probe
+ * (or a cached restore), the per-move time estimate is shown for a one-time
+ * acknowledgment — its text assumes the reader saw nothing of the probe
+ * screens. Acknowledging persists `confirmed`, so later melody games skip
+ * the dialog entirely; "switch to Hard" keeps the probe result but not the
  * acknowledgment, so the estimate is shown again next time.
- * @returns {Promise<boolean>} false if the user chose to re-pick difficulty
+ * @returns {Promise<string>} 'melody' (player ready) | 'curtain' (start a
+ *     curtain game instead) | 'setup' (return to the setup panel)
  */
-async function prepareAdvancedPlayer() {
-    const loadingMessage = document.getElementById('loading-message');
-    const onDownloadProgress = frac => {
-        loadingMessage.textContent =
-            tFormat('downloading_model', { percent: Math.round(frac * 100) });
-    };
-    const onProbeStart = () => {
-        loadingMessage.textContent = t('probe_running');
-    };
+async function prepareMelodyPlayer() {
+    try {
+        await gameState.modelManager.fetchMelodyModel(frac =>
+            setLoadingMessage('downloading_model', { percent: Math.round(frac * 100) }));
+    } catch (e) {
+        console.error('Melody model download failed:', e);
+        return showProbeDialog('download_failed', null, ['back']);
+    }
 
-    let { probe } = await gameState.modelManager.loadAdvancedModel(
-        onDownloadProgress, onProbeStart);
-
+    let force = false;
     for (;;) {
+        setLoadingMessage('loading_model'); // covers cached-EP session restore
+        let probe;
+        try {
+            ({ probe } = await gameState.modelManager.probeMelody({
+                onProbeStart: () => {
+                    showLoadingPhase('probe');
+                    probeBarStart();
+                },
+                onPhase: probeBarOnPhase,
+                force: force,
+            }));
+        } catch (e) {
+            console.error('EP probe failed:', e);
+            probeBarStop();
+            return showProbeDialog('probe_failed', null, ['curtain', 'back']);
+        }
+        probeBarStop();
+
         const cached = epProbeLoadCache();
         if (cached && cached.confirmed) break;
 
-        // Mean predicts the 128-inference total (sum = n × mean); old caches
-        // predate meanMs, so fall back to the median rather than re-probing.
-        const choice = await showEstimateDialog(probe.meanMs ?? probe.medianMs);
+        // Mean predicts the many-inference total (sum = n × mean).
+        const seconds = (MCTS_SIMS * probe.meanMs / 1000).toFixed(1);
+        const curtainSeconds = typeof probe.wasmMeanMs === 'number'
+            ? (probe.wasmMeanMs < 100 ? '<0.1' : (probe.wasmMeanMs / 1000).toFixed(1))
+            : null;
+        const choice = await showProbeDialog('probe_done', {
+            seconds: seconds,
+            curtainSeconds: curtainSeconds,
+        },
+            ['ok', 'curtain', 'retest']);
         if (choice === 'ok') {
             if (cached) {
                 epProbeSaveCache(Object.assign({}, cached, { confirmed: true }));
             }
             break;
         }
-        if (choice === 'repick') return false;
-
-        // 'retest': back to the loading state, then force a fresh probe
-        startOrbitAnimation();
-        startPoemRotation();
-        ({ probe } = await gameState.modelManager.loadAdvancedModel(
-            onDownloadProgress, onProbeStart, true));
+        if (choice === 'curtain') return 'curtain';
+        force = true; // 'retest': force a fresh probe (model already in memory)
     }
 
-    gameState.aiPlayer = gameState.modelManager.advancedPlayer;
-    return true;
+    gameState.aiPlayer = gameState.modelManager.melodyPlayer;
+    return 'melody';
 }
 
 /**
- * Show the per-move time estimate on the loading screen for the user to
- * acknowledge. Sim counts are never shown — only the estimated seconds per
- * move (sims × measured mean single-inference latency).
- * @param {number} latencyMs - Measured mean inference latency
- * @returns {Promise<string>} 'ok' | 'retest' | 'repick'
+ * Show the melody dialog on the loading screen: the per-move time estimate
+ * (sim counts are never shown — only sims × measured mean latency) or a
+ * download/probe failure message. The same markup serves all cases; which
+ * buttons are visible varies.
+ * @param {string} textKey - i18n key for the dialog text
+ * @param {Object|null} params - tFormat params for the text
+ * @param {Array} buttons - Visible buttons: 'ok' | 'curtain' | 'back' | 'retest'
+ * @returns {Promise<string>} 'ok' | 'curtain' | 'setup' | 'retest'
  */
-function showEstimateDialog(latencyMs) {
+function showProbeDialog(textKey, params, buttons) {
     const dialog = document.getElementById('probe-dialog');
-    const orbit = document.querySelector('.loading-orbit');
-    const poem = document.querySelector('.loading-poem-container');
-    const message = document.getElementById('loading-message');
-    const btnOk = document.getElementById('btn-probe-ok');
-    const btnRetest = document.getElementById('btn-probe-retest');
-    const btnRepick = document.getElementById('btn-probe-repick');
+    const orbit = document.getElementById('loading-orbit');
+    const btns = {
+        ok: document.getElementById('btn-probe-ok'),
+        curtain: document.getElementById('btn-probe-curtain'),
+        back: document.getElementById('btn-probe-back'),
+        retest: document.getElementById('btn-probe-retest'),
+    };
 
-    stopOrbitAnimation();
+    stopLoadingOrbit();
     stopPoemRotation();
     orbit.style.display = 'none';
-    poem.style.display = 'none';
-    message.textContent = '';
+    document.getElementById('probe-progress').style.display = 'none';
+    document.querySelector('.loading-poem-container').style.display = 'none';
+    setLoadingMessage(null);
 
-    const estSec = (MCTS_SIMS * latencyMs / 1000).toFixed(1);
-    document.getElementById('probe-result-text').textContent =
-        tFormat('probe_done', { seconds: estSec });
-    btnOk.textContent = t('probe_choice_ok');
-    btnRetest.textContent = t('probe_choice_retest');
-    btnRepick.textContent = t('probe_choice_repick');
-
+    probeDialogTextState = { key: textKey, params: params };
+    renderProbeDialogText();
+    for (const [name, el] of Object.entries(btns)) {
+        el.style.display = buttons.includes(name) ? '' : 'none';
+    }
     dialog.style.display = 'block';
 
     return new Promise(resolve => {
         const finish = (choice) => {
-            btnOk.onclick = null;
-            btnRetest.onclick = null;
-            btnRepick.onclick = null;
+            for (const el of Object.values(btns)) el.onclick = null;
+            probeDialogTextState = null;
             dialog.style.display = 'none';
             orbit.style.display = '';
-            poem.style.display = '';
             resolve(choice);
         };
-        btnOk.onclick = () => finish('ok');
-        btnRetest.onclick = () => finish('retest');
-        btnRepick.onclick = () => finish('repick');
+        btns.ok.onclick = () => finish('ok');
+        btns.curtain.onclick = () => finish('curtain');
+        btns.back.onclick = () => finish('setup');
+        btns.retest.onclick = () => finish('retest');
     });
 }
 
@@ -323,6 +514,12 @@ function showEstimateDialog(latencyMs) {
  */
 function restartGame() {
     console.log('Restarting game...');
+
+    // session.run() cannot be aborted, but its result must no longer be able
+    // to mutate global state after the setup panel is shown.
+    gameState.gameId++;
+    gameState.isAIThinking = false;
+    gameState.pendingMove = null;
 
     // Show setup panel
     gamePanel.style.display = 'none';
@@ -333,6 +530,7 @@ function restartGame() {
  * Play again (after game ends).
  */
 function playAgain() {
+    const gameId = ++gameState.gameId;
     resultModal.style.display = 'none';
     resetEndModeUI();
 
@@ -343,6 +541,7 @@ function playAgain() {
     gameState.pendingMove = null;
     gameState.undoCount = 0;
     gameState.gameOver = false;
+    gameState.gameResult = null;
     gameState.playerTotalTime = 0;
     gameState.playerMoveCount = 0;
     gameState.aiTotalTime = 0;
@@ -353,10 +552,10 @@ function playAgain() {
 
     // If AI plays first, make AI move
     if (gameState.aiColor === Player.BLACK) {
-        makeAIMove();
+        startAIMove(gameId);
     } else {
         gameState.playerTurnStart = performance.now();
-        updateStatus(t('your_turn'));
+        setStatus('your_turn');
     }
 }
 
@@ -364,9 +563,13 @@ function playAgain() {
  * New setup (return to setup panel).
  */
 function newSetup() {
+    gameState.gameId++;
     resultModal.style.display = 'none';
     resetEndModeUI();
     gameState.gameOver = false;
+    gameState.gameResult = null;
+    gameState.isAIThinking = false;
+    gameState.pendingMove = null;
     gamePanel.style.display = 'none';
     setupPanel.style.display = 'block';
 }
@@ -432,6 +635,10 @@ async function confirmMove(event) {
         event.preventDefault();
     }
 
+    if (!gameState.pendingMove || gameState.isAIThinking
+        || gameState.board.whoToPlay !== gameState.playerColor) return;
+
+    const gameId = gameState.gameId;
     const { row, col } = gameState.pendingMove;
 
     // Record player thinking time
@@ -443,11 +650,10 @@ async function confirmMove(event) {
 
     // Hide confirmation buttons
     document.getElementById('move-confirm').classList.remove('visible');
+    gameState.pendingMove = null;
 
     // Make move
-    await makePlayerMove(row, col);
-
-    gameState.pendingMove = null;
+    await makePlayerMove(row, col, gameId);
 }
 
 /**
@@ -467,7 +673,7 @@ function cancelMove(event) {
 /**
  * Make a player move.
  */
-async function makePlayerMove(row, col) {
+async function makePlayerMove(row, col, gameId) {
     console.log(`Player move: (${row}, ${col})`);
 
     // Save to history
@@ -492,42 +698,66 @@ async function makePlayerMove(row, col) {
     }
 
     // AI's turn
-    await makeAIMove();
+    await startAIMove(gameId);
 }
 
 /**
- * Make an AI move.
+ * Start and track one AI task. New games wait for this promise before
+ * releasing the policy session that the task may still be using.
  */
-async function makeAIMove() {
+function startAIMove(gameId = gameState.gameId) {
+    const task = makeAIMove(gameId);
+    gameState.activeAITask = task;
+    const clearTask = () => {
+        if (gameState.activeAITask === task) gameState.activeAITask = null;
+    };
+    task.then(clearTask, clearTask);
+    return task;
+}
+
+async function waitForActiveAITask() {
+    const task = gameState.activeAITask;
+    if (task) await task;
+}
+
+/**
+ * Make an AI move for one game generation. The board, player, and model are
+ * captured before yielding so a later game cannot be used accidentally.
+ */
+async function makeAIMove(gameId) {
+    if (gameId !== gameState.gameId) return;
+
+    const board = gameState.board;
+    const aiPlayer = gameState.aiPlayer;
+    const aiColor = gameState.aiColor;
+    const useMCTS = gameState.modelManager.selectedModel === 'melody';
     gameState.isAIThinking = true;
 
-    // Check if using advanced difficulty (MCTS)
-    const useMCTS = gameState.modelManager.selectedModel === 'advanced';
-
     if (useMCTS) {
-        updateStatus(t('deep_thinking'));
+        setStatus('deep_thinking');
     } else {
-        updateStatus(t('ai_thinking'));
+        setStatus('ai_thinking');
     }
 
     try {
         // Give browser a chance to update UI before heavy computation
         await new Promise(resolve => setTimeout(resolve, 50));
+        if (gameId !== gameState.gameId) return;
 
         // Get AI move
         const startTime = performance.now();
         let aiRow, aiCol, aiValue;
 
         if (useMCTS) {
-            // Advanced difficulty: MCTS
-            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMoveWithMCTS(
-                gameState.board, MCTS_SIMS);
+            // Melody: MCTS
+            [aiRow, aiCol, aiValue] = await aiPlayer.getMoveWithMCTS(board, MCTS_SIMS);
         } else {
-            // Junior/Intermediate: sample from policy distribution
-            [aiRow, aiCol, aiValue] = await gameState.aiPlayer.getMove(gameState.board);
+            // Dial/cello/curtain: sample from policy distribution
+            [aiRow, aiCol, aiValue] = await aiPlayer.getMove(board);
         }
 
         const endTime = performance.now();
+        if (gameId !== gameState.gameId) return;
 
         gameState.lastAIThinkTime = (endTime - startTime) / 1000; // Convert to seconds
         gameState.aiTotalTime += endTime - startTime;
@@ -538,16 +768,16 @@ async function makeAIMove() {
         // Save to history (value is from AI's perspective before this move)
         gameState.history.push({
             row: aiRow, col: aiCol,
-            player: gameState.aiColor,
+            player: aiColor,
             value: aiValue,
-            blackPieces: gameState.board.blackPieces.map(r => [...r]),
-            whitePieces: gameState.board.whitePieces.map(r => [...r]),
-            whoToPlay: gameState.board.whoToPlay,
-            occupiedCount: gameState.board.occupiedCount
+            blackPieces: board.blackPieces.map(r => [...r]),
+            whitePieces: board.whitePieces.map(r => [...r]),
+            whoToPlay: board.whoToPlay,
+            occupiedCount: board.occupiedCount
         });
 
         // Make move
-        const result = gameState.board.Move(aiRow, aiCol);
+        const result = board.Move(aiRow, aiCol);
 
         drawBoard();
 
@@ -561,12 +791,13 @@ async function makeAIMove() {
 
         // Player's turn
         gameState.playerTurnStart = performance.now();
-        updateStatus(t('your_turn'));
+        setStatus('your_turn');
 
     } catch (error) {
+        if (gameId !== gameState.gameId) return;
         console.error('AI move failed:', error);
         gameState.isAIThinking = false;
-        updateStatus(t('ai_error'));
+        setStatus('ai_error');
     }
 }
 
@@ -612,10 +843,9 @@ function undoMove() {
     drawBoard();
     if (gameState.board.whoToPlay === gameState.playerColor) {
         gameState.playerTurnStart = performance.now();
-        updateStatus(t('your_turn'));
+        setStatus('your_turn');
     } else {
-        updateStatus(t('ai_thinking'));
-        makeAIMove();
+        startAIMove(gameState.gameId);
     }
 }
 
@@ -625,15 +855,24 @@ function undoMove() {
 function handleGameEnd(result) {
     console.log(`Game ended: ${result}`);
     gameState.gameOver = true;
+    gameState.gameResult = result;
+    renderGameEnd(result);
+}
+
+/**
+ * Render the final result from state. Kept separate so language changes can
+ * rebuild all translated result text without replaying game-end side effects.
+ */
+function renderGameEnd(result) {
 
     // Determine result title
-    let title = t('game_over');
+    let titleKey = 'game_over';
     if (result === GameState.BLACK_WIN) {
-        title = gameState.playerColor === Player.BLACK ? t('you_won') : t('you_lost');
+        titleKey = gameState.playerColor === Player.BLACK ? 'you_won' : 'you_lost';
     } else if (result === GameState.WHITE_WIN) {
-        title = gameState.playerColor === Player.WHITE ? t('you_won') : t('you_lost');
+        titleKey = gameState.playerColor === Player.WHITE ? 'you_won' : 'you_lost';
     } else if (result === GameState.DRAW) {
-        title = t('draw');
+        titleKey = 'draw';
     }
 
     // Player info
@@ -672,7 +911,7 @@ function handleGameEnd(result) {
     statRight.innerHTML = rightHtml;
     statLeft.style.display = 'block';
     statRight.style.display = 'block';
-    updateStatus(title);
+    setStatus(titleKey);
 
     // Switch bottom area: hide move-confirm, show end actions
     document.getElementById('move-confirm').style.display = 'none';
@@ -955,16 +1194,21 @@ function screenToBoard(x, y) {
     return [row, col];
 }
 
+let statusMessageState = { key: 'your_turn', params: null };
+
 /**
- * Update status text.
+ * Store status as an i18n key so language changes preserve its meaning.
  */
-function updateStatus(text) {
-    document.getElementById('status-text').textContent = text;
+function setStatus(key, params = null) {
+    statusMessageState = { key: key, params: params };
+    renderStatus();
 }
 
-// ============================================================================
-// Orbital Loading Animation
-// ============================================================================
+function renderStatus() {
+    const { key, params } = statusMessageState;
+    document.getElementById('status-text').textContent =
+        params ? tFormat(key, params) : t(key);
+}
 
 // ============================================================================
 // Loading Poem Rotation
@@ -994,6 +1238,7 @@ let poemInterval = null;
 let poemIndex = 0;
 
 function startPoemRotation() {
+    stopPoemRotation(); // idempotent: never stack a second interval
     const el = document.getElementById('loading-poem');
     poemIndex = Math.floor(Math.random() * poemLines.length);
     el.textContent = poemLines[poemIndex];
@@ -1023,103 +1268,35 @@ function stopPoemRotation() {
 }
 
 // ============================================================================
-// Orbital Loading Animation
+// Orbital Loading Animation (loading screen instance of orbit-loader.js)
 // ============================================================================
 
-let orbitAnimationRunning = false;
-let orbitAnimationFrame = null;
-let orbitLines = [];
+let loadingOrbit = null;
+let loadingOrbitSize = 0;
 
 /**
- * Start the orbital animation.
+ * Show (and start) the loading screen's orbit animation at a given size,
+ * recreating the loader only when the size changes.
  */
-function startOrbitAnimation() {
-    orbitAnimationRunning = true;
-
-    // Clean up any existing lines
-    cleanupOrbitLines();
-
-    const orbitLinesContainer = document.getElementById('orbit-lines');
-
-    // Get planet elements
-    const planet1 = document.querySelector('.planet-1');
-    const planet2 = document.querySelector('.planet-2');
-    const planet3 = document.querySelector('.planet-3');
-
-    // Create lines (3 lines connecting the planets in a triangle)
-    for (let i = 0; i < 3; i++) {
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('stroke', '#999');
-        line.setAttribute('stroke-width', '1');
-        orbitLinesContainer.appendChild(line);
-        orbitLines.push(line);
+function showLoadingOrbit(size) {
+    if (!loadingOrbit || loadingOrbitSize !== size) {
+        if (loadingOrbit) loadingOrbit.destroy();
+        loadingOrbit = createOrbitLoader(
+            document.getElementById('loading-orbit'), { size: size });
+        loadingOrbitSize = size;
     }
-
-    // Animation function
-    function animate() {
-        if (!orbitAnimationRunning) return;
-
-        // Get planet positions
-        const pos1 = getPlanetPosition(planet1);
-        const pos2 = getPlanetPosition(planet2);
-        const pos3 = getPlanetPosition(planet3);
-
-        // Update lines
-        // Line 0: planet1 -> planet2
-        orbitLines[0].setAttribute('x1', pos1.x);
-        orbitLines[0].setAttribute('y1', pos1.y);
-        orbitLines[0].setAttribute('x2', pos2.x);
-        orbitLines[0].setAttribute('y2', pos2.y);
-
-        // Line 1: planet2 -> planet3
-        orbitLines[1].setAttribute('x1', pos2.x);
-        orbitLines[1].setAttribute('y1', pos2.y);
-        orbitLines[1].setAttribute('x2', pos3.x);
-        orbitLines[1].setAttribute('y2', pos3.y);
-
-        // Line 2: planet3 -> planet1
-        orbitLines[2].setAttribute('x1', pos3.x);
-        orbitLines[2].setAttribute('y1', pos3.y);
-        orbitLines[2].setAttribute('x2', pos1.x);
-        orbitLines[2].setAttribute('y2', pos1.y);
-
-        orbitAnimationFrame = requestAnimationFrame(animate);
-    }
-
-    animate();
+    loadingOrbit.start();
 }
 
-/**
- * Stop the orbital animation.
- */
-function stopOrbitAnimation() {
-    orbitAnimationRunning = false;
-    cancelAnimationFrame(orbitAnimationFrame);
-    orbitAnimationFrame = null;
-    cleanupOrbitLines();
-}
-
-/**
- * Clean up orbit lines from DOM.
- */
-function cleanupOrbitLines() {
-    orbitLines.forEach(line => line.parentNode.removeChild(line));
-    orbitLines = [];
-}
-
-/**
- * Get planet position in SVG coordinates.
- */
-function getPlanetPosition(planet) {
-    const ctm = planet.getCTM();
-    return { x: ctm.e, y: ctm.f };
+function stopLoadingOrbit() {
+    if (loadingOrbit) loadingOrbit.stop();
 }
 
 // ============================================================================
 // Record Screen (numbered board for screenshots)
 // ============================================================================
 
-const AI_DISPLAY_NAMES = { junior: 'Dial', intermediate: 'Cello', advanced: 'Melody' };
+const AI_DISPLAY_NAMES = { dial: 'Dial', cello: 'Cello', curtain: 'Curtain', melody: 'Melody' };
 
 /**
  * Show the record screen with a numbered board.
@@ -1200,10 +1377,22 @@ function drawRecordBoard() {
     const recordCanvas = document.getElementById('record-board');
     const c = recordCanvas.getContext('2d');
 
-    // Size the canvas to fit the viewport (square, capped at 600px CSS)
+    // Size the canvas (square, capped at 600px CSS) so the whole column —
+    // title, info rows, board, footer — fits the viewport. The non-canvas
+    // height is measured live (the screen is already visible when this
+    // runs), plus 10px breathing room on each side. Below 300px the board
+    // is not worth shrinking further (move numbers become unreadable):
+    // keep 300px and let the overlay scroll instead.
     const vw = window.innerWidth;
     const vh = window.innerHeight;
-    const cssSize = Math.min(vw - 40, vh - 80, 600);
+    let chromeHeight = 0;
+    for (const sel of ['.record-title', '.record-info', '.record-footer']) {
+        const el = document.querySelector(sel);
+        const style = getComputedStyle(el);
+        chromeHeight += el.offsetHeight
+            + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+    }
+    const cssSize = Math.max(Math.min(vw - 40, vh - chromeHeight - 20, 600), 300);
     const dpr = window.devicePixelRatio || 1;
 
     recordCanvas.style.width = cssSize + 'px';

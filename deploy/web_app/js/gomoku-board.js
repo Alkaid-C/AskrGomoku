@@ -36,8 +36,18 @@ class GomokuBoard {
      * @param {number} row - Row index (0-14)
      * @param {number} col - Column index (0-14)
      * @returns {number} GameState indicating the result
+     * @throws {Error} If the square is out of bounds or occupied — every
+     *     caller must supply a legal move; failing loudly here prevents
+     *     silent board corruption (e.g. from a NaN model output upstream).
      */
     Move(row, col) {
+        if (!(row >= 0 && row < 15 && col >= 0 && col < 15)) {
+            throw new Error(`Move out of bounds: (${row}, ${col})`);
+        }
+        if (this.blackPieces[row][col] === 1 || this.whitePieces[row][col] === 1) {
+            throw new Error(`Move on occupied square: (${row}, ${col})`);
+        }
+
         // Place piece
         if (this.whoToPlay === Player.BLACK) {
             this.blackPieces[row][col] = 1;

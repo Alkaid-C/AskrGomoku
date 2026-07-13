@@ -19,7 +19,7 @@
 </head>
 <body>
 <h1>Gomoku MCTS Test Page (dev only)</h1>
-<p>Runs the tactical/invariant test suite against the real advanced model with
+<p>Runs the tactical/invariant test suite against the real melody model with
 the real search code, in this browser. Compare the CROSSCHECK lines across
 devices/EPs — they should be identical up to float noise.</p>
 
@@ -37,7 +37,7 @@ devices/EPs — they should be identical up to float noise.</p>
 <script src="js/ep-probe.js"></script>
 <script src="js/onnx-ai-player.js"></script>
 <script>
-const MODEL = 'models/mcts_test.onnx';
+const MODEL = 'models/curtain.onnx';
 const logEl = document.getElementById('log');
 let failures = 0;
 
@@ -51,6 +51,17 @@ function log(msg, cls) {
 function check(cond, msg) {
     log((cond ? 'PASS' : 'FAIL') + ': ' + msg, cond ? 'pass' : 'fail');
     if (!cond) failures++;
+}
+
+// The played move is sampled from the visit counts (MCTS_ACTION_TEMPERATURE),
+// so tactical assertions target the deterministic search statistics instead:
+// the argmax-visits action and the visit counts themselves.
+function argmaxAction(root) {
+    let bestK = 0;
+    for (let k = 0; k < root.childN.length; k++) {
+        if (root.childN[k] > root.childN[bestK]) bestK = k;
+    }
+    return root.childActions[bestK];
 }
 
 function makeBoard(moves) {
@@ -89,8 +100,9 @@ async function runTests(ep) {
         const t0 = performance.now();
         const res = await new MCTSSearch(player).search(b, 128);
         log(`128 sims took ${((performance.now() - t0) / 1000).toFixed(2)}s`);
-        check(res.row === 7 && (res.col === 2 || res.col === 7),
-            `win-in-1 move is a winning square: got (${res.row},${res.col})`);
+        const top = argmaxAction(res.root);
+        check(top === 7 * 15 + 2 || top === 7 * 15 + 7,
+            `win-in-1 argmax-visits is a winning square: got (${Math.floor(top / 15)},${top % 15})`);
         const root = res.root;
         let winN = 0, tot = 0;
         for (let k = 0; k < root.childActions.length; k++) {
@@ -108,17 +120,24 @@ async function runTests(ep) {
     {
         const b = makeBoard([[7,3],[7,2],[7,4],[0,0],[7,5],[0,1],[7,6]]);
         const res = await new MCTSSearch(player).search(b, 128);
-        check(res.row === 7 && res.col === 7,
-            `block-win-in-1 move is the blocking square: got (${res.row},${res.col})`);
+        const top = argmaxAction(res.root);
+        check(top === 7 * 15 + 7,
+            `block-win-in-1 argmax-visits is the blocking square: got (${Math.floor(top / 15)},${top % 15})`);
     }
 
-    // 3. Determinism.
+    // 3. Determinism of the search (the played move is sampled, the
+    //    visit counts and rootQ must not be).
     {
         const moves = [[7,7],[7,8],[8,8],[6,6]];
         const r1 = await new MCTSSearch(player).search(makeBoard(moves), 64);
         const r2 = await new MCTSSearch(player).search(makeBoard(moves), 64);
-        check(r1.row === r2.row && r1.col === r2.col && r1.rootQ === r2.rootQ,
-            `deterministic: (${r1.row},${r1.col}) == (${r2.row},${r2.col})`);
+        let same = r1.rootQ === r2.rootQ
+            && r1.root.childN.length === r2.root.childN.length;
+        for (let k = 0; same && k < r1.root.childN.length; k++) {
+            same = r1.root.childN[k] === r2.root.childN[k];
+        }
+        check(same, `deterministic search: visit vectors match, `
+            + `rootQ ${r1.rootQ.toFixed(4)} == ${r2.rootQ.toFixed(4)}`);
     }
 
     // 4. Cross-check dumps (compare with Node/Python harness output).

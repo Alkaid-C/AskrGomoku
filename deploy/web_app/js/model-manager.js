@@ -1,32 +1,42 @@
 /**
  * Model Manager
  *
- * Handles model selection and loading. Junior/intermediate load a plain
- * WASM session per game. Advanced goes through the EP probe (ep-probe.js)
+ * Handles model selection and loading. Dial/cello/curtain load a plain
+ * WASM session per game. Melody goes through the EP probe (ep-probe.js)
  * once and caches the resulting player + probe info for later games.
  */
 
 class ModelManager {
     constructor() {
         this.models = {
-            junior: {
+            dial: {
                 path: 'models/dial.onnx',
                 temperature: 1.0,
             },
-            intermediate: {
+            cello: {
                 path: 'models/cello.onnx',
-                temperature: 0.7,
+                temperature: 1.0,
             },
-            advanced: {
-                path: 'models/mcts_test.onnx',
+            curtain: {
+                path: 'models/curtain.onnx',
+                temperature: 0.5,
+            },
+            // Same model as curtain; played with MCTS instead of raw policy.
+            melody: {
+                path: 'models/curtain.onnx',
             }
         };
 
         this.selectedModel = null;
 
-        // Advanced-difficulty state, filled by loadAdvancedModel().
-        this.advancedPlayer = null;
-        this.advancedProbe = null; // {ep, medianMs, threads}
+        // Plain policy-sampling sessions are replaced between games. Keep an
+        // explicit owner so their native ORT resources can be released.
+        this.policyPlayer = null;
+
+        // Melody-difficulty state, filled by fetchMelodyModel()/probeMelody().
+        this.melodyModelBytes = null;
+        this.melodyPlayer = null;
+        this.melodyProbe = null; // {ep, medianMs, meanMs, wasmMeanMs, threads}
     }
 
     /**
@@ -38,7 +48,7 @@ class ModelManager {
 
     /**
      * Set selected model.
-     * @param {string} modelType - 'junior', 'intermediate', or 'advanced'
+     * @param {string} modelType - 'dial', 'cello', 'curtain', or 'melody'
      */
     setSelectedModel(modelType) {
         this.selectedModel = modelType;
@@ -61,7 +71,7 @@ class ModelManager {
     }
 
     /**
-     * Load selected model (junior/intermediate policy-sampling path).
+     * Load selected model (dial/cello/curtain policy-sampling path).
      * @returns {Promise<OnnxAIPlayer>} Loaded AI player
      */
     async loadSelectedModel() {
@@ -69,51 +79,85 @@ class ModelManager {
         const temperature = this.getModelTemperature();
         const aiPlayer = new OnnxAIPlayer(modelPath, temperature);
         await aiPlayer.loadModel();
+        this.policyPlayer = aiPlayer;
         return aiPlayer;
     }
 
     /**
-     * Load the advanced model through the EP probe. Downloads the model,
-     * then either restores the cached EP choice or runs the full probe.
-     * The player (with its warm session) is cached for later games.
-     * @param {function} onDownloadProgress - Called with fraction in [0, 1]
-     * @param {function} onProbeStart - Called when the timing probe begins
-     *     (skipped when a cached EP config is valid)
-     * @param {boolean} [forceProbe] - Discard the cached player and probe
-     *     result and re-run the full probe (the "re-run test" button)
-     * @returns {Promise<Object>} {player, probe: {ep, medianMs, threads}}
+     * Release the current dial/cello/curtain session, if any. The controller
+     * waits for active inference to finish before calling this method.
      */
-    async loadAdvancedModel(onDownloadProgress, onProbeStart, forceProbe = false) {
-        if (this.advancedPlayer) {
-            if (!forceProbe) {
-                return { player: this.advancedPlayer, probe: this.advancedProbe };
+    async releasePolicyPlayer() {
+        if (!this.policyPlayer) return;
+        const player = this.policyPlayer;
+        this.policyPlayer = null;
+        try {
+            await player.session.release();
+        } catch (e) {
+            console.warn('Failed to release previous policy session:', e);
+        }
+    }
+
+    /**
+     * Download the melody model into memory (once; later calls are no-ops).
+     * Kept on the manager so a probe re-run never re-downloads.
+     * @param {function} onProgress - Called with fraction in [0, 1]
+     */
+    async fetchMelodyModel(onProgress) {
+        if (!this.melodyModelBytes) {
+            this.melodyModelBytes =
+                await epProbeFetchModel(this.models.melody.path, onProgress);
+        }
+    }
+
+    /**
+     * Prepare the melody player from the already-downloaded model: either
+     * restore the cached EP choice or run the full probe. The player (with
+     * its game session) is cached for later games.
+     * @param {Object} [opts]
+     * @param {function} [opts.onProbeStart] - Called when the timing probe
+     *     begins (skipped when a cached EP config is valid)
+     * @param {function} [opts.onPhase] - Forwarded to runEpProbe: called
+     *     with (ep, phase) as the probe advances
+     * @param {boolean} [opts.force] - Discard the cached player and probe
+     *     result and re-run the full probe (the "re-run test" button)
+     * @returns {Promise<Object>} {player, probe} with winning-EP timings and
+     *     the independently measured WASM mean used for Curtain's estimate
+     */
+    async probeMelody({ onProbeStart, onPhase, force = false } = {}) {
+        if (!this.melodyModelBytes) {
+            throw new Error('probeMelody called before fetchMelodyModel');
+        }
+        if (this.melodyPlayer) {
+            if (!force) {
+                return { player: this.melodyPlayer, probe: this.melodyProbe };
             }
             try {
-                await this.advancedPlayer.session.release();
+                await this.melodyPlayer.session.release();
             } catch (e) {
-                console.warn('Failed to release previous advanced session:', e);
+                console.warn('Failed to release previous melody session:', e);
             }
-            this.advancedPlayer = null;
-            this.advancedProbe = null;
+            this.melodyPlayer = null;
+            this.melodyProbe = null;
         }
 
-        const modelPath = this.models.advanced.path;
-        const modelBytes = await epProbeFetchModel(modelPath, onDownloadProgress);
+        const modelBytes = this.melodyModelBytes;
 
         let probe = null;
-        const cached = forceProbe ? null : epProbeLoadCache();
+        const cached = force ? null : epProbeLoadCache();
         if (cached) {
             try {
                 const { session } = await epProbeCreateSession(cached.ep, modelBytes);
                 probe = {
                     ep: cached.ep,
                     medianMs: cached.medianMs,
-                    meanMs: cached.meanMs, // may be undefined in old caches
+                    meanMs: cached.meanMs,
+                    wasmMeanMs: cached.wasmMeanMs,
                     threads: cached.threads,
                     session: session,
                 };
                 console.log(`EP probe: using cached config (${cached.ep}, `
-                    + `${cached.medianMs.toFixed(1)} ms)`);
+                    + `${cached.meanMs.toFixed(1)} ms mean)`);
             } catch (e) {
                 // e.g. WebGPU adapter no longer usable — fall through to re-probe
                 console.warn('Cached EP config failed to restore, re-probing:', e);
@@ -122,14 +166,16 @@ class ModelManager {
 
         if (!probe) {
             if (onProbeStart) onProbeStart();
-            probe = await runEpProbe(modelBytes);
+            probe = await runEpProbe(modelBytes, onPhase);
             const env = epProbeEnvironment();
             epProbeSaveCache({
+                probeVersion: EP_PROBE_VERSION,
                 ortVersion: ort.version,
                 ep: probe.ep,
                 threads: probe.threads,
                 medianMs: probe.medianMs,
                 meanMs: probe.meanMs,
+                wasmMeanMs: probe.wasmMeanMs,
                 isolated: env.isolated,
                 hasGpu: env.hasGpu,
                 ts: Date.now(),
@@ -139,16 +185,17 @@ class ModelManager {
             });
         }
 
-        const player = new OnnxAIPlayer(modelPath);
+        const player = new OnnxAIPlayer(this.models.melody.path);
         player.session = probe.session;
 
-        this.advancedPlayer = player;
-        this.advancedProbe = {
+        this.melodyPlayer = player;
+        this.melodyProbe = {
             ep: probe.ep,
             medianMs: probe.medianMs,
             meanMs: probe.meanMs,
+            wasmMeanMs: probe.wasmMeanMs,
             threads: probe.threads,
         };
-        return { player: this.advancedPlayer, probe: this.advancedProbe };
+        return { player: this.melodyPlayer, probe: this.melodyProbe };
     }
 }

@@ -45,7 +45,7 @@ class OnnxAIPlayer {
     }
 
     /**
-     * Get AI's next move by sampling the raw policy (junior/intermediate).
+     * Get AI's next move by sampling the raw policy (dial/cello/curtain).
      * @param {GomokuBoard} board - Current board state
      * @returns {Promise<Array>} [row, col, value] of AI's move
      */
@@ -72,7 +72,7 @@ class OnnxAIPlayer {
     }
 
     /**
-     * Get AI's next move using MCTS (advanced difficulty).
+     * Get AI's next move using MCTS (melody difficulty).
      * @param {GomokuBoard} board - Current board state
      * @param {number} numSims - Simulation budget
      * @returns {Promise<Array>} [row, col, rootQ] of AI's move
@@ -171,6 +171,11 @@ class OnnxAIPlayer {
      * Sample from categorical distribution.
      * @param {Array} probs - Probability distribution (must sum to 1)
      * @returns {number} Sampled index
+     * @throws {Error} If the cumulative sum never reaches rand — with a
+     *     valid distribution that is astronomically rare float rounding, so
+     *     in practice it means the distribution is broken (e.g. all NaN from
+     *     non-finite logits). Failing loudly beats silently returning an
+     *     index that may be an illegal move.
      */
     _sampleCategorical(probs) {
         const rand = Math.random();
@@ -183,6 +188,6 @@ class OnnxAIPlayer {
             }
         }
 
-        return probs.length - 1;
+        throw new Error(`Invalid probability distribution: cumulative sum ${cumsum}`);
     }
 }

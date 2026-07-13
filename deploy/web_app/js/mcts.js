@@ -13,8 +13,10 @@
 const MCTS_C_PUCT = 1.25;
 const MCTS_DISCOUNT_GAMMA = 63 / 64;
 const MCTS_FPU_MULTIPLIER = 0.95;
+// Move-sampling temperature over root visit counts (STAGE2_ACTION_TEMPERATURE).
+const MCTS_ACTION_TEMPERATURE = 0.5;
 
-// Simulation budget for advanced-difficulty moves.
+// Simulation budget for melody-difficulty moves.
 const MCTS_SIMS = 128;
 
 class MCTSNode {
@@ -105,7 +107,8 @@ class MCTSSearch {
     }
 
     /**
-     * Run MCTS from the given position and pick the most-visited move.
+     * Run MCTS from the given position and sample a move from the root
+     * visit counts at MCTS_ACTION_TEMPERATURE.
      * Fresh tree every call (no reuse between moves, matching self_play.py).
      * @param {GomokuBoard} board - Position to search from (not mutated)
      * @param {number} numSims - Simulation budget
@@ -163,17 +166,26 @@ class MCTSSearch {
             node.backup(leafEval.value);
         }
 
-        // Deterministic play: argmax over child visit counts.
-        let bestK = 0;
+        // Sample the move from visits ** (1/T), renormalized — the same
+        // action-temperature sampling as stage-2 self-play (self_play.py).
         let totalN = 0;
         let weightedQ = 0;
         for (let k = 0; k < root.childN.length; k++) {
             totalN += root.childN[k];
             weightedQ += root.childN[k] * root.childQ[k];
-            if (root.childN[k] > root.childN[bestK]) bestK = k;
         }
         const rootQ = totalN > 0 ? weightedQ / totalN : rootEval.value;
-        const action = root.childActions[bestK];
+        const sampleDist = new Float64Array(root.childN.length);
+        let distSum = 0;
+        for (let k = 0; k < root.childN.length; k++) {
+            sampleDist[k] = Math.pow(root.childN[k], 1 / MCTS_ACTION_TEMPERATURE);
+            distSum += sampleDist[k];
+        }
+        for (let k = 0; k < sampleDist.length; k++) {
+            sampleDist[k] /= distSum;
+        }
+        const sampledK = this.aiPlayer._sampleCategorical(sampleDist);
+        const action = root.childActions[sampledK];
         return {
             row: Math.floor(action / 15),
             col: action % 15,

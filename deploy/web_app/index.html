@@ -10,62 +10,33 @@
     <!-- Loading Screen -->
     <div id="loading-screen" style="display: none;">
         <h1 data-i18n="title">Askr五子棋</h1>
-        <div class="loading-orbit">
-            <svg width="200" height="200" viewBox="0 0 200 200">
-                <!-- 线条容器 (will be populated by JavaScript) -->
-                <g id="orbit-lines"></g>
-
-                <!-- 内轨道 -->
-                <g class="orbit orbit-1">
-                    <ellipse cx="100" cy="100" rx="30" ry="20" fill="none" stroke="none"/>
-                    <circle class="planet planet-1" r="4" fill="#666">
-                        <animateMotion dur="3s" repeatCount="indefinite">
-                            <mpath href="#orbit1"/>
-                        </animateMotion>
-                    </circle>
-                </g>
-
-                <!-- 中轨道 -->
-                <g class="orbit orbit-2">
-                    <ellipse cx="100" cy="100" rx="50" ry="35" fill="none" stroke="none"/>
-                    <circle class="planet planet-2" r="6" fill="#555">
-                        <animateMotion dur="5s" repeatCount="indefinite">
-                            <mpath href="#orbit2"/>
-                        </animateMotion>
-                    </circle>
-                </g>
-
-                <!-- 外轨道 -->
-                <g class="orbit orbit-3">
-                    <ellipse cx="100" cy="100" rx="70" ry="50" fill="none" stroke="none"/>
-                    <circle class="planet planet-3" r="8" fill="#444">
-                        <animateMotion dur="7s" repeatCount="indefinite">
-                            <mpath href="#orbit3"/>
-                        </animateMotion>
-                    </circle>
-                </g>
-
-                <!-- 轨道路径定义 -->
-                <defs>
-                    <path id="orbit1" d="M 100,80 a 30,20 0 1,1 0,40 a 30,20 0 1,1 0,-40 z"/>
-                    <path id="orbit2" d="M 100,65 a 50,35 0 1,1 0,70 a 50,35 0 1,1 0,-70 z"/>
-                    <path id="orbit3" d="M 100,50 a 70,50 0 1,1 0,100 a 70,50 0 1,1 0,-100 z"/>
-                </defs>
-            </svg>
+        <!-- Orbit SVG injected by createOrbitLoader (orbit-loader.js) -->
+        <div class="loading-orbit" id="loading-orbit"></div>
+        <!-- EP-probe progress: minimal bar, one segment per probe phase -->
+        <div id="probe-progress" class="probe-progress" style="display: none;">
+            <div class="probe-progress-track">
+                <div id="probe-progress-fill" class="probe-progress-fill"></div>
+            </div>
         </div>
-        <p id="loading-message" data-i18n="loading_model">正在加载模型...</p>
+        <!-- Text set from JS (phase + params tracked for language switching) -->
+        <p id="loading-message"></p>
         <div class="loading-poem-container">
             <div id="loading-poem" class="loading-poem"></div>
         </div>
 
-        <!-- Advanced-difficulty per-move-time acknowledgment (shown after the EP probe) -->
+        <!-- Melody-difficulty dialog: per-move-time acknowledgment after the
+             EP probe, also reused for download/probe failure messages
+             (visible buttons vary per situation) -->
         <div id="probe-dialog" class="probe-dialog" style="display: none;">
+            <div id="probe-result-heading" class="probe-result-heading"></div>
+            <div id="probe-result-time" class="probe-result-time"></div>
             <p id="probe-result-text"></p>
             <div class="probe-choices">
-                <button id="btn-probe-ok" class="btn-primary" data-i18n="probe_choice_ok">我知道了</button>
-                <button id="btn-probe-retest" class="btn-secondary" data-i18n="probe_choice_retest">重新测试</button>
-                <button id="btn-probe-repick" class="btn-secondary" data-i18n="probe_choice_repick">选择其他难度</button>
+                <button id="btn-probe-ok" class="btn-primary" data-i18n="probe_choice_ok">开始对局</button>
+                <button id="btn-probe-curtain" class="btn-secondary" data-i18n="probe_choice_curtain">改用高级难度</button>
+                <button id="btn-probe-back" class="btn-secondary" data-i18n="probe_choice_back">返回设置</button>
             </div>
+            <button id="btn-probe-retest" class="probe-retest-link" data-i18n="probe_choice_retest">重新测试</button>
         </div>
     </div>
 
@@ -81,20 +52,25 @@
 
             <label data-i18n="your_opponent">你的对手：</label>
             <div class="difficulty-group">
-                <button class="btn-difficulty" data-difficulty="junior">
+                <button class="btn-difficulty" data-difficulty="dial">
                     <div class="difficulty-name">Dial</div>
-                    <div class="difficulty-info" data-i18n="junior">初级</div>
-                    <div class="difficulty-info" data-i18n="classic_arch">经典模型架构</div>
+                    <div class="difficulty-info" data-i18n="level_dial">初级</div>
+                    <div class="difficulty-info" data-i18n="desc_dial">经典模型</div>
                 </button>
-                <button class="btn-difficulty active" data-difficulty="intermediate">
+                <button class="btn-difficulty active" data-difficulty="cello">
                     <div class="difficulty-name">Cello</div>
-                    <div class="difficulty-info" data-i18n="intermediate">中级</div>
-                    <div class="difficulty-info" data-i18n="advanced_arch">高级模型架构</div>
+                    <div class="difficulty-info" data-i18n="level_cello">中级</div>
+                    <div class="difficulty-info" data-i18n="desc_cello">进阶模型</div>
                 </button>
-                <button class="btn-difficulty" data-difficulty="advanced">
+                <button class="btn-difficulty" data-difficulty="curtain">
+                    <div class="difficulty-name">Curtain</div>
+                    <div class="difficulty-info" data-i18n="level_curtain">高级</div>
+                    <div class="difficulty-info" data-i18n="desc_curtain">后训练</div>
+                </button>
+                <button class="btn-difficulty" data-difficulty="melody">
                     <div class="difficulty-name">Melody</div>
-                    <div class="difficulty-info" data-i18n="advanced">高级</div>
-                    <div class="difficulty-info" data-i18n="deep_think_desc">深度思考</div>
+                    <div class="difficulty-info" data-i18n="level_melody">大师</div>
+                    <div class="difficulty-info" data-i18n="desc_melody">深度思考</div>
                 </button>
             </div>
 
@@ -111,7 +87,7 @@
         <div class="top-controls">
             <button id="btn-undo" class="btn-control" data-i18n="undo">悔棋</button>
             <span id="end-stat-left" class="end-stat"></span>
-            <div id="status-text" data-i18n="your_turn">你的回合</div>
+            <div id="status-text" aria-live="polite">你的回合</div>
             <button id="btn-restart" class="btn-control" data-i18n="new_game">新游戏</button>
             <span id="end-stat-right" class="end-stat"></span>
         </div>
@@ -191,6 +167,7 @@
     <script src="js/i18n.js"></script>
 
     <!-- Game modules -->
+    <script src="js/orbit-loader.js"></script>
     <script src="js/gomoku-board.js"></script>
     <script src="js/mcts.js"></script>
     <script src="js/ep-probe.js"></script>
