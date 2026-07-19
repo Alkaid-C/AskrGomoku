@@ -35,7 +35,6 @@ NUM_SIMULATIONS_GEN = 2048
 GAMES_PER_SHARD = 1024
 PRIOR_TEMPERATURE = 1.28        # teacher logits → MCTS prior (entropy multiplier)
 ACTION_TEMPERATURE = 1.0        # MCTS visits → move sampling; broadens trajectories
-SEED_PROBABILITY = 0.5          # fraction of games started from a Renju opening (overrides gomoku.SEED_PROBABILITY for MCTS)
 
 # === Stage 1 ===
 STAGE1_EPOCHS = 18
@@ -88,6 +87,7 @@ DISCOUNT_GAMMA = 63.0/64
 # sweeping every legal move and keeps breadth prior-weighted. Shared across stage 0
 # (teacher rollouts) and stage 2 so the warm-start data matches deployment search.
 FPU_MULTIPLIER = 0.95
+SEED_PROBABILITY = 0.5          # fraction of games started from a Renju opening (stage 0 + stage 2)
 SEED = 42
 
 # ============================================================================
