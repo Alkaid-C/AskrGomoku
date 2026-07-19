@@ -1239,6 +1239,7 @@ def load_checkpoint(checkpoint_path):
         checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu'), weights_only=False)
         model = GomokuPolicyNet()
         model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(DEVICE)
         model.eval()
 
         current_model = model
