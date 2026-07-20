@@ -22,7 +22,7 @@ from flask import Flask, jsonify, request
 from gomoku import Player, board_from_observation, encode_observation, idx_to_pos
 from model import GomokuPolicyNet
 
-from mcts import clear_nn_eval_cache, mcts_search_batched
+from mcts import _evaluate_with_cache, clear_nn_eval_cache, mcts_search_batched
 
 app = Flask(__name__)
 
@@ -362,6 +362,13 @@ h1 {
     width: 100%;
 }
 
+.control-group select {
+    padding: 6px;
+    border: 2px solid #667eea;
+    border-radius: 5px;
+    font-size: 14px;
+}
+
 .puct-inputs {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -624,10 +631,12 @@ h1 {
                     </div>
 
                     <div class="control-group">
-                        <label>
-                            <input type="checkbox" id="show-heatmap" onchange="toggleHeatmap()">
-                            Show visit-count heatmap
-                        </label>
+                        <label for="heatmap-mode">Heatmap:</label>
+                        <select id="heatmap-mode" onchange="toggleHeatmap()">
+                            <option value="off" selected>Off</option>
+                            <option value="visits">Visit counts</option>
+                            <option value="diff">MCTS &minus; Raw</option>
+                        </select>
                     </div>
 
                     <button id="ai-suggest-btn" onclick="getAISuggestion()" class="primary-btn">Get AI Suggestion</button>
@@ -1098,9 +1107,7 @@ function displayAIAnalysis(data) {
     }
 
     // Update heatmap if enabled
-    if (document.getElementById('show-heatmap').checked) {
-        renderHeatmap(data.all_probs_grid);
-    }
+    toggleHeatmap();
 }
 
 function highlightMove(row, col) {
@@ -1139,12 +1146,14 @@ async function makeAIMove() {
 // ============================================================================
 
 function toggleHeatmap() {
-    const showHeatmap = document.getElementById('show-heatmap').checked;
+    const mode = document.getElementById('heatmap-mode').value;
 
-    if (showHeatmap && aiData) {
+    if (!aiData || mode === 'off') {
+        clearHeatmap();
+    } else if (mode === 'visits') {
         renderHeatmap(aiData.all_probs_grid);
     } else {
-        clearHeatmap();
+        renderDiffHeatmap(aiData.all_probs_grid, aiData.raw_prior_grid);
     }
 }
 
@@ -1176,6 +1185,46 @@ function renderHeatmap(probsGrid) {
                     const overlay = document.createElement('div');
                     overlay.className = 'prob-overlay';
                     overlay.textContent = (prob * 100).toFixed(1) + '%';
+                    overlay.style.color = intensity > 0.5 ? 'white' : 'black';
+                    cell.appendChild(overlay);
+                }
+            }
+        }
+    }
+}
+
+// Signed heatmap of (visit distribution - raw prior): where the search moved
+// probability mass relative to the network's own policy. Red = MCTS raised the
+// move, blue = MCTS demoted it; intensity is normalized by the largest |diff|
+// on the board, so the scale is per-position.
+function renderDiffHeatmap(probsGrid, rawGrid) {
+    clearHeatmap();
+
+    let maxAbsDiff = 0;
+    for (let row = 0; row < 15; row++) {
+        for (let col = 0; col < 15; col++) {
+            const d = Math.abs(probsGrid[row][col] - rawGrid[row][col]);
+            if (d > maxAbsDiff) {
+                maxAbsDiff = d;
+            }
+        }
+    }
+    if (maxAbsDiff === 0) return;
+
+    for (let row = 0; row < 15; row++) {
+        for (let col = 0; col < 15; col++) {
+            const diff = probsGrid[row][col] - rawGrid[row][col];
+            if (Math.abs(diff) > 0.001) { // Only show significant shifts
+                const cell = getCell(row, col);
+                if (!cell.classList.contains('occupied')) {
+                    const intensity = Math.abs(diff) / maxAbsDiff;
+                    const rgb = diff > 0 ? '255, 0, 0' : '0, 80, 255';
+                    cell.style.backgroundColor = `rgba(${rgb}, ${intensity * 0.6})`;
+
+                    const overlay = document.createElement('div');
+                    overlay.className = 'prob-overlay';
+                    const pct = (diff * 100).toFixed(1);  // already signed
+                    overlay.textContent = (diff > 0 ? '+' : '') + pct;
                     overlay.style.color = intensity > 0.5 ? 'white' : 'black';
                     cell.appendChild(overlay);
                 }
@@ -1320,9 +1369,10 @@ def run_inference(
 
     Returns:
         dict with best_move, value (BLACK's perspective), probabilities,
-        all_probs_grid, entropy (of the visit distribution), raw_mcts_kl
-        (KL(visit_dist || raw prior) = the policy-improvement gap MCTS opens
-        over the network's raw prior).
+        all_probs_grid, raw_prior_grid (the network's masked-softmax prior at
+        the root, pre-Dirichlet), entropy (of the visit distribution),
+        raw_mcts_kl (KL(visit_dist || raw prior) = the policy-improvement gap
+        MCTS opens over the network's raw prior).
 
     Note: Caller must ensure current_model is not None before calling.
     """
@@ -1383,11 +1433,18 @@ def run_inference(
 
     probs_grid = visits.reshape(15, 15).tolist()
 
+    # The network's raw prior at the root — the same masked-softmax,
+    # pre-Dirichlet distribution the search itself started from. The root obs
+    # was evaluated during the search above, so this is a pure cache hit.
+    raw_priors, _ = _evaluate_with_cache(current_model, [obs], None, DEVICE)
+    raw_grid = raw_priors[0].reshape(15, 15).tolist()
+
     return {
         'best_move': [int(best_row), int(best_col)],
         'value': float(value_black),
         'probabilities': move_probs,
         'all_probs_grid': probs_grid,
+        'raw_prior_grid': raw_grid,
         'entropy': float(entropy),
         'raw_mcts_kl': float(raw_mcts_kls[0]),
     }
