@@ -136,7 +136,10 @@ def export_to_onnx(model: nn.Module, output_path: str):
     # Dummy input: [2, 15, 15] (no batch dimension)
     dummy_input = torch.randn(2, 15, 15)
 
-    # Export to ONNX (with all data embedded in single file)
+    # external_data defaults to True, which splits the weights into a
+    # <name>.onnx.data sidecar and leaves only relative-path references behind.
+    # The browser loads a model as one fetched ArrayBuffer with no filesystem to
+    # resolve those paths against, so the export must stay self-contained.
     torch.onnx.export(
         wrapped_model,
         dummy_input,
@@ -147,12 +150,8 @@ def export_to_onnx(model: nn.Module, output_path: str):
         dynamic_axes=None,  # Fixed batch=1
         do_constant_folding=True,
         export_params=True,
+        external_data=False,
     )
-
-    # Load and re-save to merge external data into single file
-    # This is critical for web deployment to avoid missing .onnx.data files
-    onnx_model = onnx.load(output_path)
-    onnx.save(onnx_model, output_path, save_as_external_data=False)
 
     print(f"✓ ONNX exported as single file: {output_path}")
     return wrapped_model, dummy_input
