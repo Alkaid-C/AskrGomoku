@@ -42,7 +42,9 @@ ruff check && pyright
 
 - **Three top constants:** `CHECKPOINT_PATH`, `MODEL_DIR` (dir with `model.py` /
   `gomoku.py`, e.g. `../main`), `MCTS_BUDGET` (0 = raw policy argmax; >0 = MCTS
-  simulations per move). Defaults: `../main/release/final_policy.pt`, `../main`, 400.
+  simulations per move). `MODEL_DIR` currently points at `../main`; `CHECKPOINT_PATH`
+  is whatever checkpoint is being benchmarked at the time (an `mcts/` stage-2 one as
+  of writing) and is edited freely — read the file rather than assuming.
 - **Path resolution is relative to `__file__`, not the cwd** — `pbrain.py` runs as
   a subprocess with an arbitrary working directory, so all paths are made absolute
   at import time. `MODEL_DIR` and `../mcts` are both put on `sys.path` (`main/` and

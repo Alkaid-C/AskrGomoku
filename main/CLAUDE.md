@@ -4,8 +4,8 @@
 
 - `main.py` — Entry point. Training loop, state save/load, CLI.
 - `model.py` — `GomokuPolicyNet` architecture and constants. Rarely changed.
-- `training.py` — Loss computation, GAE, gradient accumulation, gradient probe.
-- `enhancement.py` — Sample augmentation/generation: 8-fold symmetry, tactical boost, OPR, imitation.
+- `training.py` — Loss computation, GAE, gradient accumulation, gradient probe, imitation sample construction.
+- `enhancement.py` — Sample augmentation/generation: 8-fold symmetry, tactical boost, OPR (plus the imitation weight constants, which `training.py` consumes).
 - `gomoku.py` — Game engine, batched self-play, action selection, Renju openings. Rarely changed.
 - `eval.py` — Opponent pool management, evaluation, historical mining.
 - `csv_logger.py` — CSV logging for all metrics.
@@ -63,41 +63,46 @@ Each update:
 loss = policy_loss + value_coeff * value_loss + ENTROPY_BONUS_COEFF * entropy_bonus_scale * entropy_loss
 ```
 
-- **Policy loss**: `-Σ(weight * advantage * log_prob) / Σ(weight)`. Advantage is a blended `(1-α)*return + α*GAE + tactical_boost`, passed through a leaky ReLU (`NEGATIVE_ADVANTAGE_SLOPE`) that attenuates negative advantages rather than zeroing them.
-- **Value loss**: weighted MSE between predicted value and a TD(λ)-return target (negamax convention — consecutive plies alternate player, so the sign flips each step). Terminal step uses the raw return `z_t`; each non-terminal step uses `value_return = -(1 - VALUE_GAE_LAMBDA)·V(next) - VALUE_GAE_LAMBDA·value_return`, a λ-blend between bootstrapping on `-V(next)` (λ=0) and the Monte-Carlo return (λ=1). With `VALUE_GAE_LAMBDA = 13/16` the target is mostly Monte-Carlo with light bootstrapping. Only computed on real samples (not synthetic). Coefficient ramps from `VALUE_LOSS_COEFF_START` to `VALUE_LOSS_COEFF_END` via α.
-- **Entropy loss**: `-Σ(weight * entropy) / Σ(weight)`, scaled by `entropy_bonus_scale = entropy_schedule / ema_entropy` (adaptive ratio).
+Both denominators (`Σ(weight)` below) are computed **once over the whole augmented batch**, before micro-batching, and every micro-batch divides by that same constant. This is load-bearing: normalizing each micro-batch by its own weight sum would make the accumulated gradient differ from the true full-batch gradient.
+
+- **Policy loss**: `-Σ(weight * advantage * log_prob) / Σ(weight)`, summed over non-value-only samples. The advantage is built in two steps: the blend `(1-α)*return + α*GAE` first goes through a leaky ReLU that attenuates negative advantages rather than zeroing them, and the tactical boost is added **afterwards**, outside the leaky ReLU (so a boost is never scaled down). The leaky slope is `NEGATIVE_ADVANTAGE_SLOPE * α`, not the bare constant — at α=0 the slope is 0, i.e. plain `max(0, x)`, and it opens up to the full constant as the GAE ramp completes.
+- **Value loss**: weighted MSE between predicted value and a TD(λ)-return target (negamax convention — consecutive plies alternate player, so the sign flips each step). Terminal step uses the raw return `z_t`; each non-terminal step uses `value_return = -(1 - VALUE_GAE_LAMBDA)·V(next) - VALUE_GAE_LAMBDA·value_return`, a λ-blend between bootstrapping on `-V(next)` (λ=0) and the Monte-Carlo return (λ=1). Only computed on real samples (not synthetic). Coefficient ramps from `VALUE_LOSS_COEFF_START` to `VALUE_LOSS_COEFF_END` via α.
+- **Entropy loss**: `-Σ(weight * entropy) / Σ(weight)`, scaled by `entropy_bonus_scale = entropy_schedule / ema_entropy` (adaptive ratio). Masked to the same non-value-only samples as the policy loss — value-only opponent steps exist purely to give the negamax recursion an unbroken alternating-player value sequence, and rewarding entropy on positions the model never plays would push exploration where it cannot act.
+- **Sample weight**: a real sample's weight is `(1 / current_steps ** EPISODE_WEIGHT_ALPHA) / 8`. The exponent interpolates between per-step weighting (α=0) and equal mass per episode (α=1); the `/8` pre-divides by the 8-fold augmentation factor, so the weight totals stay on the same scale as an unaugmented batch.
 
 ## Schedules and Ramps
 
 - **LR**: tanh decay from `LEARNING_RATE` to `MIN_LR`. Midpoint at `LR_DECAY_MIDPOINT_PERCENTAGE` of training, transition width `LR_DECAY_STEEPNESS`.
 - **Entropy target**: sigmoid (tanh-based) decay from `ENTROPY_TARGET_START` to `ENTROPY_TARGET_END`. Midpoint at `ENTROPY_DECAY_MIDPOINT_PERCENTAGE`, width `ENTROPY_DECAY_STEEPNESS`.
 - **Baseline α** (GAE ramp): cosine ramp from 0→1 over `[0, BASELINE_RAMP_END]`. At α=0 uses raw returns; at α=1 uses GAE. Also controls value loss coefficient interpolation.
-- **Eval interval**: `EVAL_INTERVAL_EARLY` (updates < 128) → `EVAL_INTERVAL_MID` (< 2048) → `EVAL_INTERVAL_LATE`.
+- **Eval interval**: `get_eval_interval` steps `EVAL_INTERVAL_EARLY` → `EVAL_INTERVAL_MID` → `EVAL_INTERVAL_LATE` at two update-count thresholds (`eval.py`).
 
 ## Enhancement Details (`enhancement.py`)
 
 ### Tactical Boost
 
 Scans every training sample for win-in-1 and block-win-in-1. If detected:
-- **Correct move taken**: adds a boost to the sample's advantage (adaptive, based on miss rate EMA)
+- **Correct move taken**: adds a boost to the sample's advantage (adaptive, based on miss rate EMA). For a win-in-1 with several winning squares, the other winning moves are also emitted as synthetic samples carrying the same boost.
 - **Correct move missed**: generates synthetic samples with the correct move and a fixed high advantage
+
+`find_blocking_moves` returns `None` when the opponent has **two or more** independent win-in-1 threats, so such positions produce no block sample at all. "Must block" means *play here or lose*; with two threats you can only answer one and lose either way, so there is no move that would have saved the position and nothing to teach. Counting these as block misses would train the model against an unreachable target and inflate the miss-rate EMA that drives the adaptive boost.
 
 ### OPR (Off-Policy Rollout)
 
 Starts at `OPR_START_UPDATE`. For lost games, with probability `OPR_TRIGGER_PROB`:
 1. Find steps where policy entropy < `entropy_schedule * OPR_ENTROPY_TH_MULTIPLIER` and far from terminal
 2. Weighted-sample one such step (weight = threshold − entropy)
-3. Try `OPR_NUM_ACTIONS` local alternative actions, each with `OPR_NUM_ROLLOUTS` rollouts
+3. Try `OPR_NUM_ACTIONS` alternatives sampled from the legal squares within `OPR_RADIUS` (Chebyshev) of a stone, each with `OPR_NUM_ROLLOUTS` rollouts
 4. Also rollout the original action for fair comparison
-5. If best alternative beats original by ≥ `OPR_WIN_MARGIN`, add as synthetic training sample
+5. If best alternative beats original by ≥ `OPR_WIN_MARGIN`, add as a synthetic sample with advantage `margin * OPR_ADVANTAGE` — so a bigger win-rate gap teaches proportionally harder
 
-### Imitation Learning
+## Imitation Learning (`training.py`)
 
-From `IMITATION_START_UPDATE`: opponent moves that led to opponent winning are added as training samples — but **only when the opponent played White** (`traj.players[step_idx] == Player.WHITE`). Black moves first, and that first-move advantage is large enough that a Black win is unsurprising and carries little signal worth imitating; a White win is the informative case. (Opponent moves not imitated still enter the batch as value-only samples so the negamax GAE recursion sees the full alternating-player value sequence.) Weight = `(1 - win_rate) * (IMITATION_MAX_WEIGHT - IMITATION_MIN_WEIGHT) + IMITATION_MIN_WEIGHT`.
+From `IMITATION_START_UPDATE`: opponent moves that led to opponent winning are added as training samples — but **only when the opponent played White** (`traj.players[step_idx] == Player.WHITE`). Black moves first, and that first-move advantage is large enough that a Black win is unsurprising and carries little signal worth imitating; a White win is the informative case. (Opponent moves not imitated still enter the batch as value-only samples so the negamax GAE recursion sees the full alternating-player value sequence.) Weight = `[(1 - win_rate) * (IMITATION_MAX_WEIGHT - IMITATION_MIN_WEIGHT) + IMITATION_MIN_WEIGHT] * current_weight`, i.e. the win-rate-driven base is further scaled by the same per-episode `current_weight` the trajectory's own samples carry, so imitation mass tracks episode length the same way.
 
 ## Gradient Probe (`training.py`)
 
-Every `PROBE_INTERVAL` updates, computes 5 separate gradient vectors (policy_real, policy_synthetic, value_real, entropy_real, entropy_synthetic) by running 5 backward passes. Saves full vectors to `.npz` files (`gradient_probe_NNNNNN.npz`) containing param names, offsets, and all gradient vectors for post-hoc analysis (e.g., per-layer cosine similarity).
+Every `PROBE_INTERVAL` updates, computes 5 separate gradient vectors: policy_real, policy_synthetic, value_real, entropy_real, entropy_synthetic. These accumulate over **3 passes across the micro-batch chunks**, not 5 — policy_real and entropy_real share one forward via `retain_graph`, the two synthetic terms share another, and value_real needs its own because it goes through `forward_value_only`. The probe saves the live gradients, zeroes between terms, and restores them at the end; it runs after the training backward and before `clip_grad_norm_` + `step`, so it never perturbs the update. Saves full vectors to `.npz` files (`gradient_probe_NNNNNN.npz`) containing param names, offsets, and all gradient vectors for post-hoc analysis (e.g., per-layer cosine similarity).
 
 ## Opponent Pool & KL-Aware Mining (`eval.py`)
 
@@ -113,7 +118,9 @@ When the pool is full, each member is scored `score = win_rate - (win_rate_range
 
 ### KL-aware mining acceptance
 
-When the scan ranks historical candidates, each gets a per-candidate acceptance threshold instead of the flat `MINING_WIN_RATE_THRESHOLD`:
+A scan does not consider every past checkpoint: candidates are restricted to one of `NUM_SCAN_BUCKETS` round-robin buckets (by update number), so consecutive scans sweep disjoint slices of history. The bucket is then narrowed by a cheap `QUICK_SCREEN_ROUNDS` pass, and only the `TOP_K_QUICK_SCREEN` hardest go to a `FINAL_SCREEN_ROUNDS` re-match. So "checkpoint X was never mined" often just means X's bucket has not come up yet.
+
+When the scan ranks the surviving candidates and fingerprint state is available, each gets a per-candidate acceptance threshold; the flat `MINING_WIN_RATE_THRESHOLD` remains the fallback for candidates without a fingerprint (and for scans before the first fingerprint refresh):
 
 ```
 threshold = MINING_BASE_THRESHOLD + (win_rate_ema - MINING_BASE_THRESHOLD) · min(MINING_KL_CAP, min_kl) / MINING_KL_CAP

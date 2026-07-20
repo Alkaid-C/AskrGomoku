@@ -4,7 +4,7 @@ The frontend (HTML/CSS/JS) is fully AI-generated with no human review. The user 
 
 ## File Responsibilities
 
-- `export_onnx.py` — PyTorch checkpoint → ONNX conversion with verification. See `ONNX_DEPLOYMENT_GUIDE.md` for the exported model's I/O contract.
+- `export_onnx.py` — PyTorch checkpoint → ONNX conversion with verification. See `ONNX_DEPLOYMENT_GUIDE.md` for the exported model's I/O contract. **Exports must be single-file**: `torch.onnx.export` defaults to `external_data=True`, which splits weights into a `model.onnx.data` sidecar and leaves the `.onnx` holding only relative-path references. The browser loads a model as one fetched `ArrayBuffer` with no filesystem to resolve those paths against, and only `models/*.onnx` is treated as the deployable artifact — so a split model ships incomplete and fails at load time, on the live site, in a browser this machine cannot test. Enforced by passing `external_data=False` to the export call — keep it there.
 - `web_app/index.html` — App HTML (external CSS/JS references).
 - `web_app/styles.css` — Responsive styling.
 - `web_app/js/i18n.js` — Chinese/English localization. `t(key)` lookup, `tFormat(key, params)` for `{placeholder}` substitution, language stored in `localStorage.gomoku-lang`.
@@ -22,18 +22,18 @@ The frontend (HTML/CSS/JS) is fully AI-generated with no human review. The user 
 - `web_app/bench.html` — Dev-only latency benchmark page (per-EP/thread presets via URL params, results in localStorage). Not linked from the app.
 - `web_app/test.html` — Dev-only MCTS test page: tactical/invariant assertions + cross-check visit-distribution dumps, runnable per EP. Not linked from the app.
 
-There is no build step and no single-file bundle. A former standalone build (`build.py` → `gomoku-standalone.html`) was removed: multithreaded WASM needs COOP/COEP response headers plus same-origin runtime files, which a copy-paste single file cannot provide.
+There is no build step and no single-file bundle; the app is served as-is.
 
 ## Difficulties
 
-Difficulty keys, UI names, and model filenames all coincide. RL-trained models (dial, cello) have naturally sharp policies, so they sample at temperature 1.0; MCTS-trained policies (curtain, melody — the policy head is distilled from visit distributions) are naturally flat, so both play at temperature 0.5.
+Difficulty keys, UI names, and model filenames all coincide. RL-trained models (dial, cello) have naturally sharp policies, so they sample at temperature 1 (unmodified). MCTS-trained policies (curtain, melody — the policy head is distilled from visit distributions) are naturally flat, so both sharpen with a sub-1 temperature, the same one stage-2 self-play uses (`STAGE2_ACTION_TEMPERATURE`).
 
 | Difficulty | UI level | UI description | Model | Play |
 |---|---|---|---|---|
-| dial | 初级 / Easy | Classic Model | `models/dial.onnx` | policy sampling, temperature 1.0 |
-| cello | 中级 / Medium | Advanced Model | `models/cello.onnx` | policy sampling, temperature 1.0 |
-| curtain | 高级 / Hard | Post-Trained | `models/curtain.onnx` (interim; re-export from `mcts/release/stage2/final_policy.pt` when training finishes) | policy sampling, temperature 0.5 |
-| melody | 大师 / Master | Deep Think | `models/curtain.onnx` (same file as curtain) | MCTS, visit counts sampled at temperature 0.5 |
+| dial | 初级 / Easy | Classic Model | `models/dial.onnx` | policy sampling, temperature 1 |
+| cello | 中级 / Medium | Advanced Model | `models/cello.onnx` | policy sampling, temperature 1 |
+| curtain | 高级 / Hard | Post-Trained | `models/curtain.onnx` (interim; re-export from `mcts/release/stage2/final_policy.pt` when training finishes) | policy sampling, sub-1 temperature |
+| melody | 大师 / Master | Deep Think | `models/curtain.onnx` (same file as curtain) | MCTS, visit counts sampled at `MCTS_ACTION_TEMPERATURE` |
 
 Dial/cello/curtain load a plain WASM session per game. Melody goes through the EP probe flow below.
 
@@ -61,8 +61,8 @@ The fastest execution provider varies wildly by device (desktop Chrome: WASM-4T 
 - `epProbeConfigureOrtEnv()` runs once at app init, **before any session creation**: absolute `wasmPaths` (bare relative URLs break Firefox) and `numThreads = crossOriginIsolated ? min(4, cores) : 1` (thread count is fixed at first wasm init).
 - The model is fetched once into a buffer (download progress UI); all probe sessions are created from it.
 - **Both EPs are probed inside dedicated workers, hard-killed via `worker.terminate()` — never on the main thread.** Two field-observed reasons: (1) `session.run` is not abortable, and the ort.webgpu bundle's wasm and webgpu EPs share one asyncify wasm instance (no reentrancy) — an orphaned timed-out run poisons the main runtime, making every later inference ~6× slower (25 ms probe → 150 ms in-game); (2) main-thread timings are inflated several-fold by the loading screen's rAF animations (forced layout per frame) — observed 120 ms medians for a runtime whose quiet steady state is ~20 ms. There is deliberately no main-thread fallback: a browser whose workers lack the EP simply fails that EP's probe (WebGPU missing in workers → the WASM result stands; both EPs failing → the probe-failure dialog).
-- Probe order: WASM, then WebGPU unless the WASM mean is already ≤ 10 ms. Warmup stops after either 5 runs or 5 s, then exactly 20 runs are timed. The 30 s per-EP worker cap rejects devices that cannot complete a useful sample in an acceptable time. The **mean** both picks the winning EP and feeds the per-move estimate (the total of a many-inference move is n × mean).
-- Watchdog: an inactivity timer re-armed by per-run worker heartbeats (15 s — distinguishes "stuck" from "legitimately slow", e.g. a >10 s first-run shader compile) plus a 30 s absolute per-EP cap.
+- Probe order: WASM, then WebGPU unless the WASM mean is already at or under `EP_PROBE_WASM_FAST_MS`. Warmup stops after either `EP_PROBE_WARMUP_MAX_RUNS` runs or `EP_PROBE_WARMUP_MAX_MS`, then exactly `EP_PROBE_TIMED_RUNS` runs are timed. The `EP_PROBE_TOTAL_CAP_MS` per-EP worker cap rejects devices that cannot complete a useful sample in an acceptable time. The **mean** both picks the winning EP and feeds the per-move estimate (the total of a many-inference move is n × mean).
+- Watchdog: an inactivity timer re-armed by per-run worker heartbeats (`EP_PROBE_INACTIVITY_MS` — distinguishes "stuck" from "legitimately slow", e.g. a first-run shader compile of many seconds) plus the `EP_PROBE_TOTAL_CAP_MS` absolute per-EP cap.
 - Probe sessions die with their workers; the winner's game session is created fresh on the main thread (browser wasm-code/shader caches are shared across workers, so this is far cheaper than the cold path the probe just paid).
 - Result + a `confirmed` flag (the user's one-time acknowledgment of the time estimate) cached in `localStorage['gomoku-ep-config']`; invalidated when the ORT version, isolation, or GPU availability changes — which also re-requires acknowledgment, since the estimate changed. Cached visits skip the probe (a game session is still created) and, once confirmed, skip the dialog too: melody games start with no extra click.
 
@@ -80,11 +80,13 @@ Setup panel (color + difficulty) → loading screen → game panel. For dial/cel
 
 Failures get in-page dialogs on the loading screen (no native `alert` for melody): download failure → 返回设置; probe failure → 改用高级难度 / 返回设置. The loading status line and dialog text are JS-managed (no `data-i18n` — it used to clobber them on language switch); their key+params are re-rendered via the `gomoku-langchange` event that `setLang` dispatches.
 
-Player clicks board → pending move → confirm/cancel. AI move: 50 ms UI yield → inference/search → draw. Undo pops 2 moves and restores from history snapshots. Game end: record mode with move numbers and winning line.
+Player clicks board → pending move → confirm/cancel. AI move: short UI yield → inference/search → draw. Undo pops 2 moves and restores from history snapshots. Game end renders **in place** on the game canvas via `renderGameEnd` / `drawBoardRecord` (move numbers + winning line).
+
+The separate `#record-screen` overlay and its `showRecordScreen` / `drawRecordBoard` / `playAgain` path are **not currently reachable** — `#result-modal` is only ever hidden, never shown. Kept deliberately, to be wired up later; don't mistake the two renderers for one.
 
 ## Deployment
 
-`https://gomoku.alkaid-c.cc` → Caddy `file_server` of `deploy/web_app/` (block in `/etc/caddy/Caddyfile`) with `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` — this makes the page `crossOriginIsolated`, enabling multithreaded WASM. **Edits to web_app/ are live on the public site immediately.** Caddy gotcha: standalone `caddy validate` fails on the Cloudflare token (env only injected via systemd drop-in) — just `systemctl reload caddy`.
+`https://gomoku.alkaid-c.cc` is the current development domain; `gomoku.sance.xyz` is the intended final one, which is why the in-page record footer already shows the latter. Caddy `file_server` of `deploy/web_app/` (block in `/etc/caddy/Caddyfile`) with `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp` — this makes the page `crossOriginIsolated`, enabling multithreaded WASM. **Edits to web_app/ are live on the public site immediately.** Caddy gotcha: standalone `caddy validate` fails on the Cloudflare token (env only injected via systemd drop-in) — just `systemctl reload caddy`.
 
 ORT is served same-origin from `vendor/` instead of a CDN: under COEP every cross-origin resource needs cooperating CORS/CORP headers (fragile, third-party controlled), and CDN reachability is unreliable in mainland China. `vendor/` and `models/*.onnx` are git-ignored (binaries); rebuild vendor with `./fetch_vendor.sh`, regenerate models with `export_onnx.py`.
 

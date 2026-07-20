@@ -127,7 +127,7 @@ class GomokuPolicyNet(nn.Module):
         print(f"  Stem: 3x3 conv -> {WIDTH} channels")
         print(f"  Residual blocks: {N_BLOCKS} x {WIDTH} channels (standard pre-activation, no dilation, no SE)")
         print(f"  Policy head: 3x Conv3x3 -> {POLICY_WIDTH}ch (GroupNorm+SiLU) -> Conv1x1 -> 1")
-        print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> GroupNorm -> SiLU -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
+        print(f"  Value head: Conv1x1 -> {VALUE_HEAD_CHANNELS}ch -> SiLU -> flatten -> FC -> {VALUE_HEAD_HIDDEN} -> SiLU -> FC -> 1 -> tanh")
 
 
 class ResidualBlock(nn.Module):

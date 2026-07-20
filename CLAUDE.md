@@ -25,6 +25,10 @@ python3 main.py generate_data <working_dir>   # working_dir must contain teacher
 python3 main.py stage1        <working_dir>
 python3 main.py stage2        <working_dir>
 
+# Interactive play against an mcts/ checkpoint, move driven by a real MCTS
+# search with live search knobs + visit/prior/KL readouts (from mcts/)
+python3 play_web.py                   # Flask server at http://localhost:5000
+
 # ONNX export (from deploy/)
 python3 export_onnx.py --input checkpoint.pt --output model.onnx
 
@@ -40,7 +44,7 @@ pyright
 - **Self-play RL**: PPO-style policy gradient with no MCTS; the model plays against an opponent pool directly. (`main.py`, `gomoku.py`)
 - **GAE**: Generalized Advantage Estimation with negamax value convention; cosine ramp from raw returns to GAE over `BASELINE_RAMP_END` updates. (`training.py`)
 - **8-fold augmentation**: All dihedral symmetries (4 rotations × 2 flips) applied on GPU. (`enhancement.py`)
-- **Imitation learning**: Opponent winning moves added as training samples, weighted by `(1 - win_rate)`. (`enhancement.py`)
+- **Imitation learning**: Opponent winning moves added as training samples, weighted by `(1 - win_rate)`. (`training.py`; weight constants in `enhancement.py`)
 - **Tactical boost**: Detects win-in-1 and block-win-in-1 positions; boosts correct moves and generates synthetic corrective samples. (`enhancement.py`)
 - **OPR (Off-Policy Rollout)**: Tests alternative actions near low-entropy lost positions; adds corrective samples when an alternative wins by a margin. (`enhancement.py`, `gomoku.py`)
 - **Gradient probe**: Every N updates, computes per-component gradient vectors to detect gradient conflicts. Saves `.npz` files for post-hoc analysis. (`training.py`)
@@ -59,8 +63,8 @@ See `mcts/CLAUDE.md` for the full description. Brief outline:
 
 - **Input**: `[batch, 3, 15, 15]` float32 — channel 0 = current player's stones, channel 1 = opponent's stones, channel 2 = board mask (all 1s). The current/opponent perspective flips each move (the board is always from the side-to-move's point of view).
 - **Output**: policy logits `[batch, 225]` (flat 15×15) and scalar value `[batch, 1]` (tanh-bounded, from current player's perspective).
-- **vanilla** (`vanilla/model.py`): ResNet-like — single 3×3 stem, 18 plain residual blocks, conv policy head, flatten-FC value head.
-- **main** (`main/model.py`): Multi-scale dilated stem (standard + directional convolutions), 12 shared residual blocks + 6 dual-SE blocks (policy/value streams diverge via separate norms and SE), dual-attention policy head with relative positional bias, log-mean-exp pooling value head.
+- **vanilla** (`vanilla/model.py`): ResNet-like — single 3×3 stem, `N_BLOCKS` plain residual blocks, conv policy head, flatten-FC value head.
+- **main** (`main/model.py`): Multi-scale dilated stem (standard + directional convolutions), `N_SHARED_BLOCKS` shared residual blocks + `N_DUAL_SE_BLOCKS` dual-SE blocks (policy/value streams diverge via separate norms and SE), dual-attention policy head with relative positional bias, log-mean-exp pooling value head.
 
 ## Other Notes
 

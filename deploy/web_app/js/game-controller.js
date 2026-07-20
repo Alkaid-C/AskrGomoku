@@ -106,7 +106,7 @@ function setupEventListeners() {
     document.getElementById('btn-confirm-move').addEventListener('click', confirmMove);
     document.getElementById('btn-cancel-move').addEventListener('click', cancelMove);
 
-    // Result modal (legacy, kept for standalone build compatibility)
+    // Result modal: currently never shown (game end renders in place); kept to be wired up later
     document.getElementById('btn-play-again').addEventListener('click', playAgain);
     document.getElementById('btn-new-setup').addEventListener('click', newSetup);
     document.getElementById('btn-share').addEventListener('click', showRecordScreen);

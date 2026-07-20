@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 N_SHARED_BLOCKS = 12              # Shared residual blocks (no SE)
 N_DUAL_SE_BLOCKS = 6              # Dual-SE residual blocks (policy + value SE streams)
-N_BLOCKS = N_SHARED_BLOCKS + N_DUAL_SE_BLOCKS  # 18 total
+N_BLOCKS = N_SHARED_BLOCKS + N_DUAL_SE_BLOCKS  # Total trunk depth
 WIDTH = 96                        # Residual block width (must equal sum of all stem channels)
 STEM_3X3_CHANNELS = 6 * 6         # 3x3 convolution channels in stem
 STEM_DIRECTIONAL_5X5_CHANNELS = 3 * 6  # Directional 5x5 (4-line kernel via dilated 3x3 sum) channels in stem
@@ -30,10 +30,10 @@ SE_REDUCTION = 4                  # Squeeze-and-Excitation channel reduction rat
 
 # Trunk dilation schedule for conv2 in each residual block (length must equal N_BLOCKS)
 TRUNK_DILATION2_SCHEDULE = [
-    # Shared blocks (12)
+    # Shared blocks
     1, 2, 1, 2, 1, 3,
     1, 2, 1, 2, 1, 3,
-    # Dual-SE blocks (6)
+    # Dual-SE blocks
     1, 2, 1, 3, 1, 1
 ]
 
@@ -41,10 +41,10 @@ TRUNK_DILATION2_SCHEDULE = [
 POLICY_HEAD_D = 64             # Policy head intermediate channels (d_p)
 POLICY_HEAD_GROUPS = 4         # GroupNorm groups for 64-ch policy tensors
 POLICY_HEAD_NUM_HEADS = 4      # Attention heads in policy head
-VALUE_HEAD_C1 = 64             # Layer 1: 1x1 96 -> 64
-VALUE_HEAD_C2 = 256            # Layer 2: grouped 3x3 (64 -> 256, groups=2)
+VALUE_HEAD_C1 = 64             # Layer 1: 1x1 conv, WIDTH -> C1
+VALUE_HEAD_C2 = 256            # Layer 2: grouped 3x3 conv, C1 -> C2
 VALUE_HEAD_GROUPS = 2          # Groups for grouped conv
-VALUE_HEAD_HIDDEN = 256        # FC: 256 -> 256 -> 1
+VALUE_HEAD_HIDDEN = 256        # FC: C2 -> HIDDEN -> 1
 
 
 # ============================================================================
@@ -71,7 +71,7 @@ class GomokuPolicyNet(nn.Module):
     - Mixed stem with dilated convolution branches
     - Residual trunk with configurable depth and dilation schedule
     - Policy head: Dual-attention (two attention blocks with conv refinement)
-    - Value head: 2x 3x3 valid convs (15->11) + 1x1 reduction + 2-layer MLP
+    - Value head: 1x1 projection + grouped 3x3 + per-channel log-mean-exp pooling + 2-layer MLP
     """
 
     def __init__(self):
@@ -166,7 +166,7 @@ class GomokuPolicyNet(nn.Module):
         self.register_load_state_dict_post_hook(lambda m, _: m._zero_center_taps())
 
     def _stem_and_shared_trunk(self, x: torch.Tensor) -> torch.Tensor:
-        """Stem + shared trunk (first 12 blocks). Returns features for branching."""
+        """Stem + shared trunk (the pre-fork blocks). Returns features for branching."""
         branch_3x3 = self.conv_3x3(x)
         branch_directional_5x5 = self.conv_directional5_d1(x) + self.conv_directional5_d2(x)
         branch_full_5x5 = self.conv_full5(x)

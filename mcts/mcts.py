@@ -59,10 +59,12 @@ _FIXED_FWD_BATCH = 64
 # `canonical_priors_scaled` is the post-mask, post-softmax, post-entropy-rescale
 # distribution in canonical orientation (illegal squares are exactly 0). Caching
 # the scaled distribution rather than raw logits is sound because the entropy
-# multiplier is constant within any window where the cache lives: stage 2
-# clears the cache at every optimizer.step() (model weights change), and stage 0
-# data generation runs against a frozen teacher so entries stay valid across
-# shards. LRU eviction caps memory; OrderedDict preserves insertion/access order.
+# multiplier is constant within any window where the cache lives: stage 2 clears
+# the cache once per update, after self-play and before the optimization loop
+# (the weights change during that loop, and the cache is only read during
+# self-play), and stage 0 data generation runs against a frozen teacher so
+# entries stay valid across shards. LRU eviction caps memory; OrderedDict
+# preserves insertion/access order.
 _NN_EVAL_CACHE_MAX_ENTRIES = 1024 * 1024 * 8
 _NN_EVAL_CACHE: "OrderedDict[bytes, tuple[bytes, float]]" = OrderedDict()
 _CACHE_HITS = 0
@@ -238,10 +240,11 @@ def _evaluate_with_cache(
 # ============================================================================
 
 # Chebyshev radius around existing stones inside which root Dirichlet noise is
-# applied. 4 matches the tactical horizon of a single stone (a five-in-a-row
-# uses neighbors up to 4 squares away in any direction). Narrowing the noise
-# support to this region keeps Kα close to the AlphaZero ~10 sweet spot even
-# though Gomoku has 225 legal moves at the opening.
+# applied. Sized to the tactical horizon of a single stone (a five-in-a-row uses
+# neighbors up to 4 squares away in any direction — a board-fixed bound, so the
+# radius should not exceed it). Narrowing the noise support to this region keeps
+# Kα close to the AlphaZero ~10 sweet spot even though Gomoku has 225 legal
+# moves at the opening.
 _DIRICHLET_NEIGHBORHOOD_RADIUS = 4
 
 

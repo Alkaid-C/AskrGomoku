@@ -334,7 +334,7 @@ def main():
     print(f"  Opening seeding: {SEED_PROBABILITY:.0%} of games start from Renju opening ({len(RENJU_OPENING_SEQUENCES)} patterns)")
     print(f"  Opponent pool size: {OPPONENT_POOL_SIZE}")
     print(f"  Eval interval: {get_eval_interval(0)} (early) -> {get_eval_interval(512)} (mid) -> {get_eval_interval(8192)} (late)")
-    print("  Pool eviction: evict-easiest (by current win rate)")
+    print("  Pool eviction: KL-aware (easy + redundant), falls back to evict-easiest before the first fingerprint scan")
     print("  Historical exploiter scanning:")
     print(f"    - Starts at update {SCAN_START_UPDATE}, every {SCAN_PERIOD} evals")
     print(f"    - {NUM_SCAN_BUCKETS} buckets for round-robin coverage")

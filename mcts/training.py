@@ -195,21 +195,14 @@ def train_on_mcts_batch(
 
     # Gradient accumulation across micro-batches.
     #
-    # Each loss term is a per-sample *weighted mean* — the weighted sum divided
-    # by that term's own weight total (the inverse-variance-weighted estimator,
-    # consistent with the w = N/budget weighting). Normalizing by the weight sum
-    # rather than the sample count keeps the played-root scale stable as harvest
-    # volume varies, and the value-only nodes (policy_weight 0) drop out of the
-    # policy denominator automatically. When every weight is 1.0 (no harvested
-    # samples) each term reduces exactly to the previous unweighted mean. Played
-    # roots have weight 1.0; harvested internal nodes have weight N/budget < 1.
+    # Each loss term is a per-sample weighted mean: the weighted sum divided by
+    # that term's own weight total. Rationale for the weighting scheme is in
+    # mcts/CLAUDE.md, "Subtree harvesting" — not restated here.
     #
-    # The denominators are global over the augmented batch, so they are constant
-    # across micro-batches and the accumulated gradient is exact.
-    #
-    # Reported policy_loss / value_loss are unweighted means over the
-    # played-root (weight-1) samples only — identified by value_weight == 1.0 —
-    # so they stay comparable to runs without harvesting.
+    # The denominators are computed once, globally over the augmented batch, so
+    # they are constant across micro-batches and the accumulated gradient is
+    # exact. Reported policy_loss / value_loss are unweighted means over the
+    # played-root samples only, identified by value_weight == 1.0.
     policy_w_total = policy_w_tensor.sum().clamp_min(1.0)
     value_w_total = value_w_tensor.sum().clamp_min(1.0)
     optimizer.zero_grad()
