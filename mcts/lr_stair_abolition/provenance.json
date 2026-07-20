@@ -1,0 +1,24 @@
+{
+  "experiment": "Reject the update-120 LR stair and hold the prior LR for a full post-branch window",
+  "source_git_commit": "8dd2e98a21b695a15b64a041902c2a1ea047fdaf",
+  "source_update": 120,
+  "end_update": 152,
+  "fixed_stairs_descended": 2,
+  "fixed_lr": 0.0001220703125,
+  "sha256": {
+    "stage2/checkpoint_update_120.pt": "b40dc4d85e1bd39e67e6af9a6652149addebfe163ef8960aa57cb4316096c3f3",
+    "stage2/replay_buffer_update_120.pkl": "9a5d2da1c2c3d04b83b1b46d2cdd2837960fbb862732a9d8072662c4def2b338",
+    "main.py": "8b05945cf4b92051e70e30c9262391a1d46b05fce24358c20b5a7e34cda93ad8",
+    "stage2_trainer.py": "9eeceb7c8ed6eae530cda3719d149f38a946ba8cfce455027a71d6910b9f3a93",
+    "mcts.py": "703660b804581e29e7059e3024b93bfc88b441d3cdcabac8d4c8aa7b2e46a024",
+    "self_play.py": "405d2e054c77f9d0a7a09087ca1b8427be536146e8ed4d5da073e120fa9f70d8",
+    "training.py": "0e723aa6c780ca61082594a6ba30ada23aa21c1afb75c40eb0b74d9530e2580b",
+    "csv_logger.py": "3f56ea480092c6948a38e9847374ceb8b1286589c64dfa49881448af09dfc56a",
+    "entropy_ops.py": "87831477acd07b9a51756b292968ba2db334c1b007a4bf0169f0c14a876bcf6a",
+    "model.py": "58e7ebb4465bb9f7f9082519d012c9d1262bc89e18bd6bbc9e5151dd75e1944e",
+    "gomoku.py": "8863349bf2d26202ff5ac2a9f75de354679539dae5c6f9c65f23929c4c6cb8aa",
+    "enhancement.py": "679e642762fddbaefd704d1f4e9a843fa2fcef81d1997c0fc2f92af1bbd42edb",
+    "mcts_ext.cpp": "507692a39975d0a30f8a1214e7fa8fee86e0f51a570d8b32d526e7cff348cf73",
+    "mcts_ext.cpython-312-x86_64-linux-gnu.so": "a01192c1f69a3299d84e824c42b03fedc49b54f88e9295887f96b22c216a6c5d"
+  }
+}
