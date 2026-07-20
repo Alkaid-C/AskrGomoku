@@ -160,12 +160,15 @@ class Engine:
             )[0]
 
         row, col = idx_to_pos(idx)
-        # Safety: never return an occupied square.
+        # Both paths mask illegal squares before choosing, so an occupied result
+        # means the search or the mask is broken. Fail loudly rather than
+        # substituting a legal square, which would hide the defect behind a
+        # plausible-looking game.
         if self.mine[row, col] or self.theirs[row, col]:
-            legal = np.argwhere(legal_mask == 1)
-            if len(legal) == 0:
-                raise RuntimeError("no legal moves available")
-            row, col = int(legal[0][0]), int(legal[0][1])
+            raise RuntimeError(
+                f"engine chose occupied square ({col},{row}) "
+                f"[flat {idx}]; search or legal mask is broken"
+            )
         return col, row  # (x, y)
 
     def play_own(self, x: int, y: int) -> None:
