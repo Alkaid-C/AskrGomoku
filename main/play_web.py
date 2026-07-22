@@ -1129,7 +1129,6 @@ function updateTemperatureDisplay() {
 
 def get_available_checkpoints():
     """Get list of all available checkpoint files (recursively searches all subdirectories)."""
-    # Recursively find all .pt files
     checkpoint_files = glob.glob("**/*.pt", recursive=True)
 
     checkpoints = []

@@ -4,13 +4,9 @@ Gomoku Arena - watch two Piskvork-protocol engines play, step by step.
 
 A Flask web server (port 5001) that launches two Gomocup/Piskvork engines as
 subprocesses, relays moves between them, and visualizes the game in the browser.
-The arena is engine-agnostic (it only speaks the text protocol) and does its OWN
-win/draw detection rather than trusting either engine.
 
-Protocol relaying:
-  * An engine's FIRST move is seeded with BEGIN (empty board) or a full BOARD/DONE
-    dump from that engine's perspective (custom opening / non-empty start).
-  * Every subsequent move is relayed with `TURN x,y` (the opponent's last move).
+Design notes (engine-agnostic operation, own win/draw detection, protocol
+relaying) are in external-baseline/CLAUDE.md, "`arena_web.py` — design".
 
 All HTML/CSS/JS is embedded for portability (same pattern as mcts/play_web.py).
 """
@@ -35,8 +31,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 # an engine prints (MESSAGE/DEBUG/ERROR/UNKNOWN/SUGGEST/OK/...) is informational.
 _MOVE_RE = re.compile(r"^\s*(\d+)\s*,\s*(\d+)\s*$")
 
-# pbrain loads its model lazily before answering START, and the first search can
-# take a while; keep handshake/move timeouts generous.
+# Deliberately generous: model load + CUDA warm-up happen inside START and the
+# first search.
 HANDSHAKE_TIMEOUT = 60.0
 MOVE_TIMEOUT_MARGIN = 180.0  # seconds added on top of the configured per-move limit
 
@@ -60,12 +56,9 @@ class Engine:
         self.cwd = cwd
         self.proc: subprocess.Popen[str] | None = None
         self.first_move = True
-        # A dedicated reader thread feeds decoded stdout lines here. We must NOT
-        # mix select() with buffered text-mode readline(): TextIOWrapper reads
-        # ahead from the OS pipe into its own buffer, so select() would report
-        # "nothing readable" while complete lines (e.g. the engine's move) sit
-        # in Python's buffer -> spurious timeouts. A blocking readline loop in a
-        # thread + queue avoids that entirely.
+        # A dedicated reader thread feeds decoded stdout lines here. Do NOT mix
+        # select() with buffered text-mode readline() — see CLAUDE.md,
+        # "Subprocess I/O".
         self._lines: queue.Queue[object] = queue.Queue()
 
     def start(self) -> None:
@@ -222,7 +215,7 @@ def _empty_board() -> "list[list[int]]":
 GAME: dict = {
     "status": "idle",  # idle | setup | starting | running | paused | finished
     "board": _empty_board(),
-    "history": [],  # list of {x,y,color,engine}
+    "history": [],  # list of {x,y,color,engine,t}
     "last_move": None,  # [x,y]
     "to_move": "black",
     "result": None,  # human-readable result string, or None while playing

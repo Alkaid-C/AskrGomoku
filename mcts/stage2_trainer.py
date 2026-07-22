@@ -32,19 +32,9 @@ REPLAY_BUFFER_FILE_TEMPLATE = "replay_buffer_update_{update}.pkl"
 class StaircaseLRController:
     """Plateau-driven staircase LR schedule for stage 2.
 
-    Holds a constant LR until ``avg_raw_mcts_kl`` plateaus, then multiplies the LR by
-    ``stair_factor``; after ``total_stairs`` descents the next plateau ends the stage
-    (``finished`` flips True). A plateau is a trailing-window linear regression whose
-    decline rate ``-slope`` falls below ``min_improve_speed * stair_factor**stairs_descended``.
-
-    ``record`` is called once per completed update (1-indexed ``step``). Plateau checks
-    fire only on the cadence grid: first at ``regression_range``, then every
-    ``regression_interval`` updates; a stair-down resets the next check to
-    ``step + regression_range`` so each regression window holds only post-drop data.
-
-    The final stair (once ``stairs_descended == total_stairs``, whose plateau ends the
-    stage irreversibly) uses a longer window ``regression_range * stop_regression_range_multiplier``
-    for extra margin on that one-way decision; earlier stairs use ``regression_range``.
+    Mechanism and rationale are in mcts/CLAUDE.md, "Plateau-driven staircase LR".
+    ``record`` is called once per completed update with a 1-indexed ``step``;
+    ``finished`` flips True when the stage should end.
     """
 
     def __init__(

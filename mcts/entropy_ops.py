@@ -4,8 +4,7 @@ Entropy-targeted temperature rescaling for prior softening.
 The naive `p**alpha / Z` form gives an entropy that depends on the input's
 shape. `rescale_to_entropy_np` instead solves for the per-row softmax
 temperature that yields a requested target entropy via bisection in log-tau
-space (24 iters, ~1.4e-6 nat precision). Degenerate near-onehot rows fall back
-to plain softmax.
+space. Degenerate near-onehot rows fall back to plain softmax.
 
 Used only by `mcts.py::_evaluate_with_cache` for prior softening:
 target_H = H(softmax(logits)) * entropy_multiplier.
@@ -45,8 +44,8 @@ def rescale_to_entropy_np(
             positive tau.
         target_H: [B] desired per-row entropy in nats (float32). Clamped to
             [0, log K].
-        n_iter: bisection iterations. Initial log-tau window width = 24, so
-            after 24 steps entropy precision ~24/2**24 ≈ 1.4e-6 nat.
+        n_iter: bisection iterations. The log-tau search window is halved each
+            step, so entropy precision improves geometrically with this count.
 
     Returns:
         [B, K] rescaled probability distribution (rows sum to 1) in float32.

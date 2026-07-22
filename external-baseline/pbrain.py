@@ -7,12 +7,9 @@ speaks the Piskvork text protocol (https://plastovicka.github.io/protocl2en.htm)
 over stdin/stdout, so it can be driven by Gomocup managers or our own arena_web.py
 and pitted against external engines such as Rapfi.
 
-Move selection mirrors deployment behaviour:
-  * MCTS_BUDGET > 0 -> AlphaZero PUCT search via mcts/mcts.py (raw masked-softmax
-    priors, no Dirichlet noise = deterministic competitive play). Requires the
-    pre-compiled mcts_ext.so; if the import fails we warn to stderr and fall back
-    to raw policy.
-  * MCTS_BUDGET == 0 -> raw policy-head argmax (single forward, no search).
+Move selection mirrors deployment behaviour; the design (MCTS_BUDGET semantics,
+the optional-MCTS fallback, path resolution and perspective conventions) is in
+external-baseline/CLAUDE.md, "`pbrain.py` — design".
 
 All model loading and inference mirror mcts/play_web.py and main/gomoku.py.
 """
@@ -68,8 +65,6 @@ from model import GomokuPolicyNet
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# MCTS is optional: it needs the compiled mcts_ext.so. If anything fails to
-# import we fall back to raw policy and warn on stderr.
 _MCTS_AVAILABLE = False
 mcts_search_batched = None
 if MCTS_BUDGET > 0:
@@ -118,8 +113,7 @@ class Engine:
         self.reset()
 
     def reset(self) -> None:
-        # mine = this engine's stones, theirs = opponent's. Perspective-based,
-        # matching the network's canonical input (channel 0 = side-to-move).
+        # mine = this engine's stones, theirs = opponent's (see CLAUDE.md).
         self.mine = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
         self.theirs = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.uint8)
 

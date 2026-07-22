@@ -26,12 +26,11 @@ from mcts import _evaluate_with_cache, clear_nn_eval_cache, mcts_search_batched
 
 app = Flask(__name__)
 
-# MCTS inference runs on CPU (keep the default budget modest so search stays
-# responsive). entropy_multiplier is fixed to None throughout = raw masked-softmax
-# priors = vanilla AlphaZero = stage-2 deployment behavior.
+# entropy_multiplier is fixed to None throughout = raw masked-softmax priors =
+# vanilla AlphaZero = stage-2 deployment behavior.
 DEVICE = torch.device("cuda")
 
-# Defaults for the search knobs exposed in the UI; mirror mcts/main.py.
+# Defaults for the search knobs exposed in the UI.
 DEFAULT_NUM_SIMULATIONS = 256
 DEFAULT_C_PUCT = 1.25
 DEFAULT_DIRICHLET_ALPHA = 0.125

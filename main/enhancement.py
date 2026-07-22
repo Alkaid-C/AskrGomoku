@@ -5,7 +5,7 @@ Contains sample enhancement logic that modifies or generates training samples:
 - Tactical search (win-in-1, blocking detection)
 - 8-fold symmetry data augmentation (GPU accelerated)
 - Off-policy rollout sample generation
-- Imitation learning sample extraction
+- Imitation learning weight constants (consumed by training.py)
 
 All enhancements are "sample generators/modifiers" with clean interfaces.
 """

@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 # Rebuild vendor/ (git-ignored onnxruntime-web binaries) from the npm registry.
-#
-# The app loads ORT same-origin instead of from a CDN: cross-origin resources
-# clash with the COOP/COEP headers required for multithreaded WASM, and CDN
-# availability is unreliable in some regions. Only the files the browser
-# actually fetches are kept — the ort.webgpu bundle uses the asyncify wasm
-# build for both the wasm and webgpu execution providers.
+# Why ORT is self-hosted, and which files are kept: see deploy/CLAUDE.md.
 set -euo pipefail
 cd "$(dirname "$0")"
 

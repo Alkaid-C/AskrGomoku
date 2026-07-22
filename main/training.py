@@ -28,8 +28,8 @@ TOTAL_UPDATES = 65536
 # --- Optimizer & Learning Rate ---
 LEARNING_RATE = 1.0/8192
 MIN_LR = 0.125/8192
-LR_DECAY_MIDPOINT_PERCENTAGE = 0.75  # Decay midpoint at 75% of training
-LR_DECAY_STEEPNESS = 0.5  # Transition spread over 50% of total training
+LR_DECAY_MIDPOINT_PERCENTAGE = 0.75
+LR_DECAY_STEEPNESS = 0.5  # Transition spread, as a fraction of total training
 WEIGHT_DECAY = 1.0/ 2 ** 24
 GRAD_CLIP_NORM = 16.0
 
@@ -515,7 +515,7 @@ def _train_on_batch_internal(model: nn.Module, trajectories: List[Trajectory],
             gae_advantages[sample_idx] = policy_gae
             value_lambda_returns[sample_idx] = value_return
 
-    # Blend advantages with leaky ReLU: attenuate negative advantages by NEGATIVE_ADVANTAGE_SLOPE
+    # Blend advantages with leaky ReLU: attenuate negative advantages by NEGATIVE_ADVANTAGE_SLOPE * alpha
     raw_returns = returns_tensor.cpu().numpy()
     final_advantages = np.zeros(B, dtype=np.float32)
     s = NEGATIVE_ADVANTAGE_SLOPE * alpha

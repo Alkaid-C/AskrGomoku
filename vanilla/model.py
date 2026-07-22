@@ -30,14 +30,9 @@ VALUE_HEAD_HIDDEN = 160           # Value head hidden layer size
 # ============================================================================
 
 class GomokuPolicyNet(nn.Module):
-    """
-    Policy + Value neural network for Gomoku.
+    """Policy + Value neural network for Gomoku.
 
-    Architecture:
-    - Simple stem with single 3x3 convolution
-    - Residual trunk with standard residual blocks (no dilation, no SE)
-    - Policy head: 3x Conv3x3 with GroupNorm+SiLU → Conv1x1 to 1
-    - Value head: Conv1x1 to VALUE_HEAD_CHANNELS → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
+    Architecture is documented in vanilla/CLAUDE.md, "Model Architecture".
     """
 
     def __init__(self):
@@ -65,7 +60,6 @@ class GomokuPolicyNet(nn.Module):
         self.policy_out = nn.Conv2d(POLICY_WIDTH, 1, kernel_size=1)
 
         # === Value head: classic design ===
-        # Conv1x1 to VALUE_HEAD_CHANNELS → SiLU → flatten → FC to VALUE_HEAD_HIDDEN → SiLU → FC to 1 → tanh
         self.value_conv = nn.Conv2d(WIDTH, VALUE_HEAD_CHANNELS, kernel_size=1)
         self.value_fc1 = nn.Linear(VALUE_HEAD_CHANNELS * 15 * 15, VALUE_HEAD_HIDDEN)
         self.value_fc2 = nn.Linear(VALUE_HEAD_HIDDEN, 1)

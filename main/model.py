@@ -39,7 +39,7 @@ TRUNK_DILATION2_SCHEDULE = [
 
 # Head architecture
 POLICY_HEAD_D = 64             # Policy head intermediate channels (d_p)
-POLICY_HEAD_GROUPS = 4         # GroupNorm groups for 64-ch policy tensors
+POLICY_HEAD_GROUPS = 4         # GroupNorm groups for policy head tensors
 POLICY_HEAD_NUM_HEADS = 4      # Attention heads in policy head
 VALUE_HEAD_C1 = 64             # Layer 1: 1x1 conv, WIDTH -> C1
 VALUE_HEAD_C2 = 256            # Layer 2: grouped 3x3 conv, C1 -> C2
@@ -64,27 +64,17 @@ def _zero_center_tap_hook(grad: torch.Tensor) -> torch.Tensor:
 
 
 class GomokuPolicyNet(nn.Module):
-    """
-    Policy + Value neural network for Gomoku.
+    """Policy + Value neural network for Gomoku.
 
-    Architecture:
-    - Mixed stem with dilated convolution branches
-    - Residual trunk with configurable depth and dilation schedule
-    - Policy head: Dual-attention (two attention blocks with conv refinement)
-    - Value head: 1x1 projection + grouped 3x3 + per-channel log-mean-exp pooling + 2-layer MLP
+    Architecture is documented in main/CLAUDE.md, "Model Architecture".
     """
 
     def __init__(self):
         super().__init__()
 
         # === Stem: line-aware multi-scale design ===
-        # Gomoku threats are strictly along 4 directions (horizontal, vertical,
-        # diagonal, anti-diagonal). The "directional" branches use sums of dilated
-        # 3x3 convolutions to build kernels that cover exactly these 4 line
-        # directions at range 5 or 7 — an efficient substitute for non-standard
-        # 1xN / diagonal kernels that PyTorch doesn't natively optimize.
-        # The "full" branches use standard NxN kernels for complete spatial coverage.
-        # Input channels: 3 (current player pieces, opponent pieces, board mask)
+        # The directional branches sum dilated 3x3 convs as an efficient substitute
+        # for the 1xN / diagonal kernels PyTorch doesn't natively optimize.
 
         self.conv_3x3 = nn.Conv2d(3, STEM_3X3_CHANNELS, kernel_size=3, stride=1, padding=1, dilation=1)
 

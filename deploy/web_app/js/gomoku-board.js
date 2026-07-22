@@ -1,5 +1,5 @@
 /**
- * Gomoku Game Logic (JavaScript port of gomoku_board.py)
+ * Gomoku Game Logic (JavaScript port of GomokuBoard in gomoku.py)
  *
  * Implements the game board and rules for Gomoku (Five-in-a-Row).
  */

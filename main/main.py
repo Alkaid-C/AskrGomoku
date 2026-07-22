@@ -78,8 +78,6 @@ DEVICE = torch.device("cuda")
 torch.backends.cudnn.conv.fp32_precision = 'tf32'
 torch.backends.cuda.matmul.fp32_precision = 'tf32'
 
-# Memory management: CUDA cache is cleared after eval, probing, and mining
-
 
 # ============================================================================
 # State Management Constants
@@ -170,7 +168,8 @@ def load_training_state(output_dir: str, device: torch.device) -> Optional[Tuple
     Returns:
         Tuple of (model, optimizer, scheduler, opponent_pool, opponent_pool_updates, start_update,
                   next_eval_update, win_miss_ema, block_miss_ema, per_opponent_win_rates,
-                  scan_event_counter, evals_since_last_scan, win_rate_ema, selfplay_win_rate_ema) when loading succeeds.
+                  scan_event_counter, evals_since_last_scan, win_rate_ema, selfplay_win_rate_ema,
+                  seed) when loading succeeds.
         Returns None only when no training state file exists.
         Note: opponent_pool_updates is filtered to only include successfully loaded opponents.
 
