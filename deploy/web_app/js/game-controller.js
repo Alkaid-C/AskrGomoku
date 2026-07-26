@@ -106,14 +106,14 @@ function setupEventListeners() {
     document.getElementById('btn-confirm-move').addEventListener('click', confirmMove);
     document.getElementById('btn-cancel-move').addEventListener('click', cancelMove);
 
-    // Result modal, plus the record-screen overlay its share button alone opens:
-    // currently never shown (game end renders in place); kept to be wired up later
+    // Legacy result-modal controls (the modal is not shown by the current
+    // in-place game-end flow), plus the in-place game-record action.
     document.getElementById('btn-play-again').addEventListener('click', playAgain);
     document.getElementById('btn-new-setup').addEventListener('click', newSetup);
     document.getElementById('btn-share').addEventListener('click', showRecordScreen);
     document.getElementById('btn-record-close').addEventListener('click', hideRecordScreen);
 
-    // End actions (in-place button after game ends)
+    // Remaining end action (the record action is wired above)
     document.getElementById('btn-end-new-game').addEventListener('click', newSetup);
 
     // Window resize

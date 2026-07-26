@@ -106,6 +106,7 @@
         <!-- End Actions (replaces move-confirm when game ends) -->
         <div id="end-actions" class="end-actions" style="display: none;">
             <button id="btn-end-new-game" class="btn-confirm" data-i18n="new_game">新游戏</button>
+            <button id="btn-share" class="btn-cancel" data-i18n="generate_record">生成棋谱</button>
         </div>
 
         <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
@@ -117,7 +118,6 @@
             <h2 id="result-title" data-i18n="game_over">游戏结束</h2>
             <p id="result-message"></p>
             <div id="result-stats" class="result-stats"></div>
-            <button id="btn-share" class="btn-share" data-i18n="generate_record">生成棋谱</button>
             <button id="btn-play-again" class="btn-primary" data-i18n="play_again">再玩一局</button>
             <button id="btn-new-setup" class="btn-secondary" data-i18n="new_setup">新设置</button>
         </div>
@@ -173,6 +173,6 @@
     <script src="js/ep-probe.js"></script>
     <script src="js/onnx-ai-player.js"></script>
     <script src="js/model-manager.js"></script>
-    <script src="js/game-controller.js"></script>
+    <script src="js/game-controller.js?v=20260726-record-action"></script>
 </body>
 </html>

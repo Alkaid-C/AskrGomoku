@@ -80,9 +80,9 @@ Setup panel (color + difficulty) → loading screen → game panel. For dial/cel
 
 Failures get in-page dialogs on the loading screen (no native `alert` for melody): download failure → 返回设置; probe failure → 改用高级难度 / 返回设置. The loading status line and dialog text are JS-managed (no `data-i18n` — it used to clobber them on language switch); their key+params are re-rendered via the `gomoku-langchange` event that `setLang` dispatches.
 
-Player clicks board → pending move → confirm/cancel. AI move: short UI yield → inference/search → draw. Undo pops 2 moves and restores from history snapshots. Game end renders **in place** on the game canvas via `renderGameEnd` / `drawBoardRecord` (move numbers + winning line).
+Player clicks board → pending move → confirm/cancel. AI move: short UI yield → inference/search → draw. Undo pops 2 moves and restores from history snapshots. Game end renders **in place** on the game canvas via `renderGameEnd` / `drawBoardRecord` (move numbers + winning line), with buttons below the board for returning to setup or opening the screenshot-ready game record.
 
-The separate `#record-screen` overlay and its `showRecordScreen` / `drawRecordBoard` / `playAgain` path are **not currently reachable** — `#result-modal` is only ever hidden, never shown. Kept deliberately, to be wired up later; don't mistake the two renderers for one.
+The separate `#record-screen` overlay is opened by the end action's game-record button and rendered by `showRecordScreen` / `drawRecordBoard`. The legacy `#result-modal` and its `playAgain` path are not currently shown; don't mistake the two board renderers for one.
 
 ## Deployment
 
