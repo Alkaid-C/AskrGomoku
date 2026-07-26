@@ -5,10 +5,20 @@
  */
 
 class OnnxAIPlayer {
-    constructor(modelPath, temperature = 1.0) {
+    /**
+     * @param {string} modelPath - ONNX model URL
+     * @param {number} temperature - Policy-sampling temperature
+     * @param {number} evalCacheMaxEntries - 0 disables the evaluation LRU
+     */
+    constructor(modelPath, temperature = 1.0, evalCacheMaxEntries = 0) {
         this.modelPath = modelPath;
         this.temperature = temperature;
         this.session = null;
+        this.evalCacheMaxEntries = evalCacheMaxEntries;
+        this.evalCache = evalCacheMaxEntries > 0 ? new Map() : null;
+        this.evalCacheHits = 0;
+        this.evalCacheMisses = 0;
+        this.evalCacheEvictions = 0;
     }
 
     /**
@@ -35,12 +45,66 @@ class OnnxAIPlayer {
      *     value: number in [-1, 1] from the side-to-move's perspective}
      */
     async evaluate(board) {
+        let cacheKey = null;
+        if (this.evalCache !== null) {
+            cacheKey = board.GetEvalCacheKey();
+            const cached = this.evalCache.get(cacheKey);
+            if (cached !== undefined) {
+                // Map iteration order is the LRU order. Reinsert a hit so it
+                // becomes the most-recently-used entry.
+                this.evalCache.delete(cacheKey);
+                this.evalCache.set(cacheKey, cached);
+                this.evalCacheHits++;
+                return cached;
+            }
+            this.evalCacheMisses++;
+        }
+
         const [c0, c1] = board.GetBoardState();
         const inputTensor = this._boardToTensor(c0, c1);
         const results = await this.session.run({ board_state: inputTensor });
-        return {
-            logits: results.policy_logits.data,
+        const evaluation = {
+            // Cache entries own their data rather than depending on the
+            // lifetime or buffer-reuse behavior of an ORT output tensor.
+            logits: this.evalCache === null
+                ? results.policy_logits.data
+                : new Float32Array(results.policy_logits.data),
             value: results.value.data[0],
+        };
+
+        if (this.evalCache !== null) {
+            this.evalCache.set(cacheKey, evaluation);
+            if (this.evalCache.size > this.evalCacheMaxEntries) {
+                const oldestKey = this.evalCache.keys().next().value;
+                this.evalCache.delete(oldestKey);
+                this.evalCacheEvictions++;
+            }
+        }
+        return evaluation;
+    }
+
+    /**
+     * Start a new per-game cache lifetime. The player and its ORT session stay
+     * alive; only position evaluations and their statistics are discarded.
+     */
+    resetEvalCache() {
+        if (this.evalCache !== null) this.evalCache.clear();
+        this.evalCacheHits = 0;
+        this.evalCacheMisses = 0;
+        this.evalCacheEvictions = 0;
+    }
+
+    /**
+     * @returns {Object} Snapshot of cumulative statistics for the current game
+     */
+    getEvalCacheStats() {
+        return {
+            enabled: this.evalCache !== null,
+            hits: this.evalCacheHits,
+            misses: this.evalCacheMisses,
+            evictions: this.evalCacheEvictions,
+            size: this.evalCache === null ? 0 : this.evalCache.size,
+            maxEntries: this.evalCacheMaxEntries,
         };
     }
 
@@ -79,11 +143,23 @@ class OnnxAIPlayer {
      */
     async getMoveWithMCTS(board, numSims) {
         const search = new MCTSSearch(this);
+        const cacheBefore = this.getEvalCacheStats();
         const startTime = performance.now();
         const { row, col, rootQ } = await search.search(board, numSims);
         const elapsed = (performance.now() - startTime) / 1000;
         console.log(`MCTS: ${numSims} sims in ${elapsed.toFixed(2)}s, `
             + `move (${row}, ${col}), rootQ = ${rootQ.toFixed(4)}`);
+        if (cacheBefore.enabled) {
+            const cacheAfter = this.getEvalCacheStats();
+            const hits = cacheAfter.hits - cacheBefore.hits;
+            const misses = cacheAfter.misses - cacheBefore.misses;
+            const evictions = cacheAfter.evictions - cacheBefore.evictions;
+            const lookups = hits + misses;
+            const hitRate = lookups > 0 ? hits / lookups : 0;
+            console.log(`MCTS eval cache: ${hits}/${lookups} hits `
+                + `(${(100 * hitRate).toFixed(1)}%), ${misses} ONNX runs, `
+                + `${evictions} evictions, size ${cacheAfter.size}/${cacheAfter.maxEntries}`);
+        }
         return [row, col, rootQ];
     }
 

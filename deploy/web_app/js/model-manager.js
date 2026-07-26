@@ -132,6 +132,7 @@ class ModelManager {
             if (!force) {
                 return { player: this.melodyPlayer, probe: this.melodyProbe };
             }
+            this.melodyPlayer.resetEvalCache();
             try {
                 await this.melodyPlayer.session.release();
             } catch (e) {
@@ -185,7 +186,11 @@ class ModelManager {
             });
         }
 
-        const player = new OnnxAIPlayer(this.models.melody.path);
+        const player = new OnnxAIPlayer(
+            this.models.melody.path,
+            1.0,
+            MCTS_EVAL_CACHE_MAX_ENTRIES,
+        );
         player.session = probe.session;
 
         this.melodyPlayer = player;

@@ -13,7 +13,8 @@ The frontend (HTML/CSS/JS) is fully AI-generated with no human review. The user 
 - `web_app/js/ep-probe.js` — Execution-provider probe + ORT env setup + localStorage cache.
 - `web_app/js/ep-probe-worker.js` — Dedicated worker running the WebGPU probe so it can be hard-killed (`worker.terminate()`).
 - `web_app/js/model-manager.js` — Difficulty → model mapping; dial/cello/curtain session loading; melody download (`fetchMelodyModel`, bytes kept in memory so a probe re-run never re-downloads) and probe orchestration (`probeMelody`; caches the melody player across games).
-- `web_app/js/orbit-loader.js` — Reusable orbital loading animation: `createOrbitLoader(container, {size})` → `{start, stop, destroy}`. Fixed 200×200 internal coordinates scaled to any size; per-instance unique path ids, so multiple instances can coexist (loading screen now; in-game progress later).
+- `web_app/js/orbit-physics.js` — Shared Kepler solver, bounded randomized orbit generation, and discrete-frame canvas drawing.
+- `web_app/js/orbit-loader.js` / `orbit-loader-worker.js` — Reusable worker-backed orbital animation: `createOrbitLoader(container, {size, fps})` → `{start, stop, destroy}`. A page-wide randomized three-planet system is drawn to transferred OffscreenCanvas instances without per-frame main-thread work; unsupported browsers fall back to a main-thread canvas.
 - `web_app/js/onnx-ai-player.js` — ONNX inference: `evaluate()` primitive, policy sampling (`getMove`), MCTS entry (`getMoveWithMCTS`).
 - `web_app/js/game-controller.js` — Main orchestrator: UI drawing, game flow, event handling, animations, the melody-difficulty time-estimate acknowledgment dialog.
 - `web_app/fetch_vendor.sh` — Rebuilds `vendor/` from the npm registry (pinned onnxruntime-web version).

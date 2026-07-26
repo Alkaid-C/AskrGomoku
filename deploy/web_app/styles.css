@@ -44,7 +44,7 @@ h1 {
     min-height: 200px;
 }
 
-.loading-orbit svg {
+.orbit-canvas {
     display: block;
 }
 
@@ -273,10 +273,15 @@ h1 {
     width: 100%;
 }
 
+#game-panel > h1 {
+    transform: translateY(-12px);
+}
+
 /* Top Controls */
 .top-controls {
     display: grid;
     grid-template-columns: 1fr auto 1fr;
+    position: relative;
     align-items: center;
     margin-bottom: 30px;
     gap: 10px 20px;
@@ -289,11 +294,33 @@ h1 {
 }
 
 #status-text {
-    grid-column: 2;
-    grid-row: 1;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    pointer-events: none;
     font-size: 1.1em;
     color: #333;
     text-align: center;
+}
+
+#status-text.is-deep-thinking {
+    transform: translate(calc(-50% - 8px), -50%);
+}
+
+#status-orbit {
+    display: none;
+    width: 72px;
+    height: 72px;
+    flex: 0 0 72px;
+}
+
+#status-orbit .orbit-canvas {
+    display: block;
 }
 
 #btn-restart, #end-stat-right {

@@ -158,6 +158,31 @@ class GomokuBoard {
     }
 
     /**
+     * Collision-free key for neural-network evaluation caching.
+     *
+     * A reachable non-terminal board's side to move is implied by its black
+     * and white stone counts, so the key contains only the two stone planes.
+     * Each board row fits in one 15-bit UTF-16 code unit: all black rows
+     * first, followed by all white rows.
+     * @returns {string} Fixed-length position key
+     */
+    GetEvalCacheKey() {
+        const rowMasks = new Array(30);
+        for (let row = 0; row < 15; row++) {
+            let blackMask = 0;
+            let whiteMask = 0;
+            for (let col = 0; col < 15; col++) {
+                const bit = 1 << col;
+                if (this.blackPieces[row][col] === 1) blackMask |= bit;
+                if (this.whitePieces[row][col] === 1) whiteMask |= bit;
+            }
+            rowMasks[row] = blackMask;
+            rowMasks[15 + row] = whiteMask;
+        }
+        return String.fromCharCode(...rowMasks);
+    }
+
+    /**
      * Create a deep copy of the board.
      * @returns {GomokuBoard} Cloned board instance
      */

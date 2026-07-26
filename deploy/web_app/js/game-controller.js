@@ -217,6 +217,12 @@ async function startGame() {
         stopLoadingOrbit();
         stopPoemRotation();
 
+        // The melody evaluation cache spans AI moves within one game, but
+        // unrelated late-game positions should not carry into a new game.
+        if (difficulty === 'melody') {
+            gameState.aiPlayer.resetEvalCache();
+        }
+
         // Initialize board
         gameState.board = new GomokuBoard();
         gameState.history = [];
@@ -271,6 +277,9 @@ async function startGame() {
 // than part of the download.
 const LOADING_ORBIT_SIZE = 200;
 const PROBE_ORBIT_SIZE = 160;
+const LOADING_ORBIT_FPS = 60;
+const STATUS_ORBIT_SIZE = 72;
+const STATUS_ORBIT_FPS = 15;
 
 function showLoadingPhase(phase) {
     const poemContainer = document.querySelector('.loading-poem-container');
@@ -521,6 +530,7 @@ function restartGame() {
     gameState.gameId++;
     gameState.isAIThinking = false;
     gameState.pendingMove = null;
+    setStatus('your_turn');
 
     // Show setup panel
     gamePanel.style.display = 'none';
@@ -534,6 +544,10 @@ function playAgain() {
     const gameId = ++gameState.gameId;
     resultModal.style.display = 'none';
     resetEndModeUI();
+
+    if (gameState.modelManager.selectedModel === 'melody') {
+        gameState.aiPlayer.resetEvalCache();
+    }
 
     // Reset board
     gameState.board = new GomokuBoard();
@@ -571,6 +585,7 @@ function newSetup() {
     gameState.gameResult = null;
     gameState.isAIThinking = false;
     gameState.pendingMove = null;
+    setStatus('your_turn');
     gamePanel.style.display = 'none';
     setupPanel.style.display = 'block';
 }
@@ -1196,6 +1211,7 @@ function screenToBoard(x, y) {
 }
 
 let statusMessageState = { key: 'your_turn', params: null };
+let statusOrbitLoader = null;
 
 /**
  * Store status as an i18n key so language changes preserve its meaning.
@@ -1207,8 +1223,26 @@ function setStatus(key, params = null) {
 
 function renderStatus() {
     const { key, params } = statusMessageState;
-    document.getElementById('status-text').textContent =
+    document.getElementById('status-label').textContent =
         params ? tFormat(key, params) : t(key);
+
+    const orbit = document.getElementById('status-orbit');
+    const showOrbit = key === 'deep_thinking';
+    document.getElementById('status-text').classList.toggle(
+        'is-deep-thinking', showOrbit);
+    orbit.style.display = showOrbit ? 'block' : 'none';
+
+    if (showOrbit) {
+        if (!statusOrbitLoader) {
+            statusOrbitLoader = createOrbitLoader(orbit, {
+                size: STATUS_ORBIT_SIZE,
+                fps: STATUS_ORBIT_FPS,
+            });
+        }
+        statusOrbitLoader.start();
+    } else if (statusOrbitLoader) {
+        statusOrbitLoader.stop();
+    }
 }
 
 // ============================================================================
@@ -1283,7 +1317,10 @@ function showLoadingOrbit(size) {
     if (!loadingOrbit || loadingOrbitSize !== size) {
         if (loadingOrbit) loadingOrbit.destroy();
         loadingOrbit = createOrbitLoader(
-            document.getElementById('loading-orbit'), { size: size });
+            document.getElementById('loading-orbit'), {
+                size: size,
+                fps: LOADING_ORBIT_FPS,
+            });
         loadingOrbitSize = size;
     }
     loadingOrbit.start();

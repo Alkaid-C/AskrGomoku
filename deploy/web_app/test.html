@@ -32,10 +32,10 @@ devices/EPs — they should be identical up to float noise.</p>
 
 <script src="vendor/ort.webgpu.min.js"></script>
 <script src="js/i18n.js"></script>
-<script src="js/gomoku-board.js"></script>
-<script src="js/mcts.js"></script>
+<script src="js/gomoku-board.js?v=20260726-eval-lru"></script>
+<script src="js/mcts.js?v=20260726-eval-lru"></script>
 <script src="js/ep-probe.js"></script>
-<script src="js/onnx-ai-player.js"></script>
+<script src="js/onnx-ai-player.js?v=20260726-eval-lru"></script>
 <script>
 const MODEL = 'models/curtain.onnx';
 const logEl = document.getElementById('log');
@@ -87,8 +87,53 @@ async function dumpCrosscheck(player, label, moves) {
 async function runTests(ep) {
     failures = 0;
     logEl.textContent = '';
+
+    // Position keys are exact board-state keys, independent of the order in
+    // which each side placed its stones.
+    {
+        const abcd = makeBoard([[7,7],[7,8],[8,8],[6,6]]);
+        const cbad = makeBoard([[8,8],[7,8],[7,7],[6,6]]);
+        check(abcd.GetEvalCacheKey() === cbad.GetEvalCacheKey(),
+            'eval-cache key matches across a move-order transposition');
+        const different = makeBoard([[7,7],[7,8],[8,7],[6,6]]);
+        check(abcd.GetEvalCacheKey() !== different.GetEvalCacheKey(),
+            'eval-cache key distinguishes different stone sets');
+    }
+
+    // Verify real LRU promotion: after A,B,A,C, B must be the entry evicted.
+    {
+        let runs = 0;
+        const cachePlayer = new OnnxAIPlayer('fake', 1.0, 2);
+        cachePlayer.session = {
+            run: async () => {
+                runs++;
+                return {
+                    policy_logits: { data: new Float32Array(225).fill(runs) },
+                    value: { data: new Float32Array([runs / 10]) },
+                };
+            },
+        };
+        const a = makeBoard([]);
+        const b = makeBoard([[7,7]]);
+        const c = makeBoard([[8,8]]);
+        await cachePlayer.evaluate(a);
+        await cachePlayer.evaluate(b);
+        await cachePlayer.evaluate(a);
+        await cachePlayer.evaluate(c);
+        await cachePlayer.evaluate(b);
+        const stats = cachePlayer.getEvalCacheStats();
+        check(runs === 4 && stats.hits === 1 && stats.misses === 4,
+            `eval LRU hit/miss accounting: runs=${runs}, hits=${stats.hits}, misses=${stats.misses}`);
+        check(stats.evictions === 2 && stats.size === 2,
+            `eval LRU promotion and eviction: evictions=${stats.evictions}, size=${stats.size}`);
+        cachePlayer.resetEvalCache();
+        const reset = cachePlayer.getEvalCacheStats();
+        check(reset.size === 0 && reset.hits === 0 && reset.misses === 0,
+            'new-game reset clears eval cache and statistics');
+    }
+
     log(`Creating ${ep} session...`);
-    const player = new OnnxAIPlayer(MODEL);
+    const player = new OnnxAIPlayer(MODEL, 1.0, MCTS_EVAL_CACHE_MAX_ENTRIES);
     player.session = await ort.InferenceSession.create(MODEL, {
         executionProviders: [ep],
         graphOptimizationLevel: 'all',
@@ -144,6 +189,11 @@ async function runTests(ep) {
     await dumpCrosscheck(player, 'pos1', [[7,7],[7,8],[8,8],[6,6],[8,6],[6,8]]);
     await dumpCrosscheck(player, 'pos2', [[7,7],[8,8],[6,8],[8,6],[9,7]]);
 
+    const cache = player.getEvalCacheStats();
+    const cacheLookups = cache.hits + cache.misses;
+    log(`EVAL CACHE hits=${cache.hits}/${cacheLookups} `
+        + `(${(100 * cache.hits / cacheLookups).toFixed(1)}%) `
+        + `evictions=${cache.evictions} size=${cache.size}/${cache.maxEntries}`);
     await player.session.release();
     log(failures === 0 ? 'ALL TESTS PASSED' : `${failures} FAILURES`,
         failures === 0 ? 'pass' : 'fail');

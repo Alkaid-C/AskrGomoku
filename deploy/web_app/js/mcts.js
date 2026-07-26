@@ -6,8 +6,9 @@
  * training conventions exactly; constants below come from mcts/main.py.
  *
  * Deliberately omitted (training-only, no effect on inference numerics):
- * Dirichlet root noise, entropy rescaling, D4 canonicalization + eval
- * cache, subtree harvesting.
+ * Dirichlet root noise, entropy rescaling, D4 canonicalization, subtree
+ * harvesting. Melody instead uses an exact-position eval LRU owned by its
+ * OnnxAIPlayer, without merging or reusing tree nodes.
  */
 
 const MCTS_C_PUCT = 1.25;
@@ -17,7 +18,9 @@ const MCTS_FPU_MULTIPLIER = 0.95;
 const MCTS_ACTION_TEMPERATURE = 0.5;
 
 // Simulation budget for melody-difficulty moves.
-const MCTS_SIMS = 128;
+const MCTS_SIMS = 384;
+// Maximum neural-network evaluations retained within one melody game.
+const MCTS_EVAL_CACHE_MAX_ENTRIES = 2048;
 
 class MCTSNode {
     constructor(parent, parentK) {

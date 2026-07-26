@@ -4,13 +4,13 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Askr五子棋</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=20260726-orbit-retune">
 </head>
 <body>
     <!-- Loading Screen -->
     <div id="loading-screen" style="display: none;">
         <h1 data-i18n="title">Askr五子棋</h1>
-        <!-- Orbit SVG injected by createOrbitLoader (orbit-loader.js) -->
+        <!-- Worker-backed orbit canvas injected by createOrbitLoader -->
         <div class="loading-orbit" id="loading-orbit"></div>
         <!-- EP-probe progress: minimal bar, one segment per probe phase -->
         <div id="probe-progress" class="probe-progress" style="display: none;">
@@ -87,7 +87,10 @@
         <div class="top-controls">
             <button id="btn-undo" class="btn-control" data-i18n="undo">悔棋</button>
             <span id="end-stat-left" class="end-stat"></span>
-            <div id="status-text" aria-live="polite">你的回合</div>
+            <div id="status-text" aria-live="polite">
+                <span id="status-orbit" aria-hidden="true"></span>
+                <span id="status-label">你的回合</span>
+            </div>
             <button id="btn-restart" class="btn-control" data-i18n="new_game">新游戏</button>
             <span id="end-stat-right" class="end-stat"></span>
         </div>
@@ -167,12 +170,13 @@
     <script src="js/i18n.js"></script>
 
     <!-- Game modules -->
-    <script src="js/orbit-loader.js"></script>
-    <script src="js/gomoku-board.js"></script>
-    <script src="js/mcts.js"></script>
+    <script src="js/orbit-physics.js?v=20260726-orbit-retune"></script>
+    <script src="js/orbit-loader.js?v=20260726-orbit-retune"></script>
+    <script src="js/gomoku-board.js?v=20260726-eval-lru"></script>
+    <script src="js/mcts.js?v=20260726-eval-lru"></script>
     <script src="js/ep-probe.js"></script>
-    <script src="js/onnx-ai-player.js"></script>
-    <script src="js/model-manager.js"></script>
-    <script src="js/game-controller.js?v=20260726-record-action"></script>
+    <script src="js/onnx-ai-player.js?v=20260726-eval-lru"></script>
+    <script src="js/model-manager.js?v=20260726-eval-lru"></script>
+    <script src="js/game-controller.js?v=20260726-eval-lru"></script>
 </body>
 </html>
