@@ -32,10 +32,11 @@ devices/EPs — they should be identical up to float noise.</p>
 
 <script src="vendor/ort.webgpu.min.js"></script>
 <script src="js/i18n.js"></script>
-<script src="js/gomoku-board.js?v=20260726-eval-lru"></script>
-<script src="js/mcts.js?v=20260726-eval-lru"></script>
+<script src="js/gomoku-board.js?v=20260726-server-eval-cache"></script>
+<script src="js/mcts.js?v=20260726-server-eval-cache"></script>
 <script src="js/ep-probe.js"></script>
-<script src="js/onnx-ai-player.js?v=20260726-eval-lru"></script>
+<script src="js/eval-cache.js?v=20260726-server-eval-cache"></script>
+<script src="js/onnx-ai-player.js?v=20260726-server-eval-cache"></script>
 <script>
 const MODEL = 'models/curtain.onnx';
 const logEl = document.getElementById('log');
@@ -100,6 +101,40 @@ async function runTests(ep) {
             'eval-cache key distinguishes different stone sets');
     }
 
+    // Parse one complete binary-format record and reject a model mismatch.
+    {
+        const hash = new Uint8Array(EVAL_CACHE_MODEL_HASH_SIZE).fill(0x5a);
+        const file = new ArrayBuffer(EVAL_CACHE_HEADER_SIZE + EVAL_CACHE_RECORD_SIZE);
+        const view = new DataView(file);
+        for (let i = 0; i < EVAL_CACHE_MAGIC.length; i++) {
+            view.setUint8(i, EVAL_CACHE_MAGIC.charCodeAt(i));
+        }
+        view.setUint16(0x08, EVAL_CACHE_FORMAT_VERSION, true);
+        view.setUint16(0x0a, EVAL_CACHE_BOARD_SIZE, true);
+        view.setUint16(0x0c, EVAL_CACHE_POLICY_SIZE, true);
+        view.setUint16(0x0e, 1, true);
+        view.setUint32(0x10, EVAL_CACHE_RECORD_SIZE, true);
+        for (let i = 0; i < hash.length; i++) {
+            view.setUint8(EVAL_CACHE_HEADER_MODEL_HASH_OFFSET + i, hash[i]);
+        }
+        const parsed = evalCacheParseFile(file, hash, 2);
+        check(parsed.length === 1
+                && parsed[0].key === makeBoard([]).GetEvalCacheKey()
+                && parsed[0].evaluation.logits.length === 225
+                && parsed[0].evaluation.value === 0,
+            'binary eval-cache v1 record parses correctly');
+
+        const wrongHash = hash.slice();
+        wrongHash[0] ^= 0xff;
+        let rejectedMismatch = false;
+        try {
+            evalCacheParseFile(file, wrongHash, 2);
+        } catch (_) {
+            rejectedMismatch = true;
+        }
+        check(rejectedMismatch, 'binary eval cache rejects a different model hash');
+    }
+
     // Verify real LRU promotion: after A,B,A,C, B must be the entry evicted.
     {
         let runs = 0;
@@ -130,6 +165,48 @@ async function runTests(ep) {
         const reset = cachePlayer.getEvalCacheStats();
         check(reset.size === 0 && reset.hits === 0 && reset.misses === 0,
             'new-game reset clears eval cache and statistics');
+    }
+
+    // A new game restores server entries in their original oldest-to-newest
+    // order instead of retaining dynamic entries from the previous game.
+    {
+        let runs = 0;
+        const seededPlayer = new OnnxAIPlayer('fake', 1.0, 2);
+        seededPlayer.session = {
+            run: async () => {
+                runs++;
+                return {
+                    policy_logits: { data: new Float32Array(225).fill(9) },
+                    value: { data: new Float32Array([0.9]) },
+                };
+            },
+        };
+        const a = makeBoard([]);
+        const b = makeBoard([[7,7]]);
+        const c = makeBoard([[8,8]]);
+        const seedEvalA = {
+            logits: new Float32Array(225).fill(1),
+            value: 0.1,
+        };
+        const seedEvalB = {
+            logits: new Float32Array(225).fill(2),
+            value: 0.2,
+        };
+        seededPlayer.setEvalCacheSeed([
+            { key: a.GetEvalCacheKey(), evaluation: seedEvalA },
+            { key: b.GetEvalCacheKey(), evaluation: seedEvalB },
+        ]);
+        await seededPlayer.evaluate(a); // hit promotes A; B is now oldest
+        await seededPlayer.evaluate(c); // miss evicts B
+        check(runs === 1 && seededPlayer.getEvalCacheStats().seedEntries === 2,
+            'server seed participates in the runtime LRU');
+        seededPlayer.resetEvalCache();
+        const restored = seededPlayer.getEvalCacheStats();
+        const restoredB = await seededPlayer.evaluate(b);
+        check(restored.size === 2 && restored.hits === 0 && restored.misses === 0,
+            'new-game reset restores server seed and clears statistics');
+        check(runs === 1 && restoredB.value === seedEvalB.value,
+            'restored server entry avoids ONNX inference');
     }
 
     log(`Creating ${ep} session...`);

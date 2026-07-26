@@ -16,6 +16,7 @@ class OnnxAIPlayer {
         this.session = null;
         this.evalCacheMaxEntries = evalCacheMaxEntries;
         this.evalCache = evalCacheMaxEntries > 0 ? new Map() : null;
+        this.evalCacheSeed = [];
         this.evalCacheHits = 0;
         this.evalCacheMisses = 0;
         this.evalCacheEvictions = 0;
@@ -84,11 +85,37 @@ class OnnxAIPlayer {
     }
 
     /**
+     * Install the server-provided opening cache in LRU order (oldest first).
+     * The entries are immutable seed data and are restored for every new game.
+     * @param {Array<Object>} entries
+     */
+    setEvalCacheSeed(entries) {
+        if (this.evalCache === null) {
+            if (entries.length !== 0) {
+                throw new Error('Cannot seed a disabled evaluation cache');
+            }
+            return;
+        }
+        if (entries.length > this.evalCacheMaxEntries) {
+            throw new Error(
+                `Eval cache seed has ${entries.length} entries; `
+                + `capacity is ${this.evalCacheMaxEntries}`);
+        }
+        this.evalCacheSeed = entries.slice();
+        this.resetEvalCache();
+    }
+
+    /**
      * Start a new per-game cache lifetime. The player and its ORT session stay
-     * alive; only position evaluations and their statistics are discarded.
+     * alive; the server seed is restored and runtime statistics are cleared.
      */
     resetEvalCache() {
-        if (this.evalCache !== null) this.evalCache.clear();
+        if (this.evalCache !== null) {
+            this.evalCache.clear();
+            for (const entry of this.evalCacheSeed) {
+                this.evalCache.set(entry.key, entry.evaluation);
+            }
+        }
         this.evalCacheHits = 0;
         this.evalCacheMisses = 0;
         this.evalCacheEvictions = 0;
@@ -105,6 +132,7 @@ class OnnxAIPlayer {
             evictions: this.evalCacheEvictions,
             size: this.evalCache === null ? 0 : this.evalCache.size,
             maxEntries: this.evalCacheMaxEntries,
+            seedEntries: this.evalCacheSeed.length,
         };
     }
 

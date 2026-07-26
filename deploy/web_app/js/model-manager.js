@@ -24,6 +24,7 @@ class ModelManager {
             // Same model as curtain; played with MCTS instead of raw policy.
             melody: {
                 path: 'models/curtain.onnx',
+                evalCachePath: 'models/melody-eval-cache.bin',
             }
         };
 
@@ -35,6 +36,9 @@ class ModelManager {
 
         // Melody-difficulty state, filled by fetchMelodyModel()/probeMelody().
         this.melodyModelBytes = null;
+        this.melodyEvalCacheDownload = null;
+        this.melodyEvalCacheSeedPromise = null;
+        this.melodyEvalCacheSeed = [];
         this.melodyPlayer = null;
         this.melodyProbe = null; // {ep, medianMs, meanMs, wasmMeanMs, threads}
     }
@@ -104,9 +108,56 @@ class ModelManager {
      * @param {function} onProgress - Called with fraction in [0, 1]
      */
     async fetchMelodyModel(onProgress) {
+        // Start the optional seed-cache download immediately. Converting a
+        // rejection into data avoids an unhandled rejection while the larger
+        // model download is still in progress.
+        if (!this.melodyEvalCacheDownload && !this.melodyEvalCacheSeedPromise) {
+            this.melodyEvalCacheDownload =
+                evalCacheFetchFile(this.models.melody.evalCachePath).then(
+                    file => ({ file, error: null }),
+                    error => ({ file: null, error }),
+                );
+        }
+
         if (!this.melodyModelBytes) {
             this.melodyModelBytes =
                 await epProbeFetchModel(this.models.melody.path, onProgress);
+        }
+
+        if (!this.melodyEvalCacheSeedPromise) {
+            this.melodyEvalCacheSeedPromise = this._loadMelodyEvalCacheSeed();
+        }
+        this.melodyEvalCacheSeed = await this.melodyEvalCacheSeedPromise;
+    }
+
+    /**
+     * Validate the optional server seed against the exact downloaded model.
+     * Every failure safely degrades to an empty per-game LRU.
+     * @returns {Promise<Array<Object>>}
+     */
+    async _loadMelodyEvalCacheSeed() {
+        const download = await this.melodyEvalCacheDownload;
+        // Parsing copies every record into compact typed arrays; do not retain
+        // the complete downloaded file for the rest of the page lifetime.
+        this.melodyEvalCacheDownload = null;
+        if (download.error) {
+            console.warn('Melody eval cache unavailable; continuing without seed:',
+                download.error);
+            return [];
+        }
+
+        try {
+            const modelHash = await evalCacheModelSha256(this.melodyModelBytes);
+            const entries = evalCacheParseFile(
+                download.file,
+                modelHash,
+                MCTS_EVAL_CACHE_MAX_ENTRIES,
+            );
+            console.log(`Melody eval cache: loaded ${entries.length} server entries`);
+            return entries;
+        } catch (e) {
+            console.warn('Melody eval cache invalid; continuing without seed:', e);
+            return [];
         }
     }
 
@@ -192,6 +243,7 @@ class ModelManager {
             MCTS_EVAL_CACHE_MAX_ENTRIES,
         );
         player.session = probe.session;
+        player.setEvalCacheSeed(this.melodyEvalCacheSeed);
 
         this.melodyPlayer = player;
         this.melodyProbe = {

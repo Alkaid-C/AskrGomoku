@@ -633,7 +633,7 @@ h1 {
 
 .credit a {
     color: #666;
-    text-decoration: none;
+    text-decoration: underline;
     transition: color 0.2s ease;
 }
 

@@ -10,6 +10,7 @@ The frontend (HTML/CSS/JS) is fully AI-generated with no human review. The user 
 - `web_app/js/i18n.js` — Chinese/English localization. `t(key)` lookup, `tFormat(key, params)` for `{placeholder}` substitution, language stored in `localStorage.gomoku-lang`.
 - `web_app/js/gomoku-board.js` — Board state, move execution, win detection, legal move mask.
 - `web_app/js/mcts.js` — `MCTSSearch`: JS port of the training MCTS (melody difficulty).
+- `web_app/js/eval-cache.js` — Binary Melody eval-cache format, strict parser, ONNX SHA-256 binding, and optional cache-file download.
 - `web_app/js/ep-probe.js` — Execution-provider probe + ORT env setup + localStorage cache.
 - `web_app/js/ep-probe-worker.js` — Dedicated worker running the WebGPU probe so it can be hard-killed (`worker.terminate()`).
 - `web_app/js/model-manager.js` — Difficulty → model mapping; dial/cello/curtain session loading; melody download (`fetchMelodyModel`, bytes kept in memory so a probe re-run never re-downloads) and probe orchestration (`probeMelody`; caches the melody player across games).
@@ -54,6 +55,43 @@ Port-fidelity points (silently wrong if missed; verified against Python — see 
 - Move sampled from `visits ** (1/MCTS_ACTION_TEMPERATURE)`, renormalized — same as stage-2 self-play (`self_play.py`); `rootQ` = visit-weighted mean child Q.
 
 Search runs on the main thread: each `session.run` await yields to the event loop, and tree operations are microseconds.
+
+## Melody Eval Cache (`js/eval-cache.js`)
+
+`models/melody-eval-cache.bin` is an optional server-provided seed for the
+in-memory exact-position LRU. It downloads in parallel with the Melody model,
+and any download, model-hash, or format failure degrades to an empty cache
+without preventing play. Records are inserted oldest-to-newest. Dynamic
+evaluations replace old seed entries during a game; a new game restores the
+original seed, while Undo keeps the current LRU.
+
+The fixed v1 format is little-endian. Its 64-byte header is:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| `0x00` | `char[8]` | ASCII magic `GMKECACH` |
+| `0x08` | `uint16` | Format version, `1` |
+| `0x0a` | `uint16` | Board size, `15` |
+| `0x0c` | `uint16` | Policy size, `225` |
+| `0x0e` | `uint16` | Entry count |
+| `0x10` | `uint32` | Record size, `964` |
+| `0x14` | `uint32` | Flags, `0` |
+| `0x18` | `byte[32]` | SHA-256 of the complete ONNX file |
+| `0x38` | `byte[8]` | Reserved, all zero |
+
+Each 964-byte record is:
+
+| Offset | Type | Meaning |
+|---:|---|---|
+| `0x000` | `uint16[15]` | Absolute black row masks; bit `col` is one stone |
+| `0x01e` | `uint16[15]` | Absolute white row masks |
+| `0x03c` | `float32[225]` | Raw policy logits in row-major action order |
+| `0x3c0` | `float32` | Raw value from the implied side-to-move perspective |
+
+The side to move is implied by black/white stone counts and is not stored.
+There is no D4 canonicalization. A 2048-record file is exactly 1,974,336
+bytes. The loader rejects the whole file on inconsistent metadata or length,
+an ONNX hash mismatch, invalid/duplicate positions, or non-finite outputs.
 
 ## EP Probe (`js/ep-probe.js`)
 
