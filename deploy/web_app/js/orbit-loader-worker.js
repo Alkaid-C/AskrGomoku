@@ -10,7 +10,6 @@ const instances = new Map();
 let timerId = null;
 
 function draw(instance, frameIndex) {
-    const started = performance.now();
     const elapsedSeconds = frameIndex / instance.fps;
     OrbitPhysics.drawFrame(
         instance.ctx,
@@ -19,19 +18,6 @@ function draw(instance, frameIndex) {
         instance.cssSize,
         instance.system,
         elapsedSeconds);
-    instance.drawTimeMs += performance.now() - started;
-    instance.drawCount++;
-
-    if (!instance.reportedMetrics && instance.drawCount >= instance.fps) {
-        instance.reportedMetrics = true;
-        self.postMessage({
-            type: 'metrics',
-            id: instance.id,
-            fps: instance.fps,
-            cssSize: instance.cssSize,
-            meanDrawMs: instance.drawTimeMs / instance.drawCount,
-        });
-    }
 }
 
 function schedule() {
@@ -82,9 +68,6 @@ self.onmessage = (event) => {
                 running: false,
                 startTime: 0,
                 lastFrameIndex: -1,
-                drawTimeMs: 0,
-                drawCount: 0,
-                reportedMetrics: false,
             });
             return;
         }
@@ -96,9 +79,6 @@ self.onmessage = (event) => {
             instance.running = true;
             instance.startTime = performance.now();
             instance.lastFrameIndex = -1;
-            instance.drawTimeMs = 0;
-            instance.drawCount = 0;
-            instance.reportedMetrics = false;
             schedule();
         } else if (message.type === 'stop') {
             instance.running = false;

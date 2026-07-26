@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="gomoku-asset-base" content="">
     <title>Askr五子棋</title>
     <link rel="stylesheet" href="styles.css?v=20260726-orbit-retune">
 </head>
@@ -109,7 +110,7 @@
         <!-- End Actions (replaces move-confirm when game ends) -->
         <div id="end-actions" class="end-actions" style="display: none;">
             <button id="btn-end-new-game" class="btn-confirm" data-i18n="new_game">新游戏</button>
-            <button id="btn-share" class="btn-cancel" data-i18n="generate_record">生成棋谱</button>
+            <button id="btn-share" class="btn-cancel" data-i18n="generate_record">生成对局截图</button>
         </div>
 
         <p class="privacy-note" data-i18n="privacy_note">所有运算均在本地完成，我们不会收集任何使用数据。</p>
@@ -165,6 +166,9 @@
     <!-- ONNX Runtime Web (self-hosted, WebGPU-capable bundle; wasm binaries
          load from vendor/ via ort.env.wasm.wasmPaths) -->
     <script src="vendor/ort.webgpu.min.js"></script>
+
+    <!-- Asset URL resolver (release builds point it at an immutable directory) -->
+    <script src="js/asset-paths.js"></script>
 
     <!-- i18n (must load before other modules) -->
     <script src="js/i18n.js"></script>

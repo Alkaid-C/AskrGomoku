@@ -1,0 +1,6 @@
+# Development-only pages and the local vendor reconstruction helper must
+# never be part of a production Static Assets upload.
+bench.html
+test.html
+fetch_vendor.sh
+

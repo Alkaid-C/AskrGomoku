@@ -1,0 +1,7 @@
+/cloudflare_dist/
+
+# The repository root uses a whitelist-style ignore file. Keep Cloudflare's
+# extensionless control files and JSONC configuration visible to Git here.
+!wrangler.jsonc
+!web_app/.assetsignore
+

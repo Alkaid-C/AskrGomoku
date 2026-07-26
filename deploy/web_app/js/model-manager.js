@@ -10,21 +10,21 @@ class ModelManager {
     constructor() {
         this.models = {
             dial: {
-                path: 'models/dial.onnx',
+                path: gomokuAssetUrl('models/dial.onnx'),
                 temperature: 1.0,
             },
             cello: {
-                path: 'models/cello.onnx',
+                path: gomokuAssetUrl('models/cello.onnx'),
                 temperature: 1.0,
             },
             curtain: {
-                path: 'models/curtain.onnx',
+                path: gomokuAssetUrl('models/curtain.onnx'),
                 temperature: 0.5,
             },
             // Same model as curtain; played with MCTS instead of raw policy.
             melody: {
-                path: 'models/curtain.onnx',
-                evalCachePath: 'models/melody-eval-cache.bin',
+                path: gomokuAssetUrl('models/curtain.onnx'),
+                evalCachePath: gomokuAssetUrl('models/melody-eval-cache.bin'),
             }
         };
 

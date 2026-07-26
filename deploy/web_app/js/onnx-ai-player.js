@@ -17,9 +17,11 @@ class OnnxAIPlayer {
         this.evalCacheMaxEntries = evalCacheMaxEntries;
         this.evalCache = evalCacheMaxEntries > 0 ? new Map() : null;
         this.evalCacheSeed = [];
-        this.evalCacheHits = 0;
-        this.evalCacheMisses = 0;
-        this.evalCacheEvictions = 0;
+        if (globalThis.GOMOKU_DEBUG) {
+            this.evalCacheHits = 0;
+            this.evalCacheMisses = 0;
+            this.evalCacheEvictions = 0;
+        }
     }
 
     /**
@@ -55,10 +57,10 @@ class OnnxAIPlayer {
                 // becomes the most-recently-used entry.
                 this.evalCache.delete(cacheKey);
                 this.evalCache.set(cacheKey, cached);
-                this.evalCacheHits++;
+                if (globalThis.GOMOKU_DEBUG) this.evalCacheHits++;
                 return cached;
             }
-            this.evalCacheMisses++;
+            if (globalThis.GOMOKU_DEBUG) this.evalCacheMisses++;
         }
 
         const [c0, c1] = board.GetBoardState();
@@ -78,7 +80,7 @@ class OnnxAIPlayer {
             if (this.evalCache.size > this.evalCacheMaxEntries) {
                 const oldestKey = this.evalCache.keys().next().value;
                 this.evalCache.delete(oldestKey);
-                this.evalCacheEvictions++;
+                if (globalThis.GOMOKU_DEBUG) this.evalCacheEvictions++;
             }
         }
         return evaluation;
@@ -116,24 +118,11 @@ class OnnxAIPlayer {
                 this.evalCache.set(entry.key, entry.evaluation);
             }
         }
-        this.evalCacheHits = 0;
-        this.evalCacheMisses = 0;
-        this.evalCacheEvictions = 0;
-    }
-
-    /**
-     * @returns {Object} Snapshot of cumulative statistics for the current game
-     */
-    getEvalCacheStats() {
-        return {
-            enabled: this.evalCache !== null,
-            hits: this.evalCacheHits,
-            misses: this.evalCacheMisses,
-            evictions: this.evalCacheEvictions,
-            size: this.evalCache === null ? 0 : this.evalCache.size,
-            maxEntries: this.evalCacheMaxEntries,
-            seedEntries: this.evalCacheSeed.length,
-        };
+        if (globalThis.GOMOKU_DEBUG) {
+            this.evalCacheHits = 0;
+            this.evalCacheMisses = 0;
+            this.evalCacheEvictions = 0;
+        }
     }
 
     /**
@@ -171,22 +160,26 @@ class OnnxAIPlayer {
      */
     async getMoveWithMCTS(board, numSims) {
         const search = new MCTSSearch(this);
-        const cacheBefore = this.getEvalCacheStats();
-        const startTime = performance.now();
+        const cacheBefore = globalThis.GOMOKU_DEBUG
+            ? this.getEvalCacheStats() : null;
+        const startTime = globalThis.GOMOKU_DEBUG
+            ? performance.now() : 0;
         const { row, col, rootQ } = await search.search(board, numSims);
-        const elapsed = (performance.now() - startTime) / 1000;
-        console.log(`MCTS: ${numSims} sims in ${elapsed.toFixed(2)}s, `
-            + `move (${row}, ${col}), rootQ = ${rootQ.toFixed(4)}`);
-        if (cacheBefore.enabled) {
-            const cacheAfter = this.getEvalCacheStats();
-            const hits = cacheAfter.hits - cacheBefore.hits;
-            const misses = cacheAfter.misses - cacheBefore.misses;
-            const evictions = cacheAfter.evictions - cacheBefore.evictions;
-            const lookups = hits + misses;
-            const hitRate = lookups > 0 ? hits / lookups : 0;
-            console.log(`MCTS eval cache: ${hits}/${lookups} hits `
-                + `(${(100 * hitRate).toFixed(1)}%), ${misses} ONNX runs, `
-                + `${evictions} evictions, size ${cacheAfter.size}/${cacheAfter.maxEntries}`);
+        if (globalThis.GOMOKU_DEBUG) {
+            const elapsed = (performance.now() - startTime) / 1000;
+            console.log(`MCTS: ${numSims} sims in ${elapsed.toFixed(2)}s, `
+                + `move (${row}, ${col}), rootQ = ${rootQ.toFixed(4)}`);
+            if (cacheBefore.enabled) {
+                const cacheAfter = this.getEvalCacheStats();
+                const hits = cacheAfter.hits - cacheBefore.hits;
+                const misses = cacheAfter.misses - cacheBefore.misses;
+                const evictions = cacheAfter.evictions - cacheBefore.evictions;
+                const lookups = hits + misses;
+                const hitRate = lookups > 0 ? hits / lookups : 0;
+                console.log(`MCTS eval cache: ${hits}/${lookups} hits `
+                    + `(${(100 * hitRate).toFixed(1)}%), ${misses} ONNX runs, `
+                    + `${evictions} evictions, size ${cacheAfter.size}/${cacheAfter.maxEntries}`);
+            }
         }
         return [row, col, rootQ];
     }
@@ -294,4 +287,22 @@ class OnnxAIPlayer {
 
         throw new Error(`Invalid probability distribution: cumulative sum ${cumsum}`);
     }
+}
+
+if (globalThis.GOMOKU_DEBUG) {
+    /**
+     * Development-only cache statistics used by test.html.
+     * @returns {Object} Snapshot of cumulative statistics for the current game
+     */
+    OnnxAIPlayer.prototype.getEvalCacheStats = function() {
+        return {
+            enabled: this.evalCache !== null,
+            hits: this.evalCacheHits,
+            misses: this.evalCacheMisses,
+            evictions: this.evalCacheEvictions,
+            size: this.evalCache === null ? 0 : this.evalCache.size,
+            maxEntries: this.evalCacheMaxEntries,
+            seedEntries: this.evalCacheSeed.length,
+        };
+    };
 }

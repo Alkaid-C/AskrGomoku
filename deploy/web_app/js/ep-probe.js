@@ -35,7 +35,7 @@ function epProbeEnvironment() {
  * Firefox's module specifier resolution).
  */
 function epProbeConfigureOrtEnv() {
-    ort.env.wasm.wasmPaths = new URL('vendor/', location.href).href;
+    ort.env.wasm.wasmPaths = gomokuAssetUrl('vendor/');
     const env = epProbeEnvironment();
     // Multithreaded WASM needs cross-origin isolation (COOP/COEP headers).
     // More than 4 threads never helped in benchmarks (scheduling overhead).
@@ -54,7 +54,15 @@ async function epProbeFetchModel(url, onProgress) {
     if (!resp.ok) {
         throw new Error(`Model download failed: HTTP ${resp.status} for ${url}`);
     }
-    const total = parseInt(resp.headers.get('Content-Length') || '0', 10);
+    // Cloudflare may remove Content-Length when it compresses the ONNX
+    // response. Release headers provide the decoded size explicitly so the
+    // progress UI remains accurate after transparent decompression.
+    const total = parseInt(
+        resp.headers.get('X-Uncompressed-Length')
+        || resp.headers.get('Content-Length')
+        || '0',
+        10,
+    );
     if (!resp.body || !total) {
         const buf = await resp.arrayBuffer();
         if (onProgress) onProgress(1);
@@ -178,7 +186,7 @@ function _epProbeHardKilled(ep, modelBytes, onPhase) {
     return new Promise((resolve, reject) => {
         let worker;
         try {
-            worker = new Worker('js/ep-probe-worker.js');
+            worker = new Worker(gomokuAssetUrl('js/ep-probe-worker.js'));
         } catch (e) {
             reject(new Error('worker unavailable: ' + e));
             return;
@@ -224,8 +232,8 @@ function _epProbeHardKilled(ep, modelBytes, onPhase) {
         };
         armInactivity();
         worker.postMessage({
-            ortUrl: new URL('vendor/ort.webgpu.min.js', location.href).href,
-            probeUrl: new URL('js/ep-probe.js', location.href).href,
+            ortUrl: gomokuAssetUrl('vendor/ort.webgpu.min.js'),
+            probeUrl: gomokuAssetUrl('js/ep-probe.js'),
             wasmPaths: ort.env.wasm.wasmPaths,
             numThreads: ort.env.wasm.numThreads,
             ep: ep,

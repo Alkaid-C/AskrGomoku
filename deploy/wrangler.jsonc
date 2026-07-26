@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "gomoku",
+  "account_id": "9b4c3c29518e8a6f48906d74c2aa5c77",
+  "compatibility_date": "2026-07-26",
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./cloudflare_dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none"
+  },
+  "routes": [
+    {
+      "pattern": "gomoku.sance.xyz/*",
+      "zone_id": "a8426ce26f257ffc88f665cc1fe26678"
+    }
+  ]
+}

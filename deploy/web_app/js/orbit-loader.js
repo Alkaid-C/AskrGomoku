@@ -98,15 +98,11 @@ function getOrbitWorker() {
 
     try {
         _orbitWorker = new Worker(
-            'js/orbit-loader-worker.js?v=20260726-orbit-retune');
+            gomokuAssetUrl('js/orbit-loader-worker.js'));
         _orbitWorker.onmessage = (event) => {
             const message = event.data;
             const state = _orbitInstances.get(message.id);
-            if (message.type === 'metrics' && state) {
-                console.log(
-                    `Orbit worker: ${message.cssSize}px at ${message.fps} FPS, `
-                    + `${message.meanDrawMs.toFixed(3)} ms mean draw time`);
-            } else if (message.type === 'error' && state) {
+            if (message.type === 'error' && state) {
                 fallBackInstance(state, message.message);
             }
         };
