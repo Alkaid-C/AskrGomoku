@@ -21,6 +21,11 @@
 !report.md
 !README.md
 
+# project tour: teaching guide, design rationale, concept dependency graph
+!educator.md
+!design_rationale.md
+!concept_list.md
+
 # commonly ignored file type: binary data (*.pt, *.npz), training log (*.log, *.csv), internal/temporary documents (*.md).
 
 # external Rapfi engine — not part of our repo (excluding the dir stops git

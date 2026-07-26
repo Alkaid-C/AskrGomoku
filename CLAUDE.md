@@ -2,6 +2,18 @@
 
 Research codebase for training Gomoku (15×15) policy/value networks via self-play reinforcement learning, with browser deployment.
 
+## Explaining This Project
+
+**If you are asked to introduce, explain, or give a tour of this project, read `educator.md` first and follow it.** It defines the role, the pacing rules, and the topic order — do not improvise a tour without it.
+
+The three tour documents form three layers:
+
+- `educator.md` — *how to teach*: role, knowledge probing, pacing, topic ordering.
+- `concept_list.md` — *what each item is*: concept dependency graph, one-line takeaways, explicit prerequisites.
+- `design_rationale.md` — *why each non-obvious choice was made*. Rationale only; it deliberately contains no mechanism and no "what it is".
+
+Mechanism lives in the per-directory `CLAUDE.md` files listed below; below that, in the code.
+
 ## Directory Structure
 
 - **`main/`** — Primary training pipeline with an advanced model. Entry point: `main.py`.
@@ -61,7 +73,7 @@ See `mcts/CLAUDE.md` for the full description. Brief outline:
 
 ### Model
 
-- **Input**: `[batch, 3, 15, 15]` float32 — channel 0 = current player's stones, channel 1 = opponent's stones, channel 2 = board mask (all 1s). The current/opponent perspective flips each move (the board is always from the side-to-move's point of view).
+- **Input**: `[batch, 3, 15, 15]` float32 — channel 0 = current player's stones, channel 1 = opponent's stones, channel 2 = board mask (all 1s — this constant plane is what lets the convolutions tell an empty on-board square `(0,0,1)` from the zero padding outside the board `(0,0,0)`). The current/opponent perspective flips each move (the board is always from the side-to-move's point of view).
 - **Output**: policy logits `[batch, 225]` (flat 15×15) and scalar value `[batch, 1]` (tanh-bounded, from current player's perspective).
 - **vanilla** (`vanilla/model.py`): ResNet-like — single 3×3 stem, `N_BLOCKS` plain residual blocks, conv policy head, flatten-FC value head.
 - **main** (`main/model.py`): Multi-scale dilated stem (standard + directional convolutions), `N_SHARED_BLOCKS` shared residual blocks + `N_DUAL_SE_BLOCKS` dual-SE blocks (policy/value streams diverge via separate norms and SE), dual-attention policy head with relative positional bias, log-mean-exp pooling value head.
