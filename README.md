@@ -2,7 +2,9 @@
 
 A Gomoku AI.
 
-Read `CLAUDE.md` for details, or send the prompt below to an AI assistant that can browse GitHub:
+Play with it on the web: [gomoku.sance.xyz](https://gomoku.sance.xyz/)
+
+For details, read `CLAUDE.md` or send the prompt below to an AI assistant that can browse GitHub:
 
 ```
 Please give me a guided tour of this GitHub repository:
