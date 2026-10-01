@@ -53,6 +53,23 @@ def _require_cache_policy(headers: HTTPMessage, immutable: bool) -> None:
         )
 
 
+def _request_propagated(
+    url: str,
+    *,
+    method: str = "GET",
+    headers: Mapping[str, str] | None = None,
+) -> tuple[int, HTTPMessage, bytes]:
+    """Retry a transient asset 404 while a new Worker version propagates."""
+    for attempt in range(6):
+        try:
+            return _request(url, method=method, headers=headers)
+        except urllib.error.HTTPError as error:
+            if error.code != 404 or attempt == 5:
+                raise
+        time.sleep(2)
+    raise RuntimeError(f"Asset did not propagate: {url}")
+
+
 def _expect_not_found(url: str) -> None:
     try:
         _request(url)
@@ -108,21 +125,21 @@ def verify(base_url: str) -> None:
         asset_base + "vendor/ort-wasm-simd-threaded.asyncify.wasm",
     ]
     for path in immutable_paths:
-        status, headers, _ = _request(base_url + path, method="HEAD")
+        status, headers, _ = _request_propagated(base_url + path, method="HEAD")
         if status != 200:
             raise RuntimeError(f"{path} returned HTTP {status}")
         _require_cache_policy(headers, immutable=True)
         _require_header(headers, "Cross-Origin-Resource-Policy", "same-origin")
 
     wasm_url = base_url + asset_base + "vendor/ort-wasm-simd-threaded.asyncify.wasm"
-    _, wasm_headers, _ = _request(wasm_url, method="HEAD")
+    _, wasm_headers, _ = _request_propagated(wasm_url, method="HEAD")
     content_type = (wasm_headers.get("Content-Type") or "").split(";", 1)[0]
     if content_type != "application/wasm":
         raise RuntimeError(f"Unexpected WASM Content-Type: {content_type!r}")
 
     for name, expected_size in EXPECTED_MODEL_SIZES.items():
         model_url = base_url + asset_base + "models/" + name
-        _, headers, _ = _request(
+        _, headers, _ = _request_propagated(
             model_url,
             method="HEAD",
             headers={"Accept-Encoding": "gzip"},

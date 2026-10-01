@@ -86,11 +86,17 @@ Execution-provider notes (measured 2026-07, ORT 1.27):
 ## Export Command Reference
 
 ```bash
-cd deploy && python3 export_onnx.py --input checkpoint.pt --output model.onnx
+cd deploy && python3 export_onnx.py --input checkpoint.pt \
+    --model-file ../main/model.py --output model.onnx
+
+# Export a mini checkpoint
+python3 export_onnx.py --input ../mini/run/final_policy.pt \
+    --model-file ../mini/model.py --output model.onnx
 ```
 
-The exporter loads `checkpoint['model_state_dict']` into `main/model.py`'s
-`GomokuPolicyNet`, **decomposes every `nn.GroupNorm` into primitive ops**
+The exporter loads `checkpoint['model_state_dict']` into the
+`GomokuPolicyNet` defined by `--model-file`, **decomposes every
+`nn.GroupNorm` into primitive ops**
 (onnxruntime-web's WebGPU EP has no `GroupNormalization` kernel; undecomposed
 graphs shatter into GPU/CPU partitions and run ~25× slower on WebGPU — do not
 remove this step), wraps it for the interface above, re-saves as a single

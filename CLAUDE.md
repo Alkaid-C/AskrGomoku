@@ -42,7 +42,7 @@ python3 main.py stage2        <working_dir>
 python3 play_web.py                   # Flask server at http://localhost:5000
 
 # ONNX export (from deploy/)
-python3 export_onnx.py --input checkpoint.pt --output model.onnx
+python3 export_onnx.py --input checkpoint.pt --model-file ../main/model.py --output model.onnx
 
 # Lint and type check (run after any code change)
 ruff check

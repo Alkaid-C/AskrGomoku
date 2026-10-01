@@ -5,13 +5,14 @@ ONNX Export Script for Gomoku Model
 Converts PyTorch checkpoint (.pt) to ONNX format optimized for web deployment.
 
 Usage:
-    python3 export_onnx.py --input runs/exp1/checkpoint_update_1000.pt --output model.onnx
+    python3 export_onnx.py --input runs/exp1/checkpoint_update_1000.pt --model-file ../main/model.py --output model.onnx
 
 Requirements:
     pip install torch onnx onnxruntime
 """
 
 import argparse
+import runpy
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,6 @@ import onnx
 import onnxruntime as ort
 import torch
 import torch.nn as nn
-from model import GomokuPolicyNet
 
 
 class DecomposedGroupNorm(nn.Module):
@@ -74,7 +74,7 @@ class GomokuModelForExport(nn.Module):
     Temperature and softmax are handled on the JS side after masking illegal moves,
     avoiding precision issues from softmaxing over illegal positions with large logits.
     """
-    def __init__(self, base_model: GomokuPolicyNet):
+    def __init__(self, base_model: nn.Module):
         super().__init__()
         self.base_model = base_model
 
@@ -106,11 +106,16 @@ class GomokuModelForExport(nn.Module):
         return logits_flat, value_scalar
 
 
-def load_checkpoint(checkpoint_path: str) -> GomokuPolicyNet:
+def load_checkpoint(checkpoint_path: str, model_file: str) -> nn.Module:
     """Load model from PyTorch checkpoint."""
     print(f"Loading checkpoint: {checkpoint_path}")
+    print(f"Loading architecture: {model_file}")
 
-    model = GomokuPolicyNet()
+    namespace = runpy.run_path(str(Path(model_file).resolve()))
+    model_class = namespace.get("GomokuPolicyNet")
+    if not isinstance(model_class, type) or not issubclass(model_class, nn.Module):
+        raise TypeError(f"{model_file} does not define an nn.Module GomokuPolicyNet")
+    model = model_class()
     checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
@@ -190,13 +195,18 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Example:
-    python3 export_onnx.py --input runs/exp1/checkpoint_update_1000.pt --output model.onnx
+    python3 export_onnx.py --input runs/exp1/checkpoint_update_1000.pt --model-file ../main/model.py --output model.onnx
 
 Temperature and softmax are applied on the JS side after masking illegal moves.
         """
     )
     parser.add_argument("--input", required=True, help="Input PyTorch checkpoint (.pt)")
     parser.add_argument("--output", required=True, help="Output ONNX file (.onnx)")
+    parser.add_argument(
+        "--model-file",
+        required=True,
+        help="Python file defining GomokuPolicyNet",
+    )
 
     args = parser.parse_args()
 
@@ -207,7 +217,7 @@ Temperature and softmax are applied on the JS side after masking illegal moves.
         return
 
     # Load model
-    model = load_checkpoint(args.input)
+    model = load_checkpoint(args.input, args.model_file)
 
     # Export to ONNX
     wrapped_model, dummy_input = export_to_onnx(model, args.output)
