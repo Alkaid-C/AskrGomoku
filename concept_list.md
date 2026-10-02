@@ -6,7 +6,7 @@
 |---|---|---|---|---|
 | G1 | concept | Basic Rules | — | 15×15 board, black goes first, 5 in a row along any of 4 directions (horizontal, vertical, diagonal, anti-diagonal) wins; this project uses no-restriction rules |
 | G2 | concept | Zero-Sum Game | — | Definition; knowing one side's evaluation determines both |
-| G3 | concept | Basic Tactics | G1 | Open three, open four, half-open four; threats are strictly directional; a single threat can always be blocked; fork (two simultaneous must-block threats) is the only way to force a win |
+| G3 | concept | Basic Tactics | G1 | Open three, open four, half-open four; threats are strictly directional; a single threat can always be blocked (an open four already has two winning points — it only arises from an open three that went unblocked, through a blunder or because of another threat); fork (two simultaneous must-block threats) is the only way to force a win |
 | G4 | concept | First-Player Advantage | G1 | Human experts playing black achieve 100% win rate; structural property of the game, not a skill gap |
 | G5 | concept | Renju Opening | G1 | Definition |
 
@@ -15,7 +15,7 @@
 | # | Type | Concept | Prerequisites | Key Takeaway |
 |---|---|---|---|---|
 | N1 | concept | Neural Network | — | A mathematical function with many tunable parameters; training: given input and desired output, adjust parameters to fit; inference: given input and parameters, compute output |
-| N2 | our design | Basic I/O Format (C0, C1, policy) | N1, G4 | Input: C0 = my stones, C1 = opponent's stones, flipped every move; output: probability distribution over legal positions; value and C2 deferred to N10/N14; in design rationale (2.1 Canonical Board Representation) |
+| N2 | our design | Basic I/O Format (C0, C1, policy) | N1, G4 | Input: C0 = my stones, C1 = opponent's stones, flipped every move; output: probability distribution over legal positions; C2 and value deferred to N10/N14; in design rationale (2.1 Canonical Board Representation) |
 | N3 | concept | FC | N1 | Inspired by biological neurons (y = wᵀx + b); defines a hyperplane — a linear classifier (Perceptron) |
 | N4 | concept | Activation | N3 | Activation introduces nonlinearity; projects data into a space where linearly inseparable problems become separable (Cover's theorem intuition) |
 | N5 | concept | MLP | N3, N4 | FC + Activation stacked alternately; theoretically can approximate any continuous function (universal approximation) |
@@ -66,14 +66,14 @@
 | T19 | our design | Divergence-Aware Eviction and Mining | T16, T17, T18 | In design rationale (1.1.1.2 KL-Aware Eviction and Mining) |
 | T20 | concept | Exploration | T5 | Explore (try uncertain moves to discover better strategies) vs exploit (play the current best move); too much exploitation → stuck in local optimum; too much exploration → wasted training |
 | T21 | concept | Entropy | — | Definition; maximum entropy for 225 positions ≈ 5.42 nats |
-| T22 | common practice | Entropy Bonus | T20, T21 | Add a reward for keeping entropy above zero in the loss function; prevents the policy from collapsing to a single deterministic move; maintains exploration capacity |
+| T22 | common practice | Entropy Bonus | T20, T21 | Add a reward for higher policy entropy to the loss function; prevents the policy from collapsing to a single deterministic move; maintains exploration capacity |
 | T23 | our design | Dynamic Entropy Bonus (Reference Entropy) | T22 | In design rationale (1.1.2.1 Entropy Bonus and Reference Entropy) |
 | T24 | our design | Opponent Imitation | T6, T8, G4 | In design rationale (1.1.2.2 Imitation Learning) |
 | T25 | our design | Off-Policy Rollout | T20, T21, T8 | In design rationale (1.1.2.2 OPR) |
 | T26 | concept | Generalization | T1 | Definition; both training data diversity and model design affect how well the model handles novel situations |
 | T27 | common practice | Opening Seed | T6, T26 | Start some games from predefined opening positions instead of empty board; increases diversity of training positions; prevents the model from converging to a single opening repertoire |
 | T28 | our design | Renju Opening Seed | T27, G5 | In design rationale (1.1.3 Renju Opening Seed) |
-| T29 | common practice | 8-Fold Dihedral Augmentation | T26 | The board has 8 symmetries (4 rotations × 2 reflections); each training sample is expanded to 8 equivalent samples; 8× data efficiency and forces the model to learn rotationally invariant features |
+| T29 | common practice | 8-Fold Dihedral Augmentation | T26 | The board has 8 symmetries (4 rotations × 2 reflections); each training sample is expanded to 8 equivalent samples; 8× data efficiency and forces the model to respect the board's symmetries (policy equivariant, value invariant) |
 | T30 | common practice | MCTS (PUCT version) | T4, T10 | Tree search: repeatedly simulate future moves, using the neural network to evaluate leaf positions and guide which branches to explore; after many simulations, the visit distribution is a better decision than raw policy; PUCT formula balances exploiting high-value branches and exploring under-visited ones |
 | T31 | common practice | Knowledge Distillation | T4 | Train a student on a teacher model's outputs instead of ground-truth labels; the teacher's full output distribution carries far more information per sample than a single hard label |
 | T32 | our design | Distilled Warm Start | T30, T31, T6 | In design rationale (1.2.1 Warm Start) |

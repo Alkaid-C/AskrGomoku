@@ -1,10 +1,10 @@
-# 设计意图 — Design Rationale
+# Design Rationale
 
-我们训练了一个五子棋策略 AI 模型（15×15 棋盘，无禁手）。同一个网络结构经过两条训练路线：先是不带搜索的自对弈强化学习，然后是 AlphaZero 式的 MCTS 自对弈训练。第二条路线**不继承**第一条的参数——它用第一条的产物当教师，蒸馏出一个已经会下棋的全新网络作为起点。
+We trained a Gomoku policy AI model (15×15 board, no-restriction rules). The same network architecture went through two training routes: first search-free self-play reinforcement learning, then AlphaZero-style MCTS self-play training. The second route **does not inherit** the first route's parameters — it uses the first route's product as a teacher to distill a brand-new network that already knows how to play, and starts from that.
 
-**这份文件只回答"为什么这么设计"。** 每个条目"是什么"，见 `concept_list.md` 的 Key Takeaway；实现细节（公式、常量取值、代码组织）见各子目录的 `CLAUDE.md`；再往下直接读代码——代码就在仓库里。概念之间的前置依赖关系也在 `concept_list.md`。
+**This file is about "why it was designed this way."** General concepts and common practices are standard knowledge and are not defined anywhere in these documents; their Key Takeaways in `concept_list.md` say only why each one matters in this project. For this project's own designs (rows marked `our design` there), this file also says what the design is, but only as far as the "why" needs it. For implementation details (formulas, constant values, code organization), see each subdirectory's `CLAUDE.md`; below that, read the code directly — it's right here in the repo. Prerequisite relationships between concepts are also in `concept_list.md`.
 
-文中只保留那些**本身构成论据**的具体数值（例如"随机对局平均 109 步"是 Tactical Boost 存在的理由）；其余可调参数一律用常量名指代，实际取值以代码为准。
+Only concrete numbers that **themselves constitute an argument** are kept in the text (e.g., "a random game averages 109 moves" is the reason Tactical Boost exists); everything else is described only qualitatively, and the code is authoritative for actual values.
 
 ---
 
@@ -12,177 +12,177 @@
 
 ### 1.1 Reinforcement Learning Pipeline
 
-> 实现细节：`main/CLAUDE.md`。`vanilla/` 和 `mini/` 除 `model.py` 外的所有 `.py` 都是指向 `main/` 的符号链接，训练配方完全相同。
+> Implementation details: `main/CLAUDE.md`. In `vanilla/` and `mini/`, every `.py` except `model.py` is a symlink to `main/`; the training recipe is identical.
 
 #### 1.1.1 Self-Play Reinforcement Learning
 
-训练棋类 AI 的另一条路径是监督学习——从人类棋谱中学习。但这条路有两个根本局限：(a) 需要海量高质量棋局，人类棋谱难以大规模获取，而且需要标注（哪些是好棋？哪些不是？）；(b) 模仿人类的上限就是人类本身，AI 永远无法超越它的训练数据。自对弈强化学习绕开了这两个问题：模型与自身（或自身的历史版本）对弈来生成无限量的训练数据，不需要任何人类棋谱；胜负结果作为奖励信号，让模型通过试错自行发现超越人类的策略。
+The other path to training a board-game AI is supervised learning — learning from human game records. But that path has two fundamental limitations: (a) it needs a massive number of high-quality games; human game records are hard to obtain at scale, and they need labeling (which moves are good? which aren't?); (b) the ceiling of imitating humans is humans themselves — the AI can never surpass its training data. Self-play reinforcement learning sidesteps both problems: the model plays against itself (or its own past versions) to generate unlimited training data, without any human game records; the game outcome serves as the reward signal, letting the model discover superhuman strategies on its own through trial and error.
 
 ##### 1.1.1.1 Sparse Rewards
 
-五子棋的奖励是极端稀疏的：一局可能持续数十甚至上百步，但只有终局才产生一个奖励信号（赢 +1，输 −1，平 0），中间所有步骤没有任何即时反馈。这意味着一步好棋和一步臭棋在奖励层面完全不可区分，梯度信号的信噪比极低。本节的所有设计，本质上都是在试图从这个稀疏的终局信号中提取更细粒度的、逐步的学习信号。
+Gomoku's reward is extremely sparse: a game may last dozens or even over a hundred moves, but only the end of the game produces a reward signal (win +1, loss −1, draw 0); none of the intermediate steps get any immediate feedback. This means a good move and a bad move are completely indistinguishable at the reward level, and the gradient signal has a very low signal-to-noise ratio. Every design in this section is, at heart, an attempt to extract a finer-grained, per-step learning signal from this sparse terminal signal.
 
 ###### Actor-Critic and Value Baseline
 
-常见设计。奖励稀疏要求我们能逐步评估每一手棋的好坏，而 Actor-Critic 用局面评估的**差分**来间接衡量动作质量。
+Common practice. Sparse rewards require us to be able to evaluate each move step by step, and Actor-Critic measures action quality indirectly through the **difference** between position evaluations.
 
-之所以采用局面差分、而不是直接训练一个网络来评估动作，是因为局面好坏有天然的监督信号——从这个局面出发后续对局的胜率——而单步动作的质量缺乏可直接获取的标签。把"这步棋好不好"转译成"走完之后局面变好了还是变坏了"，问题就落到了有标签的那一侧。
+The reason for using position differences, rather than directly training a network to evaluate actions, is that the quality of a position has a natural supervision signal — the win rate of the games that continue from it — whereas the quality of a single action has no directly obtainable label. Translating "is this move good?" into "did the position get better or worse after playing it?" moves the problem onto the side that has labels.
 
 ---
 
 ###### GAE (Generalized Advantage Estimation)
 
-常见设计。它解决的核心问题是价值网络不准确：单步 TD advantage 完全依赖价值网络对下一个局面的评估，评估有误则信号就是错的。
+Common practice. The core problem it solves is an inaccurate value network: the single-step TD advantage relies entirely on the value network's evaluation of the next position; if that evaluation is wrong, the signal is wrong.
 
-GAE 通过对多步 TD 残差做指数加权平均来缓解这一点，核心假设是**一步棋的影响会在后续局面中逐渐显现**——越往后局势越明朗，价值网络的评估越可靠。λ 控制这个时间跨度：λ 越大越依赖远期信号（偏差低但方差大），越小越依赖近期（方差小但可能错过延迟生效的影响）。
+GAE mitigates this by taking an exponentially weighted average of multi-step TD residuals. Its core assumption is that **a move's impact becomes gradually apparent in subsequent positions** — the further along, the clearer the situation and the more reliable the value network's evaluation. λ controls this time span: larger λ relies more on long-range signals (lower bias but higher variance); smaller λ relies more on near-term signals (lower variance but may miss effects that take hold later).
 
 ---
 
 ###### Baseline Ramp
 
-训练初期 value head 尚未收敛，它的预测本质上是噪声。此时若已经依赖它做 GAE，等于用一个错误的 baseline 去污染梯度信号。
+Early in training the value head has not converged; its predictions are essentially noise. Relying on it for GAE at this point amounts to polluting the gradient signal with a wrong baseline.
 
-所以前期改用对局的真实胜负作为 ground truth，等 value head 基本可靠之后再全面切换到 GAE，中间用一条 cosine 曲线平滑过渡。
+So early on we use the game's actual outcome as ground truth instead, and switch fully to GAE once the value head is basically reliable, with a cosine curve smoothing the transition in between. Below, the position along this transition is written α: α=0 is pure raw return, α=1 is pure GAE.
 
 ---
 
 ###### Value Network Training (λ-return and Value Loss Coefficient)
 
-> 注：Value Loss Coefficient 的动机涉及 policy loss 和 value loss 的梯度比例问题，需要先理解模型架构侧的多头设计（2.3 节）才能完全理解。
+> Note: the motivation for the Value Loss Coefficient involves the gradient ratio between the policy loss and the value loss; fully understanding it requires first understanding the multi-head design on the model-architecture side (Section 2.3).
 
-Value 网络的训练同样面临 MC 与 TD 的权衡，但这里的核心维度不是偏差与方差，而是**方差 vs 信号传播速度**。TD(0) 的传播极慢：终局奖励每个 update 只能向前推进一步，且每步强度减半。一局 30 步的对弈需要约 30 个 update 才能把信号送回开局，而那时它已经衰减到 0.5³⁰ 量级，几乎不可用。所以必须用多步回报来加速传播；实验发现现用的 λ 已经足以解决传播速度问题，不需要退到方差更大的纯 MC。
+Training the value network faces the same MC vs TD trade-off, but here the core dimension is not bias vs variance but **variance vs signal propagation speed**. TD(0) propagates extremely slowly: the terminal reward moves back only one step per update, and its strength halves at each step. A 30-move game needs about 30 updates to carry the signal back to the opening, and by then it has decayed to the order of 0.5³⁰ — nearly unusable. So multi-step returns are necessary to speed up propagation; experiments found that the λ currently in use is already enough to solve the propagation-speed problem, with no need to fall back to pure MC and its larger variance.
 
-Value Loss Coefficient 随 baseline α 下降，是为了补偿 policy loss 量级的变化：α=0 时 advantage 是原始回报（±1），policy loss 较大；α=1 时 advantage 变成 GAE（典型值远小于 1），policy loss 随之降低。系数同步调整，才能维持 policy 与 value 两路梯度的比例平衡。
+The Value Loss Coefficient decreases as the baseline α rises, to compensate for the change in policy-loss magnitude: at α=0 the advantage is the raw return (±1) and the policy loss is large; at α=1 the advantage becomes GAE (typical values much smaller than 1) and the policy loss drops accordingly. Only by adjusting the coefficient in step can the ratio between the policy and value gradients stay balanced.
 
 ---
 
 ###### Tactical Boost
 
-这是为了加速训练**早期**的收敛，而不是给后期增强棋力——一步杀和一步防都是模型自己也能学会的简单战术，所以这个机制必须能自行退场，加成强度因此设计成随遗漏率自适应：遗漏得多就加得重，遗漏率降下来后自动趋零。
+This exists to speed up convergence **early** in training, not to strengthen play later — win-in-1 and block-in-1 are simple tactics the model can also learn on its own, so this mechanism has to be able to retire itself. The boost strength is therefore designed to adapt to the miss rate: the more misses, the heavier the boost; once the miss rate comes down, it automatically goes to zero.
 
-早期的困境是双重的：价值网络尚未收敛（输出近似噪声），只能使用原始胜负回报；而策略网络又接近随机，15×15 棋盘上随机对局的平均长度约 109 步（训练中后期约 20–30 步），稀疏奖励被摊薄到了极致。直接用合成样本教会一步杀之后，棋局显著缩短，原始回报的信号密度随之提高，形成正反馈。战术搜索只在已有棋子的邻格范围内进行，因为五子棋的一步杀和一步防必然与已有棋子相邻。
+The early-training predicament is twofold: the value network hasn't converged (its output is roughly noise), so only raw win/loss returns can be used; and the policy network is close to random — on a 15×15 board, a random game averages about 109 moves (about 20–30 moves in mid-to-late training), so the sparse reward is diluted to the extreme. Once synthetic samples directly teach win-in-1, games get markedly shorter and the signal density of the raw return rises accordingly, forming a positive feedback loop. The tactical search covers only the squares adjacent to existing stones, because in Gomoku a win-in-1 or block-in-1 move is necessarily adjacent to existing stones.
 
-一个容易搞错的边界情况：当对手同时存在**两个或以上**独立的一步杀威胁时，不产生任何"一步防"样本。"必挡"的意思是*下在这里，否则输*；面对双威胁只能应付一个，无论如何都要输，因此不存在任何能救回局面的走法，也就没有东西可教。若把这类局面计为"遗漏"，等于让模型对着一个不可达的目标训练，同时还会虚高那个驱动加成强度的遗漏率统计。
+An edge case that is easy to get wrong: when the opponent has **two or more** independent win-in-1 threats at the same time, no "block-in-1" sample is produced. "Must block" means *play here or lose*; facing a double threat you can answer only one and lose either way, so no move can save the position, and there is nothing to teach. Counting such positions as "misses" would make the model train toward an unreachable target, and would also inflate the miss-rate statistic that drives the boost strength.
 
 ---
 
 ##### 1.1.1.2 Non-Transitivity of Win Rate
 
-在双人博弈中，策略之间的强弱关系往往不是传递的：A 胜过 B，B 胜过 C，但 C 可能反过来胜过 A（类似石头剪刀布）。这意味着 pure self-play（始终与最新版本的自己对弈）可能让策略在循环中反复震荡而非单调进步——模型学会了克制上一个版本，却丢失了应对更早版本的能力。本节的设计围绕同一个目标：让模型面对多样化的对手。
+In two-player games, strength relations between strategies are often not transitive: A beats B, B beats C, but C may in turn beat A (like rock-paper-scissors). This means pure self-play (always playing against the latest version of itself) can make the strategy oscillate in cycles rather than improve monotonically — the model learns to counter the previous version but loses the ability to handle earlier ones. The designs in this section share one goal: making the model face diverse opponents.
 
 ###### Opponent Pool
 
-Pool 保留多个不同时期的历史检查点作为对手，迫使当前模型对多种风格保持鲁棒，而不是只针对最新版本做过拟合。
+The pool keeps multiple historical checkpoints from different periods as opponents, forcing the current model to stay robust against many styles rather than overfitting to the latest version.
 
-采样一半均匀、一半按难度加权，是把有限的对局预算向模型的弱项倾斜——打不过的对手值得多打几盘。入池设胜率阈值，则是防止一个明显偏弱的检查点混进来污染整个 pool 的水准。
+Sampling half uniformly and half weighted by difficulty tilts the limited game budget toward the model's weaknesses — opponents it can't beat deserve a few more games. The win-rate threshold for entering the pool prevents a clearly weaker checkpoint from slipping in and dragging down the level of the whole pool.
 
 ---
 
 ###### Exploiter Mining
 
-Pool 的常规更新只在评估时刻把当前检查点加进去，覆盖的是"最近"。但训练中途产生的某些旧检查点可能恰好能克制当前策略——比如当前模型已经"忘记"了如何应对某种早期打法。Mining 回溯历史来找出这些 exploiter，弥补 pool 的覆盖盲区。
+The pool's regular updates only add the current checkpoint at evaluation time, covering what is "recent." But some old checkpoints produced mid-training may happen to counter the current strategy — e.g., the current model has "forgotten" how to handle some early style of play. Mining goes back through history to find these exploiters, filling the pool's coverage blind spots.
 
-全量重扫历史的开销无法承受，所以分两阶段筛选（先少量对局粗筛，再对最难的若干个精筛），并且每次只扫描历史的一个分片、靠轮转保证长期覆盖。
+A full rescan of history is unaffordable, so screening happens in two phases (a coarse screen with a few games, then a fine screen on the hardest few), and each pass scans only one shard of history, relying on rotation to guarantee long-term coverage.
 
 ---
 
 ###### KL-Aware Eviction and Mining
 
-如果淘汰只看胜率，pool 里的对手会越来越同质化——而多样性正是 pool 存在的全部理由，这等于慢慢把它掏空。
+If eviction looked only at win rate, the opponents in the pool would become increasingly homogeneous — and since diversity is the pool's entire reason for existing, this would slowly hollow it out.
 
-KL 散度衡量两个策略分布的差异，一个成员与其最近邻的 KL 距离越小，说明它越冗余。把胜率和这个冗余度综合起来做决策，就能在"保留难对手"和"保留多样性"之间取得平衡：一个风格独特的对手，即使容易打也值得留着；一个既容易又与他人雷同的对手则优先淘汰。挖掘时同理——与现有成员过于相似的候选人要更难才配入池，风格独特的候选人门槛放宽。
+KL divergence measures the difference between two policy distributions; the smaller a member's KL distance to its nearest neighbor, the more redundant it is. Combining win rate with this redundancy measure when making decisions strikes a balance between "keeping hard opponents" and "keeping diversity": an opponent with a distinctive style is worth keeping even if it is easy to beat; one that is both easy and similar to others is evicted first. Mining works the same way — a candidate too similar to existing members must be harder to earn a place, while a candidate with a distinctive style faces a lower bar.
 
-比较两个检查点的"风格"需要一个共同的比较基准，所以先用当前模型自对弈生成一组固定的探测局面，再让所有成员在这组局面上输出策略分布——这组分布就是该检查点的指纹。
+Comparing the "style" of two checkpoints requires a common baseline, so the current model first plays itself to generate a fixed set of probe positions, and then every member outputs its policy distributions on this set of positions — those distributions are the checkpoint's fingerprint.
 
 ---
 
 #### 1.1.2 Exploration Enhancement
 
-RL 智能体面临"探索 vs 利用"的两难：应该按当前认为最好的策略行动（利用），还是尝试不确定的新走法以发现潜在更优的选择（探索）？过度利用会让策略过早固化在局部最优，过度探索则把训练资源浪费在低质量的随机走法上。
+An RL agent faces the "exploration vs exploitation" dilemma: should it act according to the policy it currently believes is best (exploitation), or try uncertain new moves to discover potentially better choices (exploration)? Too much exploitation makes the policy settle prematurely into a local optimum; too much exploration wastes training resources on low-quality random moves.
 
 ##### 1.1.2.1 On-Policy Exploration
 
-同策略增强作用于策略本身：直接修改损失函数，让模型在训练中被鼓励保持一定的输出随机性。它影响的是策略分布的形状——不要过于尖锐地集中在单一动作上。
+On-policy enhancement acts on the policy itself: it modifies the loss function directly so that the model is encouraged during training to keep a certain amount of randomness in its output. What it affects is the shape of the policy distribution — not too sharply concentrated on a single action.
 
 ###### Entropy Bonus and Reference Entropy
 
-固定强度的 entropy bonus 不够灵活：训练初期 entropy 自然就高，不需要额外鼓励；后期策略理应更确定，但又不能完全坍缩。
+A fixed-strength entropy bonus isn't flexible enough: early in training, entropy is naturally high and needs no extra encouragement; later, the policy should become more deterministic, yet must not collapse completely.
 
-这里改用一条随训练进度衰减的 reference 曲线，bonus 强度正比于 reference 与当前 entropy 的**比值**。这个除法形式提供了很强的防坍缩保护——entropy 越低，bonus 相对于 entropy 的梯度就越大（比值在 entropy→0 时趋向无穷），足以阻止策略滑向确定性。
+Here we instead use a reference curve that decays with training progress, with the bonus strength proportional to the **ratio** of the reference to the current entropy. This division form provides strong anti-collapse protection — the lower the entropy, the larger the bonus's gradient with respect to entropy (the ratio tends to infinity as entropy→0), enough to stop the policy from sliding toward determinism.
 
-但它并不是一个精确的控制器：没有积分项，不保证 entropy 精确收敛到曲线上。所以这条曲线叫 "reference"（参考）而不是 "target"（目标）——它约束的是量级，不是取值。
+But it is not a precise controller: there is no integral term, and no guarantee that entropy converges exactly onto the curve. That's why the curve is called a "reference" rather than a "target" — it constrains the order of magnitude, not the exact value.
 
 ---
 
 ##### 1.1.2.2 Off-Policy Exploration
 
-异策略增强不改变策略分布本身，而是往训练数据里注入来自其他来源的信号——可能是通过 rollout 发现的更好走法，也可能是对手的好棋。这些样本让模型学到它自己的探索过程不太可能触及的走法。
+Off-policy enhancement doesn't change the policy distribution itself; instead it injects signals from other sources into the training data — possibly better moves discovered through rollouts, or the opponent's good moves. These samples let the model learn moves its own exploration process is unlikely to reach.
 
 ###### Imitation Learning
 
-这是为了解决一次实际遇到的训练崩溃。正常训练中模型对 pool 的胜率在 50%–60% 之间波动（入池时约 50%，训练一段后升到约 60% 再入池）；但在某次训练里，胜率在几十个 update 内暴跌到 5% 以下，且再也没能恢复。
+This was introduced to fix a training collapse we actually ran into. In normal training, the model's win rate against the pool fluctuates between 50% and 60% (about 50% right after the latest checkpoint joins the pool; after a stretch of training it climbs to about 60%, and then the current checkpoint joins the pool); but in one run, the win rate plunged below 5% within a few dozen updates and never recovered.
 
-Imitation 提供了一条恢复通道：模型变弱时，直接从 pool 中更强的历史版本的获胜走法里学习，拿到爬出低谷所需的梯度信号。既然它是恢复机制，权重就该随胜率回升而退场——弱的时候多学，强了以后趋零。
+Imitation provides a recovery channel: when the model gets weaker, it learns directly from the winning moves of stronger historical versions in the pool, getting the gradient signal it needs to climb out of the trough. Since it is a recovery mechanism, its weight should retire as the win rate recovers — learn more when weak, go to zero once strong.
 
-只有对手**执白获胜**的走法才被模仿。黑方先行，这个先手优势大到足以让"黑方赢了"这件事本身几乎不含信息——一局黑胜并不说明黑方下得好；白方获胜才是真正值得学的情况。
+Only moves from games the opponent **won as White** are imitated. Black moves first, and this first-move advantage is so large that "Black won" carries almost no information by itself — a Black win doesn't show that Black played well; a White win is the case truly worth learning from.
 
 ---
 
 ###### OPR (Off-Policy Rollout)
 
-其余的探索增强本质上都是基于模型的——连 Imitation 学的也是历史检查点的策略，属于 on-past-policy 而非真正的 off-policy。OPR 是本系统中唯一与模型无关的探索机制：它靠随机 rollout 去评估替代走法，因而能发现模型自身不太可能探索到的选择。
+All the other exploration enhancements are essentially model-based — even Imitation learns the policy of historical checkpoints, which is on-past-policy rather than truly off-policy. OPR is the only model-independent exploration mechanism in this system: it evaluates alternative moves through random rollouts, and can therefore discover choices the model itself is unlikely to explore.
 
-代价是采样效率极低（随机下棋命中好棋的概率很小），所以它只用在最值得纠正的错误上：输掉的对局中模型过于自信（低 entropy）的那些决策点——低 entropy 在这里有双重含义，既说明模型在这里犯了错，又说明它很难靠自身探索发现这个错。同时要求距终局尚远，以避开已由 Tactical Boost 覆盖的即时战术局面。
+The cost is very low sample efficiency (random play rarely hits good moves), so it is used only on the errors most worth correcting: decision points in lost games where the model was overconfident (low entropy). Low entropy has a double meaning here: it indicates both that the model made a mistake at this point and that the model would have a hard time discovering that mistake through its own exploration. It also requires being far from the end of the game, to avoid the immediate tactical positions already covered by Tactical Boost.
 
 ---
 
 #### 1.1.3 Generalization Enhancement
 
-训练数据的分布决定了模型的能力边界。如果训练对局的开局和局面结构过于单一，模型会在熟悉的模式上表现良好，面对陌生局面却迅速崩溃。
+The distribution of the training data determines the boundary of the model's capabilities. If the openings and position structures of training games are too uniform, the model will perform well on familiar patterns but quickly fall apart in unfamiliar positions.
 
 ###### Renju Opening Seed
 
-用预定义的连珠开局序列初始化一部分对局，是为了防止模型收敛到固定的开局套路。这里有两个 trade-off：只在一部分对局中使用，是因为全部使用会导致模型无法学会自行开局；而 Renju 开局集本身是有偏的——并非所有 Renju 开局都合理，也并非所有合理开局都在 Renju 集中——但它是一个容易实现、覆盖面又足够广的多样性来源。
+Initializing a portion of games with predefined Renju opening sequences is meant to keep the model from converging to fixed opening routines. There are two trade-offs here: the openings are used in only a portion of games because using them in all games would leave the model unable to learn to open on its own; and the Renju opening set is itself biased — not every Renju opening is sound, and not every sound opening is in the Renju set — but it is an easy-to-implement diversity source with broad enough coverage.
 
 ---
 
 ###### 8-Fold Dihedral Augmentation
 
-常见设计。五子棋的规则在棋盘的 8 种二面体变换下完全不变，所以每个样本都能免费扩展成 8 个严格等价的样本：既是 8 倍的数据效率，也强制模型学到对称不变的表示。
+Common practice. Gomoku's rules are completely invariant under the board's 8 dihedral transformations, so every sample can be expanded for free into 8 strictly equivalent samples: this both gives 8× data efficiency and forces the model to respect the board's symmetries: the policy must transform along with the board (equivariant), while the value must stay unchanged (invariant).
 
 ---
 
 ### 1.2 MCTS Self-Play Training
 
-> 实现细节：`mcts/CLAUDE.md`
+> Implementation details: `mcts/CLAUDE.md`
 
-RL 训出的模型是"直觉型"棋手——每步只做一次前向推理就出招，没有任何前瞻。想让它继续变强，自然的下一步是引入搜索：让模型每步"思考"一下（用树搜索模拟多种走法的后续发展），再把搜索得到的更优决策学回网络，使它在不搜索时也能做出接近搜索水平的决策。
+The RL-trained model is an "intuitive" player — it makes each move after a single forward pass, with no lookahead at all. To keep making it stronger, the natural next step is to introduce search: let the model "think" at each move (using tree search to simulate how various moves play out), then learn the better decisions found by search back into the network, so that even without search it can make decisions close to search level.
 
-这条路线完全放弃了 RL 的那一整套机制——没有 entropy bonus、没有 GAE、没有 Tactical Boost、没有 Imitation、没有 OPR，连对手池都没有，它只跟自己下。原因很简单：搜索本身就供给了探索，而搜索结果本身就是标签。
+This route completely abandons the entire RL machinery — no entropy bonus, no GAE, no Tactical Boost, no Imitation, no OPR, not even an opponent pool; it plays only itself. The reason is simple: the search itself supplies exploration, and the search results themselves are the labels.
 
 #### 1.2.1 Warm Start
 
 ###### From Post-Training to Distilled Warm Start
 
-第一代方案是真正的"后训练"：继承 RL 模型的参数，把训练目标换成 MCTS 的搜索结果，继续训练下去。它撞上了分布形状不匹配的墙——MCTS 的访问分布天然比策略分布平坦（搜索会分散访问多个分支），而 RL 训出的策略相当尖锐。继承参数意味着网络的输出分布一开始就和监督目标差着一个形状，初始 loss 极大、模型震荡；这不是它学得不好，纯粹是两种分布的形状不同。
+The first-generation approach was true "post-training": inherit the RL model's parameters, switch the training target to MCTS search results, and keep training. It hit the wall of distribution-shape mismatch — the MCTS visit distribution is naturally flatter than a policy distribution (search spreads visits across multiple branches), while the RL-trained policy is quite sharp. Inheriting parameters meant the network's output distribution was off from the supervision target by a whole shape right from the start; the initial loss was huge and the model oscillated. This wasn't because it was learning poorly — the two distributions simply had different shapes.
 
-第一代用一个温度参数 T 去**补偿**这个差异：搜索前把模型先验软化到 MCTS 的 entropy 量级，搜索后再把 MCTS 输出锐化回模型的 entropy 量级，让模型看到的目标与自身输出在 entropy 上对齐，只需要学习 MCTS 发现的相对变化。这个补偿器有两个毛病。其一是**不自稳定**：纯补偿没有回复力，模型 entropy 的任何漂移都会被 T 吸收而不是纠正，T 可能一路漂到发散（当时的对策是让锐化略微不完全，制造一点回复力把 T 拉回 1）。其二是**最优缩放比例因局面而异**（开局、中盘、终盘各不相同），却无法逐局面求解：PUCT 需要 T 作为输入，而算出某个局面的 T 又需要该局面的 PUCT 结果，构成死循环——只能退回到一个不精确的全局平均。
+The first generation used a temperature parameter T to **compensate** for this difference: before search, soften the model prior to the MCTS entropy level; after search, sharpen the MCTS output back to the model's entropy level, so that the target the model sees is aligned in entropy with its own output and it only has to learn the relative changes MCTS discovers. This compensator had two problems. First, it was **not self-stabilizing**: pure compensation has no restoring force, so any drift in model entropy is absorbed by T rather than corrected, and T could drift all the way to divergence (the countermeasure at the time was to make the sharpening slightly incomplete, creating a bit of restoring force to pull T back toward 1). Second, **the optimal scaling ratio varies by position** (it differs between the opening, the middlegame, and the endgame), yet it cannot be solved per position: PUCT needs T as an input, while computing T for a position requires that position's PUCT result — a circular dependency — so it could only fall back to an imprecise global average.
 
-现在这一代不再补偿这个差异，而是**从源头消除它**：让一个全新初始化的网络从第一步起就只见过 MCTS 形状的目标。形状不匹配的问题不存在了，补偿器自然也就不需要了。
+The current generation no longer compensates for this difference; instead it **eliminates it at the source**: a freshly initialized network sees only MCTS-shaped targets from its very first step. The shape-mismatch problem no longer exists, so the compensator is naturally no longer needed.
 
-所以"不继承参数"不是妥协或副作用，**它就是解决方案本身**——继承参数恰恰是第一代失败的原因。也正因如此，不应该把这条路线称为"后训练"或"微调"：两代检查点之间没有任何参数继承关系。两条训练路线之间的接口是一份**数据集**，不是一个权重文件；传递的是**行为**，不是参数。
+So "not inheriting parameters" is not a compromise or a side effect — **it is the solution itself**; inheriting parameters is exactly why the first generation failed. For the same reason, this route should not be called "post-training" or "fine-tuning": there is no parameter inheritance whatsoever between the two routes' checkpoints. The interface between the two training routes is a **dataset**, not a weights file; what is passed on is **behavior**, not parameters.
 
 ---
 
 ###### The Three-Stage Pipeline
 
-整条路线分三个阶段：冻结的 RL 教师跑 MCTS 自对弈，把每一步的局面与搜索结果写到磁盘；一个全新初始化的学生在这批静态数据上离线蒸馏，不跑任何搜索；然后这个学生开始自己搜索、自己对弈、用自己的搜索结果训练自己。第三阶段才是真正的 MCTS 训练，前两个阶段只是为了造出它的起点。
+The whole route has three stages, numbered as in the code: in stage 0 (`generate_data`), a frozen RL teacher runs MCTS self-play, writing each move's position and search result to disk; in stage 1, a freshly initialized student is distilled offline on this static data, without running any search; in stage 2, this student starts searching on its own, playing itself, and training itself on its own search results. Only stage 2 is real MCTS training; stages 0 and 1 exist solely to build its starting point.
 
-为什么需要这样一个起点？随机初始化的网络给出近似均匀的先验和毫无意义的叶节点评估，此时的 MCTS 会把模拟预算浪费在无信息的探索上，还要拿近乎随机的访问分布去训练网络。温启动整个跳过了这一段：RL 检查点已经会下棋，所以第三阶段的第一次搜索就是有信息量的。
+Why is such a starting point needed? A randomly initialized network gives nearly uniform priors and meaningless leaf evaluations; MCTS at that point would waste its simulation budget on uninformative exploration, and would then train the network on nearly random visit distributions. The warm start skips this whole phase: the RL checkpoint already knows how to play, so the very first search in stage 2 is already informative.
 
-为什么温启动本身要拆成两个阶段？因为 RL 检查点是一个**策略网络**，不是一个 MCTS 形状的目标。第一阶段的作用是把它转译成搜索形状的监督信号，第二阶段才能把学生对齐到那个形状上。
+Why is the warm start itself split into two stages? Because the RL checkpoint is a **policy network**, not an MCTS-shaped target. Stage 0 translates it into a search-shaped supervision signal, so that stage 1 can align the student to that shape.
 
-这里有个容易忽略但很关键的点：学生学到的**不是教师的策略，而是"教师 + 搜索"的策略**——它一开始就比教师强一步。但它领先的是**教师**，它并不是**自己**搜索的不动点。下一节会用到这一点。
+There is an easily overlooked but crucial point here: what the student learns is **not the teacher's policy but the "teacher + search" policy** — it starts out one step ahead of the teacher. But what it is ahead of is the **teacher**; it is not the fixed point of **its own** search. The next section relies on this.
 
 ---
 
@@ -190,23 +190,23 @@ RL 训出的模型是"直觉型"棋手——每步只做一次前向推理就出
 
 ###### MCTS as a Policy-Improvement Operator
 
-把 MCTS 看成一个作用在网络原始策略上的**改进算子**：给定网络的原始策略，搜索输出一个更好的策略；训练的每一轮就是把原始策略蒸馏到它自己的搜索结果上，反复迭代，逼近那个"搜索也改不动它"的不动点。两者的差距——搜索结果与原始策略之间的 KL——就是这个改进量的可观测度量。
+Think of MCTS as an **improvement operator** acting on the network's raw policy: given the network's raw policy, search outputs a better policy; each round of training distills the raw policy onto its own search results, iterating repeatedly toward the fixed point that "even search can't improve." The gap between the two — the KL between the search result and the raw policy — is an observable measure of this improvement.
 
-这个框架一次解释了两件原本看起来无关的事。
+This framework explains in one stroke two things that otherwise look unrelated.
 
-第一，**第三阶段开头的 loss 尖峰**。第二阶段只做到了让学生对齐"教师 + 搜索"，它领先的是教师，从来不是它自己搜索的不动点。所以第三阶段一开始，目标变成了"学生自己 + 搜索"，这就打开了一个全新的、从未被蒸馏过的差距——那个尖峰；随后的迭代把它压回缓慢的稳态漂移。这也说明训练初期的目标是强非稳态的：一轮之前存下的目标，几个 update 之后就已经过时。
+First, **the loss spike at the start of stage 2**. Stage 1 only got the student aligned with "teacher + search"; it is ahead of the teacher, but has never been at the fixed point of its own search. So at the start of stage 2, the target becomes "the student itself + search," which opens up a brand-new gap that has never been distilled — that is the spike; subsequent iterations push it back down to a slow steady-state drift. This also shows that the target early in training is strongly non-stationary: a target saved one round earlier is already stale a few updates later.
 
-第二，**它给出了一个不依赖优化器的进度信号**。这个 KL 衡量的是搜索与网络之间的差距，而不是"网络对当前目标拟合得如何"。后者会把优化进度和改进信号混在一起，因而无法用来判断训练该继续还是该停。
+Second, **it provides a progress signal that doesn't depend on the optimizer**. This KL measures the gap between search and network, not "how well the network fits the current target." The latter mixes optimization progress with the improvement signal, and so can't be used to judge whether training should continue or stop.
 
 ---
 
 ###### Plateau-Driven Staircase LR
 
-第三阶段**没有预设的训练步数上限**。学习率保持不变，直到上述改进量的下降速度进入平台期，就把学习率乘以一个小于 1 的因子；降过若干级之后，再遇到平台期就结束训练。
+Stage 2 has **no preset cap on training steps**. The learning rate stays constant until the improvement measure above stops declining and plateaus, at which point the learning rate is multiplied by a factor less than 1; after a certain number of drops, the next plateau ends training.
 
-按上一节的框架，网络越强，原始策略越接近不动点，改进量就越小。但它不可能降到 0，有两个"地板"托着：一是**有限的策略容量**（网络未必能精确表示搜索的输出），二是**学习率过大注入的优化噪声**。
+Per the framework in the previous section, the stronger the network, the closer its raw policy is to the fixed point, and the smaller the improvement. But it can't drop to 0; two "floors" hold it up: one is **finite policy capacity** (the network may not be able to represent the search output exactly), the other is **optimization noise injected by too large a learning rate**.
 
-平台期出现时，剩下的差距究竟属于哪一种，无法直接分辨。缩小学习率正是在检验后一种假设：噪声减少后，如果曲线重新开始下降，说明之前确实是被噪声顶住的，那就赚到了；如果曲线依然不动，说明本来就已经接近容量下限，损失也很小。这是一个代价不对称的检验，所以值得做——也正因如此，"什么时候停"不需要人为设定步数，由这个信号自己给出。
+When a plateau appears, there is no way to tell directly which kind the remaining gap belongs to. Lowering the learning rate is precisely a test of the latter hypothesis: with less noise, if the curve starts declining again, it was indeed being held up by noise, and that is a gain; if the curve still doesn't move, it was already close to the capacity floor, and little is lost. This is a test with asymmetric costs, so it is worth running — and for the same reason, "when to stop" doesn't need a manually chosen step count; this signal provides it on its own.
 
 ---
 
@@ -214,17 +214,17 @@ RL 训出的模型是"直觉型"棋手——每步只做一次前向推理就出
 
 ###### Subtree Harvesting
 
-每一步搜索会评估成千上万个叶局面，但默认只有被实际走出的那个根局面成为训练样本，其余全部丢弃。同一次搜索的产物里，除了根节点的结论，还包含大量对子局面的、统计量已经相当充分的结论——不回收它们等于白算。
+Each move's search evaluates thousands of leaf positions, but by default only the root position that is actually played becomes a training sample; everything else is discarded. Besides the root node's conclusion, the output of a single search also contains a large number of conclusions about child positions whose statistics are already fairly sufficient — not harvesting them means that computation was wasted.
 
-加权和阈值都出自同一个考虑：一个节点的统计量可信到什么程度，取决于它被访问了多少次。所以样本权重随访问量上升，被完整预算搜索过的根节点自动占据主导，浅层节点只作为小份量的补充。而且价值目标和策略目标的可信门槛不同——价值目标只是一个均值（低阶统计量），比整个策略分布（高阶统计量）更早变得可靠——所以两者使用不同的访问量阈值，只够价值门槛的节点就只参与价值损失。
+The weighting and the thresholds both come from the same consideration: how trustworthy a node's statistics are depends on how many times it was visited. So sample weight rises with visit count, root nodes searched with the full budget automatically dominate, and shallow nodes serve only as a small supplement. Moreover, value targets and policy targets have different trust thresholds — a value target is just a mean (a low-order statistic) and becomes reliable earlier than an entire policy distribution (a high-order statistic) — so the two use different visit-count thresholds, and nodes that clear only the value threshold participate only in the value loss.
 
 ---
 
 ###### Action Temperature and Harvesting
 
-自对弈落子时不直接按访问分布采样，而是先用一个低于 1 的温度把分布锐化。温度越低走的棋越强，对局就停留在质量更高的路线上，从而到达更深、更复杂的局面——那里才是训练信号最丰富的地方。代价是轨迹多样性：一个尖锐的策略会反复重演同样几条路线，数据的覆盖面收窄。
+When choosing moves during self-play, we don't sample directly from the visit distribution; instead we first sharpen the distribution with a temperature below 1. The lower the temperature, the stronger the moves played, so games stay on higher-quality lines and reach deeper, more complex positions — which is where training signal is richest. The cost is trajectory diversity: a sharp policy replays the same few lines over and over, narrowing the data's coverage.
 
-子树收获正好把这部分多样性买了回来：每一步不只贡献被走出的那个根节点，还贡献一把**偏离实战主线**的内部节点。所以恰恰是收获让低于 1 的温度在这里变得可行——两个设计是配套的，单独看任何一个都会觉得它有明显缺陷。
+Subtree harvesting buys exactly this diversity back: each move contributes not only the root node that was actually played, but also a handful of internal nodes that **deviate from the game's main line**. So it is precisely harvesting that makes a temperature below 1 viable here — the two designs go together, and looked at in isolation, either one would seem to have an obvious flaw.
 
 ---
 
@@ -232,9 +232,9 @@ RL 训出的模型是"直觉型"棋手——每步只做一次前向推理就出
 
 ###### Backup Discount
 
-搜索结果沿路径回传时，每上一层除了按双方视角取负，还乘上一个略小于 1 的折扣。
+When search results are backed up along the path, at each level up the value is not only negated for the change of perspective but also multiplied by a discount slightly less than 1.
 
-没有折扣时，所有必败的路线在搜索看来完全等价——五步之后输和二十步之后输是同一个 −1。加上折扣后，越晚发生的结果影响越小，于是"晚输"严格优于"早输"，"早赢"严格优于"晚赢"。这给了同一个终局结果一个内部的偏好排序：局势不利时搜索会倾向于把败局推远（这通常也正是顽强抵抗、制造麻烦的下法），局势有利时则倾向于尽快收线而不是无谓拖延。
+Without a discount, all losing lines look completely equivalent to the search — losing in five moves and losing in twenty are the same −1. With a discount, the later an outcome occurs, the smaller its influence, so "losing later" is strictly better than "losing earlier," and "winning earlier" is strictly better than "winning later." This gives the same terminal outcome an internal preference ordering: when the position is unfavorable, search tends to push the loss further away (which is usually exactly the stubborn, trouble-making style of defense), and when it is favorable, search tends to close out quickly rather than pointlessly dragging things out.
 
 ---
 
@@ -242,62 +242,62 @@ RL 训出的模型是"直觉型"棋手——每步只做一次前向推理就出
 
 ### 2.1 Shared Design
 
-> 实现细节：`main/CLAUDE.md`；输入输出约定见根 `CLAUDE.md`
+> Implementation details: `main/CLAUDE.md`; for the input/output conventions, see the root `CLAUDE.md`
 
 ###### Canonical Board Representation
 
-五子棋的先手优势极大，训练中黑方胜率常在 70% 以上。如果模型能够区分自己执的是哪一色（例如通过一个额外的输入通道），它执白时就可能学会消极对弈——反正大概率要输。
+Gomoku's first-move advantage is huge; in training, Black's win rate is often above 70%. If the model could tell which color it is playing (e.g., via an extra input channel), it might learn to play passively as White — it's probably going to lose anyway.
 
-正则化表示让模型无法感知颜色：输入始终从"当前行棋方"的视角编码，它只看到"己方棋子"和"对方棋子"，value 输出也始终是当前行棋方视角的期望回报。执黑执白被迫共用同一套策略。
+The canonical representation gives the model no explicit color signal: the input is always encoded from the perspective of the "side to move"; it sees only "own stones" and "opponent stones," and the value output is always the expected return from the side to move's perspective. (Color is still inferable in principle — with Black to move both sides have the same number of stones, with White to move the mover has one fewer — but the model would have to learn to count to get it.) Playing Black and playing White are pushed toward sharing the same policy.
 
 ---
 
 ### 2.2 Vanilla and mini Models (Control Group)
 
-> 实现细节：`vanilla/CLAUDE.md`
+> Implementation details: `vanilla/CLAUDE.md`
 
-这两个模型的存在意义是**对照**，不是备选方案。三个训练目录共用同一套训练配方（除 `model.py` 外所有代码都是同一份文件的符号链接），因此三者之间的棋力差异可以干净地归因到模型本身：`vanilla` 对 `main` 分离出"架构设计"这个变量，`vanilla` 对 `mini` 分离出"参数规模"这个变量。如果训练配方也各不相同，就无从判断差异来自哪里。
+These two models exist as **controls**, not as alternatives. The three training directories share the same training recipe (every file except `model.py` is a symlink to the same file), so differences in playing strength among the three can be cleanly attributed to the model itself: `vanilla` vs `main` isolates the "architecture design" variable, and `vanilla` vs `mini` isolates the "parameter scale" variable. If the training recipes differed too, there would be no way to tell where a difference came from.
 
 ---
 
 ### 2.3 Main Model
 
-> 实现细节：`main/CLAUDE.md`
+> Implementation details: `main/CLAUDE.md`
 
 ###### Multi-Scale Directional Stem
 
-五子棋的核心威胁（活三、冲四、五连）严格沿 4 个方向排列。标准的 N×N 卷积虽然也覆盖这些方向，但它同时包含大量"离轴填充"位置——一个 5×5 核的 25 个权重里，很多位置对方向型棋型毫无用处——既浪费参数，又需要更多数据才能学会忽略它们。只在 4 条线上有非零权重的方向核，是一个与五子棋几何结构严格吻合的强归纳偏置。
+Gomoku's core threats (open threes, fours, fives) lie strictly along 4 directions. A standard N×N convolution does cover these directions, but it also includes many "off-axis filler" positions — of the 25 weights in a 5×5 kernel, many positions are useless for directional patterns — which both wastes parameters and requires more data to learn to ignore them. A directional kernel with nonzero weights only on the 4 lines is a strong inductive bias that matches Gomoku's geometry exactly.
 
-用"多个不同膨胀率的 3×3 之和"来近似方向核、而不用真正的 1×N 核，是纯粹的工程考量：PyTorch/cuDNN 对 3×3 卷积有高度优化，非标准核形状实际跑起来更慢。高膨胀率分支的中心位置被强制置零，避免与膨胀为 1 的分支重复覆盖同一个点。
+Approximating directional kernels with "a sum of several 3×3 convolutions with different dilation rates," rather than using true 1×N kernels, is a purely engineering consideration: PyTorch/cuDNN are highly optimized for 3×3 convolutions, and non-standard kernel shapes actually run slower. The center position of the high-dilation branches is forced to zero, to avoid covering the same point twice with the dilation-1 branch.
 
 ---
 
 ###### Trunk Dilation Schedule
 
-棋盘是 15×15，长距离的空间关系（例如远端威胁之间的联动）需要较大的感受野。纯膨胀 1 的 3×3 卷积感受野每层只增长 2，即使叠满 trunk 的全部深度，理论感受野也只是勉强覆盖棋盘，实际有效范围还要小得多。
+The board is 15×15, and long-range spatial relationships (e.g., interplay between distant threats) need a large receptive field. With plain dilation-1 3×3 convolutions, the receptive field grows by only 2 per layer; even stacking the trunk's full depth, the theoretical receptive field barely covers the board, and the effective range is much smaller in practice.
 
-交替插入更大的膨胀率能快速扩大有效感受野，而膨胀卷积的参数量和计算量与普通 3×3 完全相同——这是一个几乎免费的改动。
+Interleaving larger dilation rates quickly expands the effective receptive field, while a dilated convolution has exactly the same parameter count and compute as a plain 3×3 — an almost free change.
 
 ---
 
 ###### Late-Branching Dual-SE Design
 
-Policy head 和 value head 关注的东西不同——策略关注局部战术和具体落点，估值关注全局形势优劣——但两者依赖的底层特征（棋子排列、基本棋型）是共享的。传统做法是在 trunk 末端一刀切开，这就落进一个两难：分叉早则分叉后的独立参数多、计算浪费；分叉晚则两个任务在共享层里互相干扰。
+The policy head and the value head care about different things — the policy about local tactics and specific move locations, the value about the overall balance of the position — and that is why the two heads are built differently, each with an inductive bias suited to its task (see Dual-Attention Policy Head and Value Head below). The trunk's job, however, is common to both: extracting spatial features (stone arrangements, basic patterns). The traditional approach is a hard split at some depth of the trunk, which lands in a dilemma: branch early, and each task has to learn its own copy of the spatial-feature weights from that point on; branch late, and the two tasks interfere with each other in the shared layers.
 
-后期分叉加双 SE 绕开了这个两难。两条流共享卷积权重（同一份参数，因而高效），分化只通过各自独立的 SE 门控实现——SE 的参数量远小于卷积层，所以"分化"这件事几乎是免费的，而且是**渐进**的：每经过一个块分化一点，而不是一刀切。归一化层也做成独立的，因为归一化统计量的差异是另一个成本极低的分化维度。
+The dual-SE blocks at the end of the trunk sidestep this dilemma with a soft branch. The two streams keep sharing the convolution weights — spatial feature extraction is the common task, and having both tasks' gradients train the same weights also acts as an implicit regularizer: fewer free weights means less self-play data is needed to train them — while divergence comes only from each stream's own SE gating. SE has far fewer parameters than a convolutional layer, so the divergence costs almost no extra weights (compute is not saved: each stream still runs its own pass through the shared convolutions), and it is **gradual**: a little more divergence with each block, rather than a single clean cut. The normalization layers are also made separate, because differences in normalization statistics are another dimension of divergence that costs almost no parameters.
 
 ---
 
 ###### Dual-Attention Policy Head
 
-五子棋的落子决策常常需要全局推理——例如在远端制造一个威胁来配合当前的进攻，或者比较棋盘上多个可选点的优先级。纯卷积的感受野有限，即使有 trunk 的膨胀卷积也可能不够。Self-attention 以 O(N²) 的代价实现全局信息交换；棋盘只有 225 个位置，N² = 50625，这个计算量可以接受。两层 attention 中间夹一段卷积细化，是让模型先做一次全局推理，再用卷积做局部整理，然后再做第二次全局推理。
+Gomoku move decisions often require global reasoning — e.g., creating a threat at a distant point to support the current attack, or comparing the priorities of several candidate points across the board. Pure convolutions have a limited receptive field, which may not suffice even with the trunk's dilated convolutions. Self-attention provides global information exchange at O(N²) cost; the board has only 225 positions, so N² = 50625, an acceptable amount of compute. Sandwiching a convolutional refinement between two attention layers lets the model first do one round of global reasoning, then tidy things up locally with convolution, and then do a second round of global reasoning.
 
-两个细节同样出自设计考量。其一，attention 需要知道位置之间的相对关系，而棋盘的二面体对称性意味着这种关系只取决于行列偏移量的绝对值及其大小顺序——利用这一点，覆盖所有位置对只需 120 个可学习参数，而不是逐对独立参数。其二，输出投影层零初始化，使训练初期的 attention 近似恒等映射：注意力从"不起作用"开始，由训练来决定它该起多大作用，而不是一上来就往特征里注入随机的全局混合。
+Two details also come from design considerations. First, attention needs to know the relative relationship between positions, and the board's dihedral symmetry means this relationship depends only on the larger and the smaller of the absolute row and column offsets — exploiting this, covering all position pairs takes only 120 learnable parameters, rather than independent parameters for every pair. Second, the output projection is zero-initialized, so attention is approximately an identity map early in training: attention starts out "doing nothing," and training decides how much it should do, rather than injecting random global mixing into the features from the start.
 
 ---
 
 ###### Value Head
 
-核心思路是"升维 → 空间池化 → 全连接"。升维让每个通道去表示一种棋盘模式（例如某种活三、某种冲四）；空间池化实现**位置无关性**——一个威胁无论出现在棋盘的哪个角落，对局面评估的意义都是一样的，池化把"哪里有某个模式"转化成"有没有这个模式"。
+The core idea is "expand channels → spatial pooling → fully connected." Expanding channels lets each channel represent a board pattern (e.g., a particular open three or a particular four); spatial pooling provides **position invariance** — wherever on the board a threat appears, it means the same thing for position evaluation, and pooling turns "where a pattern is" into "whether the pattern is present."
 
-用 log-mean-exp 池化替代普通的全局平均池化，是出于信噪比考虑：棋盘有 225 个格点，检测稀疏特征时，平均池化会把少数几个高响应位置的信号淹没在大量低响应位置的噪声里。Log-mean-exp 是平均池化和最大池化之间的一个可学习插值（温度趋于无穷退化为平均，趋于零退化为最大），每个通道学自己的温度，检测稀疏模式的通道会自动偏向最大池化以保住信号。
+Using log-mean-exp pooling instead of ordinary global average pooling is a signal-to-noise consideration: the board has 225 points, and when detecting sparse features, average pooling drowns the signal from a few high-response positions in the noise from a large number of low-response positions. Log-mean-exp is a learnable interpolation between average pooling and max pooling (as the temperature goes to infinity it degenerates to the average, and as it goes to zero, to the max); each channel learns its own temperature, and channels that detect sparse patterns automatically lean toward max pooling to preserve the signal.

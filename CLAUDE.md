@@ -9,8 +9,8 @@ Research codebase for training Gomoku (15×15) policy/value networks via self-pl
 The three tour documents form three layers:
 
 - `educator.md` — *how to teach*: role, knowledge probing, pacing, topic ordering.
-- `concept_list.md` — *what each item is*: concept dependency graph, one-line takeaways, explicit prerequisites.
-- `design_rationale.md` — *why each non-obvious choice was made*. Rationale only; it deliberately contains no mechanism and no "what it is".
+- `concept_list.md` — *which concepts matter, and in what order*: concept dependency graph with explicit prerequisites. It does not define concepts — each Key Takeaway says why that concept matters in this project; `our design` rows point to where the design is covered.
+- `design_rationale.md` — *why each non-obvious choice was made*. It never holds more detail than the `CLAUDE.md` files: once you have read the relevant `CLAUDE.md`, you never need to consult it for facts.
 
 Mechanism lives in the per-directory `CLAUDE.md` files listed below; below that, in the code.
 
